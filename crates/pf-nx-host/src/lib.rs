@@ -117,7 +117,7 @@ impl MediaClock for CountingSink {
 }
 
 struct HostVideo {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "pyrowave"))]
     pyro: Option<pf_nx_vk::PyroLane>,
     fed: Arc<AtomicU64>,
 }
@@ -125,16 +125,16 @@ struct HostVideo {
 impl VideoDecoders for HostVideo {
     fn caps(&self) -> VideoCaps {
         VideoCaps {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "pyrowave"))]
             pyrowave: self.pyro.as_ref().is_some_and(pf_nx_vk::PyroLane::available),
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(all(target_os = "linux", feature = "pyrowave")))]
             pyrowave: false,
             ..VideoCaps::SWITCH
         }
     }
 
     fn open(&self, spec: &StreamSpec) -> Result<Box<dyn VideoSink>> {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "pyrowave"))]
         if spec.codec == punktfunk_core::quic::CODEC_PYROWAVE {
             if let Some(pyro) = &self.pyro {
                 return pyro.open(spec);
@@ -271,10 +271,15 @@ fn display(opts: &Options) -> Result<(Box<dyn Display>, HostVideo, String, Strin
                 let presenter = pf_nx_vk::Presenter::new(dev.clone(), slot.clone())?;
                 let gpu = dev.name.clone();
                 let ui = presenter.ui();
+                #[cfg(feature = "pyrowave")]
+                let pyro = Some(pf_nx_vk::PyroLane::new(dev, slot));
+                #[cfg(not(feature = "pyrowave"))]
+                drop((dev, slot));
                 return Ok((
                     Box::new(presenter),
                     HostVideo {
-                        pyro: Some(pf_nx_vk::PyroLane::new(dev, slot)),
+                        #[cfg(feature = "pyrowave")]
+                        pyro,
                         fed,
                     },
                     gpu,
@@ -287,7 +292,7 @@ fn display(opts: &Options) -> Result<(Box<dyn Display>, HostVideo, String, Strin
     Ok((
         Box::new(pf_nx_app::platform::fake::FakeDisplay::new(opts.width, opts.height)),
         HostVideo {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "pyrowave"))]
             pyro: None,
             fed,
         },

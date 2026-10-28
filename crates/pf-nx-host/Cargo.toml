@@ -15,6 +15,10 @@ serde_json.workspace = true
 punktfunk-core.workspace = true
 pf-nx-app = { path = "../pf-nx-app" }
 
+[features]
+# The PyroWave lane on a Linux box, with pf-nx-vk's. Out of v1 (plan D14).
+pyrowave = ["pf-nx-vk/pyrowave"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = { workspace = true, features = ["loaded"] }
 pf-nx-vk = { path = "../pf-nx-vk" }
