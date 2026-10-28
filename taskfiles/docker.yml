@@ -14,7 +14,7 @@ tasks:
       - bash scripts/docker.sh scripts/cargo-nx.sh check -p pf-nx-probe {{.CLI_ARGS}}
 
   probe:
-    desc: 'The probe NRO in dist/ (checks 1-2 until core skips if-addrs on Horizon: plan §7)'
+    desc: 'The probe NRO in dist/ with checks 1-3 (`task nvk:probe` adds check 4)'
     deps: [build]
     cmds:
-      - bash scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --no-default-features && scripts/package-nro.sh pf-nx-probe'
+      - bash scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe && scripts/package-nro.sh pf-nx-probe'
