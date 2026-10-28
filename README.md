@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="packaging/icon_large.png" alt="punktfunk" width="130">
+<img src="packaging/icon_large.png" alt="Punktfunk" width="130">
 
 <br>
 <br>
@@ -8,7 +8,7 @@
 [![CI](https://github.com/punktfunk/client-switch/actions/workflows/ci.yml/badge.svg)](https://github.com/punktfunk/client-switch/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-d2c9fb)](#licence)
 
-**Native Nintendo Switch client for [punktfunk](https://git.unom.io/unom/punktfunk) — low-latency desktop & game streaming.**
+**Native Nintendo Switch client for [Punktfunk](https://git.unom.io/unom/punktfunk) — low-latency desktop & game streaming.**
 
 </div>
 
@@ -29,7 +29,7 @@ What it is built to do:
 
 - **Video** — 1280×720 handheld and 1920×1080 docked at 60 Hz, H.264 or HEVC on the console's
   NVDEC; the stream follows the dock. No AV1: the Tegra X1 has none.
-- **The punktfunk console UI** — hosts, pairing, game libraries and settings, on Vulkan (Mesa NVK).
+- **The Punktfunk console UI** — hosts, pairing, game libraries and settings, on Vulkan (Mesa NVK).
   A confirms, B backs, as everywhere on the console.
 - **Controllers** — Joy-Cons (attached or paired) and the Pro Controller, up to four players, HD
   rumble, gyro and the touch screen.
