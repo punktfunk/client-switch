@@ -1,14 +1,44 @@
-# punktfunk for Nintendo Switch
+<div align="center">
 
-A homebrew title for the Switch 1 on Atmosphère that streams games and desktops from a
-[punktfunk](https://git.unom.io/unom/punktfunk) host: H.264 and HEVC on the console's NVDEC, the
-shared console UI on Vulkan (Mesa NVK), Joy-Cons and Pro Controllers with HD rumble, 1280×720
-handheld and 1920×1080 docked at 60 Hz.
+<img src="packaging/icon_large.png" alt="punktfunk" width="130">
 
-**Status:** the title and the WP0 probe build, link and package for the console; **nothing has run
-on a console yet.** `docs/plan.md` is the plan of record, `docs/NOTES.md` what is proven and how.
+<br>
+<br>
 
-## For the tester
+[![CI](https://github.com/punktfunk/client-switch/actions/workflows/ci.yml/badge.svg)](https://github.com/punktfunk/client-switch/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-d2c9fb)](#licence)
+
+**Native Nintendo Switch client for [punktfunk](https://git.unom.io/unom/punktfunk) — low-latency desktop & game streaming.**
+
+</div>
+
+---
+
+A homebrew title for the Switch 1 on Atmosphère, built on the upstream `punktfunk-core` crate (a
+pinned git dependency — see `Cargo.toml`) and the shared console UI. This repo is only the
+Switch-specific client: the libnx platform, NVDEC through libavcodec's `nvtegra` hwaccel, a Vulkan
+presenter on Mesa NVK, and the `.nro` packaging.
+
+> **Experimental.** The title and the WP0 probe build, link and package for the console; **nothing
+> has run on a console yet.** `docs/plan.md` is the plan of record, `docs/NOTES.md` what is proven
+> and how.
+
+## Features
+
+What it is built to do:
+
+- **Video** — 1280×720 handheld and 1920×1080 docked at 60 Hz, H.264 or HEVC on the console's
+  NVDEC; the stream follows the dock. No AV1: the Tegra X1 has none.
+- **The punktfunk console UI** — hosts, pairing, game libraries and settings, on Vulkan (Mesa NVK).
+  A confirms, B backs, as everywhere on the console.
+- **Controllers** — Joy-Cons (attached or paired) and the Pro Controller, up to four players, HD
+  rumble, gyro and the touch screen.
+- **Audio** — stereo through `audout`.
+
+Not yet: USB keyboard and mouse, PyroWave, LAN discovery on the console, and anything measured —
+see `docs/plan.md` §4 for the gates.
+
+## Test it on a console
 
 You need a Switch 1 on Atmosphère, its SD card, and a PC on the same LAN with devkitPro's
 `nxlink` (or just the SD card).
@@ -24,9 +54,11 @@ You need a Switch 1 on Atmosphère, its SD card, and a PC on the same LAN with d
 Checks 1–3 (std, sockets, QUIC) and the title's menus work in Ryujinx too; check 4 and the stream
 need the console (the emulator has no NVK).
 
-## For the developer
+## Build it
 
 Everything for the host runs on a Mac or Linux box; the console build runs in a Docker image.
+You need [rustup](https://rustup.rs) (`rust-toolchain.toml` installs the pinned nightly),
+[Task](https://taskfile.dev) and Docker.
 
 | Command | Does |
 | --- | --- |
@@ -41,10 +73,29 @@ The archives live in the `pf-nx-toolchains` Docker volume. Until the monorepo ca
 cfgs (`docs/monorepo-horizon.diff`, plan §7), the console build also needs the pinned shared crates
 patched into that volume at `/opt/pf-nx/mono`; `scripts/cargo-nx.sh` applies them.
 
-Layout, invariants and the rules for comments and commits: `AGENTS.md`. The crate legs and the
-target under `toolchain/` come from [bevy-horizon](https://github.com/JohnUzoka/bevy-horizon), the
-NVDEC path is libavcodec's `nvtegra` hwaccel as devkitPro ships it.
+## Repository
+
+| Path | What |
+| --- | --- |
+| `crates/pf-nx-app` | The app: sessions, the console UI, services, and the platform seams with fakes |
+| `crates/pf-nx-platform` | The console's implementation of those seams |
+| `crates/pf-nx-host` | The same seams on a developer machine |
+| `crates/pf-nx-vk` | Vulkan device, presenter and the NV12 upload |
+| `crates/pf-nx-sys` | libnx, libavcodec and NVK by hand, with layout tests |
+| `crates/pf-nx-probe` | The probe's checks |
+| `toolchain/` | The target, the crate legs and the Skia recipe, from [bevy-horizon](https://github.com/JohnUzoka/bevy-horizon) |
+| `scripts/` | Cross build, the archives, packaging |
+
+Read [`AGENTS.md`](AGENTS.md) before changing code: layering, commands and invariants.
+
+## Docs
+
+- [`docs/plan.md`](docs/plan.md): the plan of record.
+- [`docs/NOTES.md`](docs/NOTES.md): what is proven, what still needs a console, and the console
+  facts the code relies on.
+- [`docs/pins.md`](docs/pins.md): every pinned dependency and how it moves.
 
 ## Licence
 
-MIT OR Apache-2.0. `THIRD-PARTY-NOTICES.txt` is generated at build time from the dependency graph.
+MIT OR Apache-2.0, at your option ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE)).
+`THIRD-PARTY-NOTICES.txt` is generated at build time from the dependency graph.
