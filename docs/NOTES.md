@@ -22,3 +22,6 @@ What builds, and how; nothing here has run on a console.
   The portlibs also hold `libopus.a`, `libEGL.a` and `libdrm_nouveau.a`.
 - `pf-nx-sys` cross-clippies clean for the console without features; with `av` the C shim
   compiles against the image's libavcodec headers.
+
+The monorepo change check 3 needs, as a diff against the pinned rev: `docs/monorepo-horizon.diff`
+(plan §7, PR 2). It goes away when that PR lands and the pin moves.

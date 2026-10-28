@@ -1,0 +1,65 @@
+diff --color -ru /Users/enricobuehler/.claude/jobs/84ca9f0e/tmp/nx/orig/crates/core/punktfunk-core/Cargo.toml punktfunk/crates/core/punktfunk-core/Cargo.toml
+--- /Users/enricobuehler/.claude/jobs/84ca9f0e/tmp/nx/orig/crates/core/punktfunk-core/Cargo.toml	2026-10-28 16:13:36
++++ punktfunk/crates/core/punktfunk-core/Cargo.toml	2026-10-28 19:03:08
+@@ -127,7 +127,7 @@
+ # wasm. if-addrs' Linux path is netlink (`sockaddr_nl`, `NETLINK_ROUTE`), which emscripten's libc
+ # does not declare, and a browser has no interface list to enumerate. Both callers already treat
+ # enumeration failure as an empty list, which is exactly what the wasm arms return.
+-[target.'cfg(not(target_family = "wasm"))'.dependencies]
++[target.'cfg(not(any(target_family = "wasm", target_os = "horizon")))'.dependencies]
+ if-addrs = { version = "0.15", features = ["link-local"] }
+ 
+ [dev-dependencies]
+diff --color -ru /Users/enricobuehler/.claude/jobs/84ca9f0e/tmp/nx/orig/crates/core/punktfunk-core/src/discovery.rs punktfunk/crates/core/punktfunk-core/src/discovery.rs
+--- /Users/enricobuehler/.claude/jobs/84ca9f0e/tmp/nx/orig/crates/core/punktfunk-core/src/discovery.rs	2026-10-28 16:13:36
++++ punktfunk/crates/core/punktfunk-core/src/discovery.rs	2026-10-28 19:03:08
+@@ -61,12 +61,12 @@
+ }
+ 
+ /// A browser has no interface list; ranking falls through to the routed source address.
+-#[cfg(target_family = "wasm")]
++#[cfg(any(target_family = "wasm", target_os = "horizon"))]
+ fn local_ipv4s() -> Vec<Ipv4Addr> {
+     Vec::new()
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(not(any(target_family = "wasm", target_os = "horizon")))]
+ fn local_ipv4s() -> Vec<Ipv4Addr> {
+     if_addrs::get_if_addrs()
+         .map(|ifs| {
+diff --color -ru /Users/enricobuehler/.claude/jobs/84ca9f0e/tmp/nx/orig/crates/core/punktfunk-core/src/transport/ifinfo.rs punktfunk/crates/core/punktfunk-core/src/transport/ifinfo.rs
+--- /Users/enricobuehler/.claude/jobs/84ca9f0e/tmp/nx/orig/crates/core/punktfunk-core/src/transport/ifinfo.rs	2026-10-28 16:13:36
++++ punktfunk/crates/core/punktfunk-core/src/transport/ifinfo.rs	2026-10-28 19:03:08
+@@ -10,6 +10,13 @@
+ use std::net::IpAddr;
+ 
+ /// The interface holding `ip`, by name; `None` when no interface has it.
++#[cfg(target_os = "horizon")]
++pub fn iface_for(_ip: IpAddr) -> Option<String> {
++    None
++}
++
++/// The interface holding `ip`, by name; `None` when no interface has it.
++#[cfg(not(target_os = "horizon"))]
+ pub fn iface_for(ip: IpAddr) -> Option<String> {
+     if_addrs::get_if_addrs()
+         .ok()?
+diff --color -ru /Users/enricobuehler/.claude/jobs/84ca9f0e/tmp/nx/orig/crates/core/punktfunk-core/src/wol.rs punktfunk/crates/core/punktfunk-core/src/wol.rs
+--- /Users/enricobuehler/.claude/jobs/84ca9f0e/tmp/nx/orig/crates/core/punktfunk-core/src/wol.rs	2026-10-28 16:13:36
++++ punktfunk/crates/core/punktfunk-core/src/wol.rs	2026-10-28 19:03:08
+@@ -146,12 +146,12 @@
+ /// Non-loopback IPv4 as `(address, subnet-directed broadcast)`. OS broadcast if
+ /// present, else `ip | !netmask`. Enumeration failure yields empty; the routed
+ /// pass still fires.
+-#[cfg(target_family = "wasm")]
++#[cfg(any(target_family = "wasm", target_os = "horizon"))]
+ fn local_v4_segments() -> Vec<(Ipv4Addr, Ipv4Addr)> {
+     Vec::new()
+ }
+ 
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(not(any(target_family = "wasm", target_os = "horizon")))]
+ fn local_v4_segments() -> Vec<(Ipv4Addr, Ipv4Addr)> {
+     let mut out = Vec::new();
+     let ifaces = match if_addrs::get_if_addrs() {
