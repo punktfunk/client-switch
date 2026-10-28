@@ -36,5 +36,19 @@ export "BINDGEN_EXTRA_CLANG_ARGS_$t=--target=aarch64-none-elf -D__SWITCH__ -isys
 # only selects getentropy (the probe's `_getentropy_r`) over /dev/urandom (rand_extra/internal.h).
 export "AWS_LC_SYS_CFLAGS_$t=-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -D__SWITCH__ -isystem $dkp/libnx/include -isystem $root/toolchain/include -D_DEFAULT_SOURCE -DOPENSSL_NO_SOCK -DOPENSSL_STATIC_ARMCAP -DOPENSSL_WASM"
 
+# The archives under /opt/pf-nx (scripts/docker.sh mounts the volume): Skia as skia-bindings
+# expects it (scripts/build-skia.sh), NVK's localized library (scripts/build-nvk.sh), and, until
+# plan §7's monorepo PRs land, the pinned shared crates with their Horizon cfgs (PF_NX_MONO).
+tc=${PF_NX_TOOLCHAINS:-/opt/pf-nx}
+export SKIA_BINARIES_URL="${SKIA_BINARIES_URL:-file://$tc/skia/{tag}/skia-binaries-{key}.tar.gz}"
+export PF_NX_NVK_LIB="${PF_NX_NVK_LIB:-$tc/nvk/lib}"
+mono=${PF_NX_MONO:-$tc/mono}
+patches=()
+if [[ -d $mono/crates ]]; then
+    for p in core/punktfunk-core client/pf-client-core client/pf-client-video client/pf-console-ui; do
+        patches+=(--config "patch.\"https://git.unom.io/unom/punktfunk\".${p##*/}.path=\"$mono/crates/$p\"")
+    done
+fi
+
 exec cargo "+$RUST_NIGHTLY" "$cmd" --release -Z build-std=core,alloc,std,panic_abort -Z json-target-spec \
-    --target "$root/toolchain/aarch64-nintendo-horizon.json" "$@"
+    --target "$root/toolchain/aarch64-nintendo-horizon.json" "${patches[@]}" "$@"
