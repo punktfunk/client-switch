@@ -1,0 +1,5 @@
+# The console target needs -Zbuild-std, so the whole repository builds on one pinned nightly: the
+# one the vendored crate legs under toolchain/ were made against. rust-src is what build-std compiles.
+[toolchain]
+channel = "nightly-2026-10-04"
+components = ["rust-src", "rustfmt", "clippy", "llvm-tools-preview"]

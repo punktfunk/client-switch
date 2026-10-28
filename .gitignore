@@ -1,0 +1,9 @@
+/target
+/target-linux
+/.toolchains
+/dist
+*.nro
+*.elf
+*.nacp
+.env
+.DS_Store

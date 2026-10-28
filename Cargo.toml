@@ -1,0 +1,85 @@
+[package]
+name = "pf-nx"
+description = "Nintendo Switch homebrew client for punktfunk: the title binary."
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "pf-nx"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+pf-nx-app = { path = "crates/pf-nx-app" }
+
+[target.'cfg(target_os = "horizon")'.dependencies]
+pf-nx-platform = { path = "crates/pf-nx-platform" }
+
+[target.'cfg(not(target_os = "horizon"))'.dependencies]
+pf-nx-host = { path = "crates/pf-nx-host" }
+
+[lints]
+workspace = true
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/pf-nx-sys",
+    "crates/pf-nx-vk",
+    "crates/pf-nx-platform",
+    "crates/pf-nx-host",
+    "crates/pf-nx-app",
+    "crates/pf-nx-probe",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/punktfunk/client-switch"
+
+[workspace.dependencies]
+anyhow = "1"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ash = { version = "0.38", default-features = false, features = ["debug", "std"] }
+# Same Skia as the shared console; the console build adds the Vulkan backend (pf-nx-vk).
+skia-safe = { version = "0.153", features = ["textlayout"] }
+# One REV for all shared crates: a tag and a rev build two copies whose types don't unify.
+# The PS5 client's pin, so the lifted code meets the shared crates it was written against.
+punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", features = ["quic"] }
+pf-client-core = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", default-features = false }
+pf-console-ui = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", default-features = false }
+pf-client-video = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", default-features = false, features = ["pyrowave"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+cast_lossless = "warn"
+map_unwrap_or = "warn"
+use_self = "warn"
+doc_markdown = "warn"
+manual_let_else = "warn"
+redundant_closure_for_method_calls = "warn"
+items_after_statements = "warn"
+match_same_arms = "warn"
+format_collect = "warn"
+suspicious_operation_groupings = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+# Fat LTO inlines core's hot paths (AEAD, FEC, QUIC parsing) across crates.
+lto = "fat"
+codegen-units = 1
+# No unwinding across the C boundaries; the panic hook writes the log first.
+panic = "abort"
+debug = "line-tables-only"
