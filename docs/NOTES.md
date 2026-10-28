@@ -22,6 +22,11 @@ What builds, and how; nothing here has run on a console.
   The portlibs also hold `libopus.a`, `libEGL.a` and `libdrm_nouveau.a`.
 - `pf-nx-sys` cross-clippies clean for the console without features; with `av` the C shim
   compiles against the image's libavcodec headers.
+- The whole title type-checks and links for the console: `scripts/cargo-nx.sh build -p pf-nx`
+  then `scripts/package-nro.sh pf-nx punktfunk` writes `dist/punktfunk.nro` (78 MB: the image's
+  full libavcodec with its dav1d and swresample closure, Skia, NVK, line tables). Until plan §7's
+  monorepo PRs land, the build needs the patched shared crates at `/opt/pf-nx/mono`
+  (`scripts/cargo-nx.sh` adds the patch table to the image copy's config).
 - `scripts/build-nvk.sh` builds NVK cold, both images included, in about four minutes on the Mac
   (arm64, `JOBS=12`); a rerun reuses the tree and the patched checkout. The bevy-horizon
   Containerfile names rustup's x86_64 directory; the script swaps in the host's.

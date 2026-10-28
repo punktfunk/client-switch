@@ -47,7 +47,10 @@ fn main() {
     // need nothing beyond libnx and newlib.
     let mut libs: Vec<&str> = Vec::new();
     if av {
-        libs.extend(["avcodec", "avutil"]);
+        // `pkg-config --static --libs libavcodec` for the image's switch-ffmpeg (libavcodec
+        // 61.19): its codec registry pulls every decoder, so dav1d and swresample come along
+        // until a trimmed build (plan D6) drops them.
+        libs.extend(["avcodec", "dav1d", "swresample", "avutil", "z"]);
     }
     if nvk_on {
         libs.extend(["vulkan_bh", "expat", "zstd", "z"]);
