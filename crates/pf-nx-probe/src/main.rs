@@ -272,15 +272,34 @@ fn sendmsg_recvmsg() -> Result<String, String> {
     }
 }
 
-/// Core grows the receive buffer for 4K bursts; this reads back what the stack grants.
+/// Core grows the receive buffer for 4K bursts. Asks for 4 MiB, then halves down to 64 KiB, and
+/// reports the first size the stack takes with what `getsockopt` reads back.
 fn rcvbuf() -> Result<String, String> {
     const WANT: libc::c_int = 4 << 20;
+    const FLOOR: libc::c_int = 64 << 10;
     let socket = loopback()?;
     let fd = socket.as_raw_fd();
-    let (want, len) = (WANT, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-    // SAFETY: `want` is a readable int of `len` bytes.
-    let set = unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, (&raw const want).cast(), len) };
-    let set_err = std::io::Error::last_os_error();
+    let mut refused = Vec::new();
+    let mut ask = WANT;
+    while ask >= FLOOR {
+        match set_rcvbuf(fd, ask) {
+            Ok(got) if ask == WANT => return Ok(format!("{got}")),
+            Ok(got) => return Err(format!("max={ask} granted={got} refused[{}]", refused.join(","))),
+            Err(e) => refused.push(format!("{ask}:{e}")),
+        }
+        ask /= 2;
+    }
+    Err(format!("none down to {FLOOR}: {}", refused.join(",")))
+}
+
+/// Sets `SO_RCVBUF` to `size` and reads back what the stack granted.
+fn set_rcvbuf(fd: libc::c_int, size: libc::c_int) -> Result<libc::c_int, std::io::Error> {
+    let len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `size` is a readable int of `len` bytes.
+    let set = unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, (&raw const size).cast(), len) };
+    if set != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
     let (mut got, mut got_len) = (0 as libc::c_int, len);
     // SAFETY: `got` is a writable int and `got_len` holds its size.
     let get = unsafe {
@@ -292,11 +311,10 @@ fn rcvbuf() -> Result<String, String> {
             &mut got_len,
         )
     };
-    match (set, get) {
-        (0, 0) if got >= WANT => Ok(format!("{got}")),
-        (0, 0) => Err(format!("granted {got}")),
-        _ => Err(format!("set {set} ({set_err}), get {get}, granted {got}")),
+    if get != 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(got)
 }
 
 /// mDNS discovery joins 224.0.0.251.

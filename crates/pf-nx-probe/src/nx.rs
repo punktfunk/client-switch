@@ -1,5 +1,5 @@
-//! The probe on the console: the socket driver with 4 MiB UDP buffers, stdout to nxlink when a
-//! host is listening and to the screen otherwise.
+//! The probe on the console: the socket driver on libnx's defaults, stdout to nxlink when a host
+//! is listening and to the screen otherwise.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -9,22 +9,14 @@ use pf_nx_sys::{applet, console, socket};
 /// Set once the screen console holds stdout.
 static SCREEN: AtomicBool = AtomicBool::new(false);
 
-/// A 4K burst at the host's pacing fits in this; libnx's default is 0xA500.
-const UDP_BUF: u32 = 4 << 20;
-
-/// Starts the socket driver with 4 MiB UDP buffers, else with libnx's defaults. Says which took.
+/// Starts the socket driver on libnx's defaults. The UDP sizes are every new socket's buffer
+/// reservation, and 4 MiB there failed every socket with ENOBUFS on the console; check 2's
+/// `rcvbuf` grows one socket instead and reports what the stack grants.
 pub fn sockets_up() -> String {
-    let config = socket::Config {
-        udp_rx_buf: UDP_BUF,
-        udp_tx_buf: UDP_BUF,
-        ..socket::Config::default()
-    };
+    let config = socket::Config::default();
     match socket::init(&config) {
-        Ok(()) => format!("ok udp_buf={UDP_BUF}"),
-        Err(e) => match socket::init(&socket::Config::default()) {
-            Ok(()) => format!("fail udp_buf={UDP_BUF} {e:#}, defaults ok"),
-            Err(e2) => format!("fail-both udp_buf={UDP_BUF} {e:#}, defaults {e2:#}"),
-        },
+        Ok(()) => format!("ok udp_rx_buf={} udp_tx_buf={}", config.udp_rx_buf, config.udp_tx_buf),
+        Err(e) => format!("fail {e:#}"),
     }
 }
 

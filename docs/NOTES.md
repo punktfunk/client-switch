@@ -58,3 +58,15 @@ What builds, and how; nothing here has run on a console.
 
 The monorepo change check 3 needs, as a diff against the pinned rev: `docs/monorepo-horizon.diff`
 (plan §7, PR 2). It goes away when that PR lands and the pin moves.
+
+## Proven on the console
+
+Runs on the tester's Switch 1 (Atmosphère, from hbmenu). No bundles yet: each item cites the
+probe build's commit and the run's date.
+
+- Check 1 (`std`) passes: four threads with their own `thread_local!`, `HashMap`, a 10 ms sleep,
+  the wall clock, a file on `sdmc:` and `read_dir` (probe at `5222fb9`, 2026-10-28).
+- `socketInitialize` takes 4 MiB UDP buffers, but every UDP socket then fails with ENOBUFS
+  (`os error 105`); `getaddrinfo` still answers (probe at `5222fb9`, 2026-10-28). The UDP sizes
+  are each new socket's reservation, so the probe starts sockets on libnx's defaults and check 2
+  measures how far `SO_RCVBUF` grows instead.
