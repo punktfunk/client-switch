@@ -66,3 +66,7 @@ probe build's commit and the run's date.
 - On libnx's default UDP sizes (42240 rx, 9216 tx) UDP send and receive, `sendmsg`/`recvmsg`, the
   mDNS group join and `getaddrinfo` all work. `SO_RCVBUF` takes 1 MiB at most: 4 MiB and 2 MiB
   fail with ENOBUFS, and `getsockopt` reads 1048576 back (probe at `4b0bd19`, 2026-10-28).
+- With check 3 linked, checks 1 and 2 read as before, then the probe dies in check 3 before its
+  line: a data abort reading address 0 on the main thread, with tokio's two workers already up.
+  The crash report's offsets were not resolvable, as CI kept no ELF (probe at `528c0ee`,
+  2026-10-28; Atmosphère report `01793228241_05446530aca7e000`).

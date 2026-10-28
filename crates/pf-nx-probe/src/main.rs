@@ -54,7 +54,10 @@ fn main() {
     out.check(1, "std", std_steps(&dir));
     out.check(2, "sockets", socket_steps());
     #[cfg(feature = "quic")]
-    out.check(3, "quic", quic_steps());
+    {
+        let steps = quic_steps(&mut out);
+        out.check(3, "quic", steps);
+    }
     #[cfg(all(target_os = "horizon", feature = "vulkan"))]
     out.check(4, "vulkan", vk::steps());
 
@@ -339,10 +342,12 @@ fn getaddrinfo() -> Result<String, String> {
 }
 
 /// punktfunk-core's client endpoint on the shared socket, on a two-worker tokio runtime (Horizon
-/// has no `available_parallelism`), with a fresh identity through the crypto provider.
+/// has no `available_parallelism`), with a fresh identity through the crypto provider. Each step
+/// logs before it starts, so a crash names the step it died in.
 #[cfg(feature = "quic")]
-fn quic_steps() -> Steps {
+fn quic_steps(out: &mut Out) -> Steps {
     use punktfunk_core::quic::{endpoint, v2::registry::ALPN};
+    out.line("probe 3 quic start runtime");
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -351,7 +356,9 @@ fn quic_steps() -> Steps {
         Ok(rt) => rt,
         Err(e) => return vec![("runtime", Err(err(e)))],
     };
+    out.line("probe 3 quic start identity");
     let identity = endpoint::generate_identity().map_err(err);
+    out.line("probe 3 quic start endpoint");
     let bound = runtime.block_on(async {
         let (cert, key) = identity.as_ref().map_err(Clone::clone)?;
         let (shared, _observed) = endpoint::client_shared(None, Some((cert, key)), &[ALPN], None);

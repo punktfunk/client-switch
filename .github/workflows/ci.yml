@@ -36,4 +36,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: pf-nx-probe
-          path: dist/pf-nx-probe.nro
+          path: |
+            dist/pf-nx-probe.nro
+            dist/pf-nx-probe.elf
