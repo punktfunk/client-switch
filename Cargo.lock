@@ -1212,6 +1212,7 @@ dependencies = [
 name = "pf-nx-probe"
 version = "0.0.1"
 dependencies = [
+ "ash",
  "libc",
  "pf-nx-sys",
  "punktfunk-core",

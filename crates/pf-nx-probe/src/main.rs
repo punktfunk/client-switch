@@ -7,6 +7,8 @@
 
 #[cfg(target_os = "horizon")]
 mod nx;
+#[cfg(all(target_os = "horizon", feature = "vulkan"))]
+mod vk;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -53,6 +55,8 @@ fn main() {
     out.check(2, "sockets", socket_steps());
     #[cfg(feature = "quic")]
     out.check(3, "quic", quic_steps());
+    #[cfg(all(target_os = "horizon", feature = "vulkan"))]
+    out.check(4, "vulkan", vk::steps());
 
     out.line(&format!("probe end {} failed", out.failed));
     if std::env::args().any(|a| a == "--panic") {

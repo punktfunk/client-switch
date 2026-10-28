@@ -1,0 +1,14 @@
+# NVK for the console: libvulkan_bh.a into the archives volume, and the probe that links it.
+version: '3'
+
+tasks:
+  default:
+    desc: Build libvulkan_bh.a into the archives volume (scripts/build-nvk.sh; JOBS=n caps the build)
+    cmds:
+      - bash scripts/build-nvk.sh
+
+  probe:
+    desc: The probe NRO with check 4 (vulkan) in dist/; needs the archive
+    deps: [':docker:build']
+    cmds:
+      - bash scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --no-default-features --features vulkan && scripts/package-nro.sh pf-nx-probe'

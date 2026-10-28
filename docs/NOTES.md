@@ -22,6 +22,17 @@ What builds, and how; nothing here has run on a console.
   The portlibs also hold `libopus.a`, `libEGL.a` and `libdrm_nouveau.a`.
 - `pf-nx-sys` cross-clippies clean for the console without features; with `av` the C shim
   compiles against the image's libavcodec headers.
+- `scripts/build-nvk.sh` builds NVK cold, both images included, in about four minutes on the Mac
+  (arm64, `JOBS=12`); a rerun reuses the tree and the patched checkout. The bevy-horizon
+  Containerfile names rustup's x86_64 directory; the script swaps in the host's.
+- The probe links NVK with `--features vulkan`: a 15.8 MB NRO whose relocations are all
+  `R_AARCH64_RELATIVE`. The only undefined symbols left are the dispatch tables' weak driver
+  entry points, which resolve to null. NAK's and NIL's Linux std references (`fork`, `dlsym`,
+  `posix_spawnp`) sit in sections the link discards.
+- `nouveau_horizon_region_{alloc,free,stats}` are defined in the archive, not needed from the
+  title: unused, the link drops them. NVK still takes GPU backing from the top of the heap
+  (patch 0001; `NOUVEAU_HORIZON_TOP_DOWN=false` turns it off).
+- Check 4 (`vulkan`) has not run anywhere: Ryujinx does not run NVK builds (plan D15).
 
 The monorepo change check 3 needs, as a diff against the pinned rev: `docs/monorepo-horizon.diff`
 (plan §7, PR 2). It goes away when that PR lands and the pin moves.

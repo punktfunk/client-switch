@@ -15,3 +15,45 @@
 A bump changes `scripts/pins.env` (and `rust-toolchain.toml` / `Cargo.toml` / `docker/Dockerfile`
 for the ones they carry), bumps `NX_IMAGE`, and re-runs the probe on the console before anything
 else ships. The crate legs' upstream versions are in `toolchain/README.md`.
+
+## Skia
+
+`scripts/build-skia.sh` reads these from the locked skia-bindings crate, so nothing here is typed
+twice. A skia-safe bump moves all three; `toolchain/skia/horizon.patch` is re-made on the new tree.
+
+| What | Value | From | In the archive's name |
+| --- | --- | --- | --- |
+| skia-safe / skia-bindings | `0.153.3` | `Cargo.lock` | `{tag}` |
+| skia-bindings hash | `b7f043e0b1e2a850e702` | the crate's `.cargo_vcs_info.json` | head of `{key}` |
+| Skia | `m153-0.101.2` (rust-skia's fork) | the crate's `[package.metadata] skia`; its `DEPS` pins third_party and gn | — |
+
+The archive is `/opt/pf-nx/skia/{tag}/skia-binaries-{key}.tar.gz`, `{key}` being the hash, the
+target, then the sorted features: `aarch64-nintendo-horizon-jpegd-jpege-pdf-textlayout` for CPU
+raster, `aarch64-nintendo-horizon-ganesh-jpegd-jpege-pdf-textlayout-vulkan` for `skia-vulkan`.
+
+## NVK
+
+`scripts/build-nvk.sh` (`task nvk`) builds `libvulkan_bh.a` into the archives volume at
+`/opt/pf-nx/nvk/lib`: bevy-horizon's `build_nvk.sh` and `localize_nvk.sh` at `BEVY_HORIZON_REV`,
+in bevy-horizon's toolchain image from the `devkitpro/devkita64` digest above.
+
+| What | Value |
+| --- | --- |
+| mesa-switch | `606441c90e459028a50fca352daebfc20211f890` (Mesa 26.2.4, danfromtico/mesa-switch); `MESA_SWITCH_REV` in the script |
+| Patches | bevy-horizon's `patches/mesa-switch/`, in order (below) |
+| Built by | devkitA64 r30-1, libnx 4.12.0-1, NAK on rustc 1.101.0-nightly `db8f076d2`, meson 1.12.1; arm64 host |
+| `libvulkan_bh.a` | 45 433 534 bytes; its one member `vulkan_bh.o` sha256 `55a6eb01931fdaea478813584319f7ba0748f69258a185a8fb41363076bc35fc` |
+| Global symbols | 768 `vk*` entry points, `nouveau_horizon_region_{alloc,free,stats}`, `nouveau_horizon_tune` |
+
+The patches: 0001-top-down-gpu-backing, 0002-nvk-switch-timestamp-period, 0003-nak-debug-stats,
+0004-nak-cross-block-barriers, 0005-nak-sink-remat, 0006-nak-uniform-branches, 0007-nak-xbrk,
+0008-nvk-switch-tune, 0009-nvk-switch-zcull-direction, 0010-nvk-switch-zcull-report,
+0011-nak-loop-sink, 0012-nvk-switch-skip-empty-draws, 0013-nvk-switch-compression-report,
+0014-nak-gpr-limit, 0015-nak-prepass-latency, 0016-nak-tests-build,
+0017-nvk-compute-invocation-queries, 0018-mme-fermi-mul-clear, 0019-nak-switch-defaults,
+0020-nvk-deferred-cs-invocations, 0021-nak-ofold, 0022-nak-wgbar, 0023-nak-share, 0024-nak-jthr.
+
+It moves with the bevy-horizon pin or mesa-switch: rerun `task nvk` and update the size and hash
+here. The archive's own hash changes every build (`ar` stamps the time), so compare the member's.
+The hash is an arm64 host's; an amd64 build is not checked against it.
+`bevy-horizon-nvk:local` is reused when present: remove it when the base image moves.

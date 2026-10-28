@@ -16,15 +16,18 @@ path = "src/main.rs"
 default = ["quic"]
 # Check 3: punktfunk-core's QUIC plane on tokio. Without it the NRO carries checks 1 and 2.
 quic = ["dep:punktfunk-core", "dep:tokio"]
+# Check 4: NVK's instance, device and a mapped buffer, on the console only. Links libvulkan_bh.a.
+vulkan = ["dep:ash", "pf-nx-sys/nvk"]
 
 [dependencies]
 libc = "0.2"
 punktfunk-core = { workspace = true, optional = true }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread"] }
 
-# libnx through the one FFI crate, without libavcodec or NVK: the probe links neither.
+# libnx through the one FFI crate, without libavcodec; NVK only with `vulkan`.
 [target.'cfg(target_os = "horizon")'.dependencies]
 pf-nx-sys = { path = "../pf-nx-sys", default-features = false }
+ash = { workspace = true, optional = true }
 
 [lints]
 workspace = true
