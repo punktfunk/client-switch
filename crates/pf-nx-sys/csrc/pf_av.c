@@ -1,0 +1,149 @@
+// NVDEC through libavcodec's nvtegra hwaccel, as six calls the Rust side binds (src/av.rs).
+// One thread uses a decoder at a time; pictures leave as pitch-linear NV12 via the VIC.
+#include <errno.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/time.h>
+
+// The shim's own errors, outside FFmpeg's AVERROR space; src/av.rs names them.
+#define PF_AV_NOT_NV12 (-0x70660001)
+#define PF_AV_TOO_SMALL (-0x70660002)
+
+typedef struct PfAvStats {
+    uint64_t decoded;
+    uint32_t in_flight, last_decode_us, last_transfer_us, reserved;
+} PfAvStats;
+
+typedef struct PfAvPictureMeta {
+    uint32_t width, height;
+    uint64_t pts;
+} PfAvPictureMeta;
+
+typedef struct PfAvDecoder {
+    AVCodecContext *ctx;
+    AVBufferRef *device;
+    AVPacket *pkt;
+    AVFrame *hw;
+    AVFrame *sw;
+    int64_t sent_at;
+    uint64_t taken;
+    PfAvStats stats;
+} PfAvDecoder;
+
+void pf_av_close(PfAvDecoder *d) {
+    if (!d) return;
+    avcodec_free_context(&d->ctx);
+    av_buffer_unref(&d->device);
+    av_packet_free(&d->pkt);
+    av_frame_free(&d->hw);
+    av_frame_free(&d->sw);
+    av_free(d);
+}
+
+// codec: 0 H.264, 1 HEVC. The hwaccel is found by name, so no header needs its enum.
+// TODO(verify): the device type's name is "nvtegra" in the pinned tree (WP0.6).
+int pf_av_open(int codec, int width, int height, PfAvDecoder **out) {
+    *out = NULL;
+    const AVCodec *c = avcodec_find_decoder(codec == 1 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264);
+    if (!c) return AVERROR_DECODER_NOT_FOUND;
+    enum AVHWDeviceType type = av_hwdevice_find_type_by_name("nvtegra");
+    if (type == AV_HWDEVICE_TYPE_NONE) return AVERROR(ENOSYS);
+    PfAvDecoder *d = av_mallocz(sizeof(*d));
+    if (!d) return AVERROR(ENOMEM);
+    int err = av_hwdevice_ctx_create(&d->device, type, NULL, NULL, 0);
+    if (err < 0) goto fail;
+    d->ctx = avcodec_alloc_context3(c);
+    d->pkt = av_packet_alloc();
+    d->hw = av_frame_alloc();
+    d->sw = av_frame_alloc();
+    err = AVERROR(ENOMEM);
+    if (!d->ctx || !d->pkt || !d->hw || !d->sw ||
+        !(d->ctx->hw_device_ctx = av_buffer_ref(d->device)))
+        goto fail;
+    // The default get_format picks the device's hw format when hw_device_ctx is set.
+    d->ctx->width = width;
+    d->ctx->height = height;
+    d->ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    d->ctx->thread_count = 1;
+    err = avcodec_open2(d->ctx, c, NULL);
+    if (err < 0) goto fail;
+    *out = d;
+    return 0;
+fail:
+    pf_av_close(d);
+    return err;
+}
+
+// 0 taken, 1 the decoder is full (receive first), < 0 an AVERROR. The packet is copied.
+int pf_av_send(PfAvDecoder *d, const uint8_t *data, int len, uint64_t pts) {
+    d->pkt->data = (uint8_t *)data;
+    d->pkt->size = len;
+    d->pkt->pts = (int64_t)pts;
+    int64_t t = av_gettime_relative();
+    int err = avcodec_send_packet(d->ctx, d->pkt);
+    d->pkt->data = NULL;
+    d->pkt->size = 0;
+    if (err == AVERROR(EAGAIN)) return 1;
+    if (err < 0) return err;
+    d->sent_at = t;
+    d->taken++;
+    return 0;
+}
+
+static void copy_plane(uint8_t *dst, size_t dst_stride, const uint8_t *src, int src_stride,
+                       size_t row, size_t rows) {
+    for (size_t i = 0; i < rows; i++)
+        memcpy(dst + i * dst_stride, src + i * (size_t)src_stride, row);
+}
+
+// 1 a picture written, 0 none ready, < 0 an AVERROR; the picture is dropped on error. `meta`
+// is filled whenever a picture came out, so a too-small buffer reports the size it needs.
+int pf_av_receive(PfAvDecoder *d, uint8_t *y, size_t y_stride, size_t y_len, uint8_t *uv,
+                  size_t uv_stride, size_t uv_len, PfAvPictureMeta *meta) {
+    int err = avcodec_receive_frame(d->ctx, d->hw);
+    if (err == AVERROR(EAGAIN)) return 0;
+    if (err < 0) return err;
+    d->stats.decoded++;
+    d->stats.last_decode_us = (uint32_t)(av_gettime_relative() - d->sent_at);
+    meta->width = (uint32_t)d->hw->width;
+    meta->height = (uint32_t)d->hw->height;
+    meta->pts = (uint64_t)d->hw->pts;
+    AVFrame *src = d->hw;
+    if (d->hw->hw_frames_ctx) {
+        int64_t t = av_gettime_relative();
+        d->sw->format = AV_PIX_FMT_NV12; // TODO(verify): the VIC transfer offers NV12 (WP0.6).
+        err = av_hwframe_transfer_data(d->sw, d->hw, 0);
+        d->stats.last_transfer_us = (uint32_t)(av_gettime_relative() - t);
+        if (err < 0) goto out;
+        src = d->sw;
+    }
+    err = PF_AV_NOT_NV12; // a software frame: the hwaccel did not take the stream
+    if (src->format != AV_PIX_FMT_NV12)
+        goto out;
+    size_t w = (size_t)src->width, h = (size_t)src->height;
+    size_t uw = (w + 1) & ~(size_t)1, uh = (h + 1) / 2;
+    err = PF_AV_TOO_SMALL;
+    if (y_stride < w || uv_stride < uw || y_len < y_stride * h || uv_len < uv_stride * uh)
+        goto out;
+    copy_plane(y, y_stride, src->data[0], src->linesize[0], w, h);
+    copy_plane(uv, uv_stride, src->data[1], src->linesize[1], uw, uh);
+    err = 1;
+out:
+    av_frame_unref(d->hw);
+    av_frame_unref(d->sw);
+    return err;
+}
+
+void pf_av_flush(PfAvDecoder *d) {
+    avcodec_flush_buffers(d->ctx);
+    d->taken = d->stats.decoded;
+}
+
+void pf_av_stats(const PfAvDecoder *d, PfAvStats *out) {
+    *out = d->stats;
+    uint64_t n = d->taken > d->stats.decoded ? d->taken - d->stats.decoded : 0;
+    out->in_flight = n > UINT32_MAX ? UINT32_MAX : (uint32_t)n;
+}

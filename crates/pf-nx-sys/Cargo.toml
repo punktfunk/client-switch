@@ -1,5 +1,6 @@
 [package]
 name = "pf-nx-sys"
+description = "Hand-written FFI to libnx, libavcodec's nvtegra hwaccel and the statically linked NVK, with the layout tests that pin it."
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +8,22 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = ["av", "nvk"]
+# NVDEC through libavcodec: the C shim and the avcodec/avutil link.
+av = []
+# The statically linked NVK and its entry point.
+nvk = ["dep:ash"]
+
 [dependencies]
+anyhow.workspace = true
+
+[target.'cfg(target_os = "horizon")'.dependencies]
+ash = { workspace = true, optional = true }
+tracing.workspace = true
+
+[build-dependencies]
+cc = "1"
 
 [lints]
 workspace = true
