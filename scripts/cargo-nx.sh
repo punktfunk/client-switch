@@ -40,15 +40,24 @@ export "AWS_LC_SYS_CFLAGS_$t=-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=so
 # expects it (scripts/build-skia.sh), NVK's localized library (scripts/build-nvk.sh), and, until
 # plan §7's monorepo PRs land, the pinned shared crates with their Horizon cfgs (PF_NX_MONO).
 tc=${PF_NX_TOOLCHAINS:-/opt/pf-nx}
-export SKIA_BINARIES_URL="${SKIA_BINARIES_URL:-file://$tc/skia/{tag}/skia-binaries-{key}.tar.gz}"
+# Not a `${VAR:-…}` default: the placeholders' braces would end it early.
+if [[ -z ${SKIA_BINARIES_URL:-} ]]; then
+    SKIA_BINARIES_URL="file://$tc/skia/{tag}/skia-binaries-{key}.tar.gz"
+fi
+export SKIA_BINARIES_URL
 export PF_NX_NVK_LIB="${PF_NX_NVK_LIB:-$tc/nvk/lib}"
 mono=${PF_NX_MONO:-$tc/mono}
-patches=()
-if [[ -d $mono/crates ]]; then
-    for p in core/punktfunk-core client/pf-client-core client/pf-client-video client/pf-console-ui; do
-        patches+=(--config "patch.\"https://git.unom.io/unom/punktfunk\".${p##*/}.path=\"$mono/crates/$p\"")
-    done
+# The patch goes into the tree's config, not the command line: pf-nx-app's build script runs a
+# nested `cargo metadata`, which must resolve the same sources. The tree here is the image's copy.
+if [[ -d $mono/crates ]] && ! grep -q "^# mono patch" "$root/.cargo/config.toml"; then
+    {
+        echo '# mono patch (scripts/cargo-nx.sh): the pinned shared crates with their Horizon cfgs.'
+        echo '[patch."https://git.unom.io/unom/punktfunk"]'
+        for p in core/punktfunk-core client/pf-client-core client/pf-client-video client/pf-console-ui; do
+            echo "${p##*/} = { path = \"$mono/crates/$p\" }"
+        done
+    } >> "$root/.cargo/config.toml"
 fi
 
 exec cargo "+$RUST_NIGHTLY" "$cmd" --release -Z build-std=core,alloc,std,panic_abort -Z json-target-spec \
-    --target "$root/toolchain/aarch64-nintendo-horizon.json" "${patches[@]}" "$@"
+    --target "$root/toolchain/aarch64-nintendo-horizon.json" "$@"
