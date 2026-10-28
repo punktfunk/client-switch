@@ -1,0 +1,493 @@
+//! Game-library fetch from the host's management REST API: `GET
+//! https://<host>:<mgmt_port>/api/v1/library`, mTLS-authenticated by this device's
+//! paired identity (no bearer token — the host authorizes by client certificate).
+//! A trimmed port of `pf-client-core::library` (same wire shape, same mTLS pinning
+//! verifier).
+use std::sync::Arc;
+
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{Connector as _, TcpConnector};
+
+use crate::services::pinned_tls::PinnedTlsConnector;
+
+pub use crate::core::model::GameEntry;
+
+/// The management API's default port — matches the host's `mgmt::DEFAULT_PORT`. A
+/// discovered host may advertise a different one via its mDNS `mgmt` TXT record
+/// (`discovery::DiscoveredHost::mgmt_port`); saved-but-not-advertising hosts (or an
+/// older host with no mgmt TXT at all) fall back here.
+pub const DEFAULT_MGMT_PORT: u16 = 47990;
+
+/// Errors surfaced to the UI so it can explain what to do next.
+///
+/// [`Unreachable`](Self::Unreachable) is the only variant that means the host never answered,
+/// so it is the only one Wake-on-LAN can help with — everything below it is a host that is
+/// demonstrably up. Keeping them apart is what stops a cut reply or an unreadable identity
+/// telling the user their PC is asleep.
+///
+/// Each carries the operator-side cause for the log (`{e:?}`); `Display` is the user register
+/// and stays one short sentence, because these land on a status line and a modal body.
+#[derive(Debug)]
+pub enum LibraryError {
+    /// The host rejected our certificate — this device isn't on its paired list.
+    NotPaired,
+    /// The host's certificate didn't hash to the pinned fingerprint.
+    PinMismatch,
+    Http(u16),
+    /// Nothing answered: a refused connection, no route, or the connect budget spent.
+    Unreachable(String),
+    /// Connected, then the whole-request budget ran out. The host is up and too slow, or
+    /// busy building the answer.
+    Timeout(String),
+    /// The host answered and the answer didn't survive: a cut body, malformed HTTP, or JSON
+    /// this build can't read.
+    BadReply(String),
+    /// The socket opened and TLS failed. Not [`PinMismatch`](Self::PinMismatch), which is the
+    /// pin check specifically.
+    Tls(String),
+    /// This device's own certificate, key or TLS setup wouldn't load. Says nothing about the
+    /// host at all.
+    Identity(String),
+}
+
+impl std::fmt::Display for LibraryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotPaired => f.write_str("Not paired — pair with the host first."),
+            Self::PinMismatch => f.write_str("Host certificate changed — re-pair with a PIN."),
+            Self::Http(code) => write!(f, "Management API returned HTTP {code}."),
+            Self::Unreachable(_) => f.write_str("The host isn't answering."),
+            Self::Timeout(_) => f.write_str("The host is answering too slowly."),
+            Self::BadReply(_) => f.write_str("Couldn't read the host's reply."),
+            Self::Tls(_) => f.write_str("Couldn't secure the connection to the host."),
+            Self::Identity(_) => f.write_str("Couldn't load this device's pairing identity."),
+        }
+    }
+}
+
+/// `https://addr:port`, IPv6 literals bracketed.
+pub(crate) fn base_url(addr: &str, mgmt_port: u16) -> String {
+    if addr.contains(':') {
+        format!("https://[{addr}]:{mgmt_port}")
+    } else {
+        format!("https://{addr}:{mgmt_port}")
+    }
+}
+
+/// Builds mTLS `ureq::Agent` reusable across requests (avoids repeated TLS handshakes).
+/// Exposed for `console::model` to build once outside its per-game art loop.
+pub fn agent(identity: &(String, String), pin: Option<[u8; 32]>) -> Result<ureq::Agent, LibraryError> {
+    agent_within(identity, pin, crate::services::budget::REQUEST)
+}
+
+/// [`agent`] with an explicit whole-request budget, for the one caller that cannot wait the
+/// default: the exit action, which the process blocks on while quitting.
+pub fn agent_within(
+    identity: &(String, String),
+    pin: Option<[u8; 32]>,
+    budget: std::time::Duration,
+) -> Result<ureq::Agent, LibraryError> {
+    use rustls::pki_types::pem::PemObject;
+    // Every failure below is this device's own PEMs or crypto setup, not the host's — the
+    // agent is built before anything is dialled.
+    let bad = |what: &str, e: &dyn std::fmt::Display| LibraryError::Identity(format!("{what}: {e}"));
+    // aws-lc-rs, matching punktfunk-core's QUIC for consistent crypto — the invariant this
+    // comment always claimed, now that core has moved off ring too. Naming a provider here
+    // (rather than letting rustls infer one) is also what keeps this path working if a second
+    // backend ever re-enters the tree: with both compiled, rustls declines to guess and the
+    // inferring constructors panic. `builder_with_provider` never has to guess.
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let builder = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| bad("tls config", &e))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(PinVerify { pin }));
+    let cert = rustls::pki_types::CertificateDer::from_pem_slice(identity.0.as_bytes())
+        .map_err(|e| bad("client cert pem", &e))?;
+    let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(identity.1.as_bytes())
+        .map_err(|e| bad("client key pem", &e))?;
+    let cfg = builder
+        .with_client_auth_cert(vec![cert], key)
+        .map_err(|e| bad("client auth", &e))?;
+
+    // WHY: ureq's TlsConfig doesn't hook custom fingerprint pinning, so the config above
+    // (with `PinVerify` installed) goes through `services::pinned_tls` instead.
+    let connector = TcpConnector::default().chain(PinnedTlsConnector::new(Arc::new(cfg)));
+    let config = ureq::Agent::config_builder()
+        // Connect is capped by the whole budget too: a 5 s connect inside a 200 ms request is
+        // just a slower way to hit the same wall.
+        .timeout_connect(Some(budget.min(crate::services::budget::PROBE)))
+        .timeout_global(Some(budget))
+        .build();
+    Ok(ureq::Agent::with_parts(config, connector, DefaultResolver::default()))
+}
+
+/// One JSON GET on the management lane under an explicit whole-request `budget`, errors
+/// pre-classified for the UI (401/403→NotPaired, a pin mismatch→PinMismatch, everything else
+/// by status). Every mgmt read goes through here, so the classification and the "couldn't
+/// read/parse" wording are stated once.
+pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
+    addr: &str,
+    mgmt_port: u16,
+    identity: &(String, String),
+    pin: Option<[u8; 32]>,
+    path: &str,
+    budget: std::time::Duration,
+) -> Result<T, LibraryError> {
+    let agent = agent_within(identity, pin, budget)?;
+    let url = format!("{}{path}", base_url(addr, mgmt_port));
+    read_json(agent.get(url.as_str()).call())
+}
+
+/// One answer, decoded, with its failure sorted for the UI.
+fn read_json<T: serde::de::DeserializeOwned>(
+    answer: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<T, LibraryError> {
+    let body = answer
+        .map_err(classify)?
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| LibraryError::BadReply(format!("read body: {e}")))?;
+    serde_json::from_str(&body).map_err(|e| LibraryError::BadReply(format!("bad JSON: {e}")))
+}
+
+/// One answer of `GET /api/v1/library/page`.
+#[derive(serde::Deserialize)]
+struct LibraryPage {
+    items: Vec<GameEntry>,
+    #[serde(default)]
+    next_cursor: Option<String>,
+}
+
+/// Titles a request: the host's ceiling for one page.
+const PAGE_LIMIT: u32 = 200;
+
+/// 500 pages of 200 is 100 000 titles. A host whose cursor never runs out stops here.
+const MAX_PAGES: usize = 500;
+
+/// The whole catalog, a page at a time, so no answer grows with the library. `get` takes the
+/// cursor of the page before. Any page failing fails the walk: half a catalog is not one.
+fn walk_pages(
+    mut get: impl FnMut(Option<&str>) -> Result<LibraryPage, LibraryError>,
+) -> Result<Vec<GameEntry>, LibraryError> {
+    let mut games = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let page = get(cursor.as_deref())?;
+        games.extend(page.items);
+        match page.next_cursor {
+            // A cursor that does not move would ask for the same page forever.
+            Some(next) if !next.is_empty() && cursor.as_deref() != Some(next.as_str()) => cursor = Some(next),
+            _ => break,
+        }
+    }
+    Ok(games)
+}
+
+/// Fetch the host's library, walked by `GET /api/v1/library/page` on one connection; `budget`
+/// bounds each page. A host older than that route refuses it on this lane, so `GET
+/// /api/v1/library` answers whole instead.
+fn fetch_games(
+    addr: &str,
+    mgmt_port: u16,
+    identity: &(String, String),
+    pin: Option<[u8; 32]>,
+    budget: std::time::Duration,
+) -> Result<Vec<GameEntry>, LibraryError> {
+    let agent = agent_within(identity, pin, budget)?;
+    let base = base_url(addr, mgmt_port);
+    let walked = walk_pages(|cursor| {
+        let page = agent
+            .get(format!("{base}/api/v1/library/page"))
+            .query("limit", PAGE_LIMIT.to_string());
+        read_json(match cursor {
+            Some(c) => page.query("cursor", c).call(),
+            None => page.call(),
+        })
+    });
+    match walked {
+        Err(LibraryError::NotPaired | LibraryError::Http(404)) => {
+            read_json(agent.get(format!("{base}/api/v1/library")).call())
+        }
+        walked => walked,
+    }
+}
+
+/// One `fetch_games` result with `host/port/mgmt_port` (so `drain_games` can start art loading).
+pub struct GamesLoaded {
+    pub host: String,
+    pub port: u16,
+    pub mgmt_port: u16,
+    /// The pin the list was fetched under, so the covers that follow it are held to the same one.
+    pub fingerprint: Option<[u8; 32]>,
+    pub result: Result<Vec<GameEntry>, LibraryError>,
+}
+
+/// Spawns background thread to run `fetch_games` under `budget` (avoids UI freeze from network
+/// blocking). Safe to switch hosts before finish: receiver drop causes thread's send to fail.
+pub fn load_games_async(
+    host: String,
+    port: u16,
+    mgmt_port: u16,
+    identity: (String, String),
+    fingerprint: Option<[u8; 32]>,
+    budget: std::time::Duration,
+) -> std::sync::mpsc::Receiver<GamesLoaded> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("pf-library".into())
+        .spawn(move || {
+            let result = fetch_games(&host, mgmt_port, &identity, fingerprint, budget);
+            let _ = tx.send(GamesLoaded {
+                host,
+                port,
+                mgmt_port,
+                fingerprint,
+                result,
+            });
+        })
+        .expect("spawn library-fetch thread");
+    rx
+}
+
+/// Content types this build can decode. CDNs ignoring this header (Steam) send WebP, caught
+/// from the header before body downloads. `q=0.1` on wildcard keeps hosts that ignore headers working.
+const ART_ACCEPT: &str = "image/jpeg,image/png,image/*;q=0.1";
+
+/// Fetches one piece of cover art's raw bytes (JPEG/PNG, undecoded) from a
+/// host-relative `art_path` (one of `GameEntry::art`'s fields), reusing an
+/// already-built `agent` (see `fetch_games`) to avoid a fresh mTLS handshake per
+/// cover. Decoding happens in `art.rs`, off this module's REST concern.
+pub fn fetch_art(agent: &ureq::Agent, addr: &str, mgmt_port: u16, art_path: &str) -> Result<Vec<u8>, LibraryError> {
+    // Some hosts hand back a full external URL (e.g. a SteamGridDB CDN link) instead
+    // of a host-relative path — that can't go through the pinned agent (wrong CA,
+    // and prefixing it with base_url would double up the authority).
+    if art_path.starts_with("http://") || art_path.starts_with("https://") {
+        return fetch_external_art(art_path);
+    }
+    let url = format!("{}{art_path}", base_url(addr, mgmt_port));
+    match agent.get(url.as_str()).header("Accept", ART_ACCEPT).call() {
+        Ok(mut resp) => read_art_body(&mut resp, art_path),
+        Err(e) => Err(classify(e)),
+    }
+}
+
+/// The response body, unless `Content-Type` says this build cannot decode it.
+///
+/// Header arrives before body, so early rejection saves downloads from CDNs that ignore
+/// [`ART_ACCEPT`] (e.g. Steam's 8.7 MB covers). Type-less bodies are read; the bytes will tell.
+fn read_art_body(resp: &mut ureq::http::Response<ureq::Body>, what: &str) -> Result<Vec<u8>, LibraryError> {
+    let kind = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(';').next().unwrap_or(v).trim().to_ascii_lowercase());
+    if let Some(kind) = kind {
+        if kind.starts_with("image/") && !matches!(kind.as_str(), "image/jpeg" | "image/png") {
+            tracing::debug!("art: {what} offered {kind} — not fetching a format this build cannot decode");
+            return Err(LibraryError::BadReply(format!("undecodable art type {kind}")));
+        }
+    }
+    resp.body_mut()
+        .read_to_vec()
+        .map_err(|e| LibraryError::BadReply(format!("read art body: {e}")))
+}
+
+/// Fetches art from a full external URL with the system's default CA trust (no
+/// client cert) — the host's pinned `agent` would reject this CA.
+fn fetch_external_art(url: &str) -> Result<Vec<u8>, LibraryError> {
+    // Public CA trust only: never share the host's pinned identity with a CDN.
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(crate::services::budget::PROBE))
+            .timeout_global(Some(crate::services::budget::REQUEST))
+            .build()
+            .into()
+    });
+    match agent.get(url).header("Accept", ART_ACCEPT).call() {
+        Ok(mut resp) => read_art_body(&mut resp, url),
+        Err(e) => Err(classify(e)),
+    }
+}
+
+/// Sorts one transport failure into "the host never answered" and the several ways a host that
+/// *did* answer can still fail us. The split is what the Wake dialog and the reachability dot
+/// key off, so a wrong bucket here tells the user to go and switch their PC on.
+pub(crate) fn classify(e: ureq::Error) -> LibraryError {
+    match e {
+        ureq::Error::StatusCode(401 | 403) => LibraryError::NotPaired,
+        ureq::Error::StatusCode(code) => LibraryError::Http(code),
+        ureq::Error::Rustls(e) => classify_tls(&e),
+        // Where a handshake failure actually arrives on the pinned lane: `PinnedTlsTransport`'s
+        // handshake runs lazily inside its first write or read (`rustls::StreamOwned`), and
+        // rustls hands the error back wrapped in an `io::Error(InvalidData, ..)` — which ureq
+        // files under `Io`, not `Rustls`. Unwrapped here, or a changed host certificate reads as
+        // a host that isn't answering and gets offered a Retry.
+        ureq::Error::Io(io) => match io.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()) {
+            Some(tls) => classify_tls(tls),
+            None => LibraryError::Unreachable(ureq::Error::Io(io).to_string()),
+        },
+        ureq::Error::Tls(what) => LibraryError::Tls(what.to_string()),
+        // Connect carries its own (shorter) budget, so it is what expires when nothing is
+        // listening; any later timeout means the connection came up and the host went quiet.
+        ureq::Error::Timeout(t @ (ureq::Timeout::Connect | ureq::Timeout::Resolve)) => {
+            LibraryError::Unreachable(format!("timeout: {t:?}"))
+        }
+        ureq::Error::Timeout(t) => LibraryError::Timeout(format!("timeout: {t:?}")),
+        // Malformed HTTP is still a reply.
+        ureq::Error::Protocol(e) => LibraryError::BadReply(e.to_string()),
+        other => LibraryError::Unreachable(other.to_string()),
+    }
+}
+
+/// A rustls failure, however ureq delivered it. TLS runs on an open socket, so the host is up
+/// whatever the handshake decided.
+fn classify_tls(e: &rustls::Error) -> LibraryError {
+    match e {
+        // The one rejection our own `PinVerify` (below) raises on a mismatch.
+        rustls::Error::InvalidCertificate(rustls::CertificateError::ApplicationVerificationFailure) => {
+            LibraryError::PinMismatch
+        }
+        other => LibraryError::Tls(other.to_string()),
+    }
+}
+
+/// Fingerprint-pinning verifier — trust is the SHA-256 of the host's self-signed leaf
+/// cert (via `punktfunk_core::quic::endpoint::cert_fingerprint`, the same hash the
+/// QUIC session pinning uses), not a CA chain. The handshake signatures are still
+/// verified for real: skipping that would let an active MITM replay the host's
+/// (public) certificate and complete the handshake with its own key.
+#[derive(Debug)]
+struct PinVerify {
+    pin: Option<[u8; 32]>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinVerify {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if let Some(expected) = self.pin {
+            let fp = punktfunk_core::quic::endpoint::cert_fingerprint(end_entity.as_ref());
+            if fp != expected {
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::ApplicationVerificationFailure,
+                ));
+            }
+        }
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(ids: &[&str], next: Option<&str>) -> Result<LibraryPage, LibraryError> {
+        let items: Vec<_> = ids
+            .iter()
+            .map(|id| serde_json::json!({"id": id, "title": id, "store": "custom", "hidden": false}))
+            .collect();
+        let body = serde_json::json!({"items": items, "next_cursor": next, "total": 4, "platforms": []});
+        Ok(serde_json::from_value(body).expect("a page decodes"))
+    }
+
+    fn ids(games: &[GameEntry]) -> Vec<&str> {
+        games.iter().map(|g| g.id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_walk_follows_the_cursor_to_the_last_page() {
+        let mut asked = Vec::new();
+        let games = walk_pages(|cursor| {
+            asked.push(cursor.map(str::to_string));
+            match cursor {
+                None => page(&["a", "b"], Some("c1")),
+                Some("c1") => page(&["c"], Some("c2")),
+                _ => page(&["d"], None),
+            }
+        })
+        .expect("the walk ends");
+        assert_eq!(ids(&games), ["a", "b", "c", "d"]);
+        assert_eq!(asked, [None, Some("c1".into()), Some("c2".into())]);
+    }
+
+    #[test]
+    fn a_walk_ends_on_a_cursor_that_does_not_move() {
+        let mut calls = 0;
+        let games = walk_pages(|_| {
+            calls += 1;
+            page(&["a"], Some("stuck"))
+        })
+        .expect("the walk ends");
+        assert_eq!((calls, games.len()), (2, 2));
+    }
+
+    /// A pin mismatch is told apart from an unreachable host however ureq delivers it — typed,
+    /// or wrapped in the `io::Error` the pinned transport's lazy handshake actually produces.
+    #[test]
+    fn a_pin_mismatch_is_not_an_unreachable_host() {
+        let mismatch = || rustls::Error::InvalidCertificate(rustls::CertificateError::ApplicationVerificationFailure);
+        assert!(matches!(
+            classify(ureq::Error::Rustls(mismatch())),
+            LibraryError::PinMismatch
+        ));
+        let wrapped = std::io::Error::new(std::io::ErrorKind::InvalidData, mismatch());
+        assert!(matches!(classify(ureq::Error::Io(wrapped)), LibraryError::PinMismatch));
+        let other_tls = std::io::Error::new(std::io::ErrorKind::InvalidData, rustls::Error::DecryptError);
+        assert!(matches!(classify(ureq::Error::Io(other_tls)), LibraryError::Tls(_)));
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert!(matches!(
+            classify(ureq::Error::Io(refused)),
+            LibraryError::Unreachable(_)
+        ));
+    }
+
+    #[test]
+    fn a_failed_page_fails_the_walk() {
+        let walked = walk_pages(|cursor| match cursor {
+            None => page(&["a"], Some("c1")),
+            Some(_) => Err(LibraryError::Http(500)),
+        });
+        assert!(matches!(walked, Err(LibraryError::Http(500))));
+    }
+}

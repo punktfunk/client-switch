@@ -1,5 +1,6 @@
 [package]
 name = "pf-nx-host"
+description = "The Switch client's seams on a developer box: Vulkan offscreen through the system loader (Linux) or CPU raster, a WAV audio sink, scripted pads, a data dir of its own."
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +9,15 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+punktfunk-core.workspace = true
+pf-nx-app = { path = "../pf-nx-app" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = { workspace = true, features = ["loaded"] }
+pf-nx-vk = { path = "../pf-nx-vk" }
 
 [lints]
 workspace = true

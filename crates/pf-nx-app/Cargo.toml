@@ -1,5 +1,6 @@
 [package]
 name = "pf-nx-app"
+description = "The Switch client's application: session, console UI hosting, services and the run loop, over platform seams."
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +9,28 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["smallvec", "fmt", "tracing-log", "std"] }
+tracing-appender = "0.2"
+punktfunk-core.workspace = true
+pf-client-core.workspace = true
+pf-console-ui.workspace = true
+skia-safe.workspace = true
+# Library and art fetch over pinned TLS. No ureq backend feature: the provider is named in code.
+# `~3.4`: the connector uses ureq's `unversioned` transport API, which 3.5 changed.
+ureq = { version = "~3.4", features = ["rustls-no-provider", "rustls-webpki-roots"], default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+opus = "0.4"
+# Inflates the embedded notices.
+miniz_oxide = "0.8"
+
+[build-dependencies]
+serde_json = "1"
+miniz_oxide = "0.8"
 
 [lints]
 workspace = true

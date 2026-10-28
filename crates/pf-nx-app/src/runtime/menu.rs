@@ -1,0 +1,275 @@
+//! The shared console as this title's menu. Hands a launch or a quit back as a [`UiOutcome`],
+//! reloading the settings document on every entry.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use pf_client_core::console::{OverlayAction, SessionPhase};
+use pf_client_core::menu_nav::{MenuEvent, MenuNav, PadInfo};
+use pf_console_ui::{Console, ConsoleEntry, ConsoleHandles, ConsoleOptions, InputSource, Platform, Viewport};
+use punktfunk_core::config::{GamepadPref, Mode};
+
+use super::connect::{self, ConnectOutcome, Launch, Started};
+use super::pads::{menu_sample, resolve_kind};
+use super::{testrun, App, UiOutcome, SUSPENDED};
+use crate::core::model::GamepadType;
+use crate::core::perf::{ArtSnapshot, Perf};
+use crate::core::settings::NxSettings;
+use crate::platform::{PadKind, PadSample, SystemEvent};
+use crate::services::store::console::ConsoleStore;
+use crate::services::store::{self, StateWriter};
+use crate::ui::Service;
+
+/// The console's output as a stream mode, for a "Native" pick.
+pub(super) fn native_mode(app: &App) -> Mode {
+    let (width, height) = app.display.size();
+    Mode {
+        width,
+        height,
+        refresh_hz: app.display.refresh().hz(),
+    }
+}
+
+/// Runs the console until it commits a launch or asks to leave.
+pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
+    let state = store::load();
+    let writer = Arc::new(StateWriter::spawn(state.clone()));
+    let store = Arc::new(ConsoleStore::new(state, writer));
+    let handles = ConsoleHandles::new();
+    let mut service = Service::new(handles.clone(), store.clone(), app.identity.clone());
+    let caps = crate::core::caps::video_caps();
+    let opts = ConsoleOptions {
+        device_name: "Nintendo Switch".into(),
+        version: Some(crate::core::build_id()),
+        system_keyboard: false,
+        tv: true,
+        fallback_ui: false,
+        pyrowave_ok: caps.pyrowave,
+        av1_ok: false,
+        store: Some(store.clone()),
+        // TODO(core): `Platform::Switch`. The PS5's is the nearest: a console title that quits,
+        // no touch, no window.
+        platform: Platform::Ps5,
+        gpu_cache_bytes: pf_console_ui::DEFAULT_GPU_CACHE_BYTES,
+        screen: None,
+        profiles: false,
+        spatial: false,
+    };
+    let scripted = app.test_run.as_ref().and_then(|run| {
+        let host = run.host.as_deref()?;
+        let row = service.row_for(host, run.port);
+        if row.is_none() {
+            tracing::warn!("test run: {host} is not a paired host here");
+        }
+        row
+    });
+    let entry = match scripted {
+        Some(row) => ConsoleEntry::Stream(Box::new(row)),
+        None => service
+            .selected_row()
+            .map_or(ConsoleEntry::Home, |row| ConsoleEntry::Library(Box::new(row))),
+    };
+    let mut console = Console::new(opts, entry, &handles).context("console shell")?;
+    let ui_viewport = |app: &App| {
+        let (w, h) = app.display.ui_size();
+        Viewport::plain(w, h)
+    };
+    let mut viewport = ui_viewport(app);
+    let warm = Instant::now();
+    app.display.frame(&mut |canvas| {
+        // One flush for the whole tour; flush per frame if the console's memory peaks there.
+        console.warm_up(canvas, &viewport, |_| {});
+    })?;
+    tracing::info!("console: warmed the tabs in {} ms", warm.elapsed().as_millis());
+    if let Some(notice) = notice {
+        handles.console.set_notice(notice);
+    }
+    app.display.set_stream(false, crate::platform::Fit::Contain);
+
+    let mut perf = Perf::new();
+    let mut nav = MenuNav::new();
+    let mut batch: Vec<PadSample> = Vec::new();
+    let mut infos: Vec<PadInfo> = Vec::new();
+    let mut menu_out: Vec<MenuEvent> = Vec::new();
+    let mut connect: Option<Started> = None;
+    let mut frames: u64 = 0;
+    let mut native = native_mode(app);
+    let period = Duration::from_nanos(app.display.refresh().period_ns());
+
+    let outcome = 'ui: loop {
+        let frame_start = Instant::now();
+        if app
+            .system_events()
+            .iter()
+            .any(|e| matches!(e, SystemEvent::OperationMode(_)))
+        {
+            viewport = ui_viewport(app);
+            native = native_mode(app);
+        }
+
+        batch.clear();
+        if let Some(pads) = app.pads.as_mut() {
+            pads.poll(&mut batch);
+        }
+        menu_out.clear();
+        nav.poll(&menu_sample(&batch), Instant::now(), &mut menu_out);
+        for ev in menu_out.drain(..) {
+            console.menu(ev, InputSource::Pad);
+        }
+
+        service.tick();
+
+        while let Some(action) = console.take_action() {
+            match action {
+                OverlayAction::Launch {
+                    addr,
+                    port,
+                    fp_hex,
+                    launch,
+                    title,
+                    preset,
+                    profile,
+                    request_access: _,
+                } => {
+                    if SUSPENDED.load(std::sync::atomic::Ordering::Relaxed) {
+                        continue;
+                    }
+                    let want = Launch {
+                        addr,
+                        port,
+                        fp_hex,
+                        launch,
+                        preset,
+                        profile,
+                    };
+                    let what = format!("{title} on {}:{}", want.addr, want.port);
+                    let overlay = app.test_run.as_ref().and_then(|run| run.settings.as_ref());
+                    let pad = batch.first().map(|s| s.kind);
+                    match connect::start(&store, &app.media, &app.identity, want, native, overlay, pad) {
+                        Ok(started) => {
+                            tracing::info!("console: launching {what}");
+                            console.session_phase(SessionPhase::Connecting);
+                            connect = Some(started);
+                        }
+                        Err(e) => {
+                            tracing::warn!("console: launch refused: {e:#}");
+                            handles.console.set_notice(format!("Couldn't start the stream — {e}"));
+                        }
+                    }
+                }
+                OverlayAction::CancelConnect => {
+                    if connect.take().is_some() {
+                        tracing::info!("console: connect cancelled");
+                        console.session_phase(SessionPhase::Ended(None));
+                    }
+                }
+                OverlayAction::Quit => {
+                    tracing::info!("console: quit");
+                    break 'ui UiOutcome::Quit(connect::exit_plan(&service, &app.identity));
+                }
+                // No clipboard, no launcher files, and the stream shows by leaving this loop.
+                OverlayAction::ShowStream
+                | OverlayAction::CopyText(_)
+                | OverlayAction::PinShortcut { .. }
+                | OverlayAction::SaveLauncherFile { .. } => {}
+            }
+        }
+
+        if connect.as_ref().is_some_and(|(h, ..)| h.is_finished()) {
+            let (handle, target, settings) = connect.take().expect("just checked");
+            let connected = match handle.join() {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!("the connect thread panicked")),
+            };
+            break 'ui UiOutcome::Launch(Box::new(ConnectOutcome {
+                connected,
+                target,
+                settings,
+                exit_plan: connect::exit_plan(&service, &app.identity),
+            }));
+        }
+
+        let idled = if console.idle() {
+            std::thread::sleep(period);
+            period
+        } else {
+            Duration::ZERO
+        };
+        let stored_kind = store.with(|s| s.settings.gamepad_type());
+        let label = pad_label(&batch);
+        let pad_pref = label.map(|_| legend_pref(shown_kind(stored_kind, &batch).to_core()));
+        infos.clear();
+        infos.extend(pad_infos(&batch, stored_kind));
+        // The cost excludes the vblank wait: `frame` blocks on the swapchain.
+        let before_draw = frame_start.elapsed().saturating_sub(idled);
+        let mut drew = Duration::ZERO;
+        app.display.frame(&mut |canvas| {
+            let t = Instant::now();
+            console.frame(canvas, &viewport, label, pad_pref, &infos);
+            drew = t.elapsed();
+        })?;
+        frames += 1;
+        if let Some(report) = perf.frame(before_draw + drew, art_snapshot()) {
+            tracing::info!("{}", report.line());
+        }
+        if let Some(done) = testrun::menu_step(app, frames) {
+            break 'ui done;
+        }
+    };
+
+    if let Some(report) = perf.finish(art_snapshot()) {
+        tracing::info!("{}", report.line());
+    }
+    service.stop();
+    Ok(outcome)
+}
+
+/// The pad chip's label: the first pad's kind, or `None` with no pad in hand.
+fn pad_label(batch: &[PadSample]) -> Option<&'static str> {
+    batch.first().map(|s| match s.kind {
+        PadKind::JoyConPair => "Joy-Con",
+        PadKind::JoyConLeft => "Joy-Con (L)",
+        PadKind::JoyConRight => "Joy-Con (R)",
+        PadKind::SwitchPro => "Pro Controller",
+        PadKind::Other => "Controller",
+    })
+}
+
+/// The kind the shell draws: the stored pick, or the pad itself on Automatic.
+fn shown_kind(stored: GamepadType, batch: &[PadSample]) -> GamepadType {
+    batch.first().map_or(stored, |s| resolve_kind(stored, s.kind))
+}
+
+/// The legend's pad family. The shell's Nintendo legend puts confirm on south; here A confirms
+/// on east, so the letters legend is the one that names the engraved buttons.
+// TODO(core): a `Platform::Switch` shell draws Nintendo glyphs with A on east.
+fn legend_pref(pref: GamepadPref) -> GamepadPref {
+    match pf_console_ui::glyphs::GlyphStyle::from_pref(Some(pref)) {
+        pf_console_ui::glyphs::GlyphStyle::Nintendo => GamepadPref::XboxOne,
+        _ => pref,
+    }
+}
+
+fn pad_infos(batch: &[PadSample], stored: GamepadType) -> impl Iterator<Item = PadInfo> + '_ {
+    batch.iter().map(move |s| PadInfo {
+        name: pad_label(std::slice::from_ref(s)).unwrap_or("Controller").into(),
+        key: format!("slot{}", s.slot),
+        pref: shown_kind(stored, std::slice::from_ref(s)).to_core(),
+        steam_virtual: false,
+        battery: None,
+        detail: format!("Player {}", s.slot + 1),
+        forwarded: true,
+        rumble: true,
+    })
+}
+
+fn art_snapshot() -> ArtSnapshot {
+    let a = pf_console_ui::art_stats();
+    ArtSnapshot {
+        decoded: a.decoded,
+        total_us: a.total_us,
+        max_us: a.max_us,
+        native_scaled: a.native_scaled,
+    }
+}

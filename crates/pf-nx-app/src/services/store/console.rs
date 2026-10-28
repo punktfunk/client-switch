@@ -1,0 +1,137 @@
+//! The gamepad shell's window onto this client's one document.
+//!
+//! `pf_console_ui::SettingsStore` is how a non-desktop host lends the shared shell its
+//! persistence. The desktop implementation reads `trust::Settings::{load, save}` directly, which
+//! this client cannot reuse: that path is hardcoded to `client-gtk-settings.json`, and this client's
+//! settings belong in its app directory beside everything else it keeps. Per-client paths are
+//! already the norm — Windows has its own — so what is shared here is the SCHEMA, not the file.
+//!
+//! 🛑 Writes go through the app's [`StateWriter`], never straight to disk. That writer carries
+//! the whole document precisely so a host edit and a settings change cannot race into
+//! disagreeing files, and it drops snapshots equal to the last. A second writer behind its back
+//! would resurrect exactly the race its docs describe: the app's next save would carry its own
+//! stale `settings` and silently undo whatever the shell had just written.
+//!
+//! This owns the document while the console is up; the menu builds a fresh one, with a fresh
+//! [`StateWriter`], from `store::load` on every entry (`runtime::console_flow::run`).
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use pf_client_core::presets::SettingsOverlay;
+use pf_client_core::trust;
+use pf_console_ui::SettingsStore;
+
+use super::shared;
+use super::{Persisted, StateWriter};
+
+/// Poisoning means a panic while holding the document; nothing here can recover from it.
+const POISONED: &str = "console-store mutex poisoned";
+
+pub struct ConsoleStore {
+    state: Mutex<Persisted>,
+    writer: Arc<StateWriter>,
+    revision: AtomicU64,
+}
+
+impl ConsoleStore {
+    /// `state` is the document as the app has it right now; `writer` is the app's own.
+    pub fn new(state: Persisted, writer: Arc<StateWriter>) -> Self {
+        Self {
+            state: Mutex::new(state),
+            writer,
+            revision: AtomicU64::new(0),
+        }
+    }
+
+    /// Changes affecting the console host rows.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    /// The document as the console has it — what a launch resolves its settings from, so a
+    /// setting changed in the shell is not stale in the stream.
+    pub fn snapshot(&self) -> Persisted {
+        self.state.lock().expect(POISONED).clone()
+    }
+
+    /// Read part of the document in place. The whole-document [`Self::snapshot`] clone costs
+    /// every known host and every string in it, which is a lot to pay for two booleans - and
+    /// the console's render loop asks once a frame.
+    pub fn with<T>(&self, read: impl FnOnce(&Persisted) -> T) -> T {
+        read(&self.state.lock().expect(POISONED))
+    }
+
+    /// Change the document and persist all of it. The host-list commands (save, edit, forget)
+    /// go through here for the same reason [`SettingsStore::save`] does: one writer, whole
+    /// document, so a host edit and a settings change cannot race into disagreeing files.
+    ///
+    /// Returns whether `edit` reported a change; a command naming a host this client does not
+    /// know says `false` and nothing is written.
+    pub fn edit(&self, edit: impl FnOnce(&mut Persisted) -> bool) -> bool {
+        let snapshot = {
+            let mut state = self.state.lock().expect(POISONED);
+            if !edit(&mut state) {
+                return false;
+            }
+            self.revision.fetch_add(1, Ordering::Release);
+            state.clone()
+        };
+        self.writer.save(snapshot);
+        true
+    }
+}
+
+impl SettingsStore for ConsoleStore {
+    fn load(&self) -> trust::Settings {
+        self.state.lock().expect(POISONED).settings.clone()
+    }
+
+    fn save(&self, settings: &trust::Settings) {
+        let snapshot = {
+            let mut state = self.state.lock().expect(POISONED);
+            if state.settings != *settings {
+                state.settings = settings.clone();
+                self.revision.fetch_add(1, Ordering::Release);
+            }
+            state.clone()
+        };
+        // Whole document, one writer - see the module note. Unconditional even when nothing
+        // changed here: the writer owns the dedupe, and only it knows if a previous write failed.
+        self.writer.save(snapshot);
+    }
+
+    /// The document's catalog, in display order. Non-empty as soon as one game has its own
+    /// settings: giving a game an override IS creating a profile here (`shared::bind_game_
+    /// overrides`), which is what lets a console with no desktop app beside it fill this list at all.
+    fn presets(&self) -> Vec<(String, String)> {
+        self.state
+            .lock()
+            .expect(POISONED)
+            .profiles
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect()
+    }
+
+    fn preset_overrides(&self) -> HashMap<String, SettingsOverlay> {
+        let state = self.state.lock().expect(POISONED);
+        state
+            .profiles
+            .iter()
+            .map(|p| (p.id.clone(), p.overrides.clone()))
+            .collect()
+    }
+
+    fn known_hosts(&self) -> trust::KnownHosts {
+        let state = self.state.lock().expect(POISONED);
+        trust::KnownHosts {
+            hosts: state.known_hosts.iter().map(shared::to_shared_host).collect(),
+        }
+    }
+}
+
+// No tests here on purpose: the conversions it delegates to live in `shared` and are tested
+// there, and what is left in this file is a mutex, a clone and a writer call. (Linux-gated with
+// pf-console-ui, so `task test`'s Linux host would run a test here — gating is not the reason.)
