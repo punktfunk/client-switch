@@ -1,0 +1,31 @@
+# Bare tasks run on this box (the Mac, a Linux box, CI's host lane); the console build runs in the
+# toolchain image through scripts/docker.sh, which copies the tree into a volume instead of
+# bind-mounting it.
+version: '3'
+
+silent: true
+
+includes:
+  docker:
+    taskfile: ./taskfiles/docker.yml
+
+tasks:
+  test:
+    desc: Every test this box can run
+    cmds: [cargo test --workspace]
+
+  lint:
+    desc: rustfmt and clippy -D warnings, as CI runs them
+    cmds:
+      - cargo fmt --all --check
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  probe:
+    desc: The WP0 probe's checks on this box (--panic ends with the panic check)
+    cmds: ['cargo run -p pf-nx-probe -- {{.CLI_ARGS}}']
+
+  package:
+    desc: The title's NRO in dist/ (punktfunk.nro), built in the image
+    deps: [docker:build]
+    cmds:
+      - bash scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx && scripts/package-nro.sh pf-nx punktfunk'

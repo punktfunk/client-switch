@@ -19,6 +19,8 @@ pf-nx-app = { path = "crates/pf-nx-app" }
 
 [target.'cfg(target_os = "horizon")'.dependencies]
 pf-nx-platform = { path = "crates/pf-nx-platform" }
+# For `rt::link_guard`, which keeps the runtime shims in the title's link.
+pf-nx-sys = { path = "crates/pf-nx-sys" }
 
 [target.'cfg(not(target_os = "horizon"))'.dependencies]
 pf-nx-host = { path = "crates/pf-nx-host" }
@@ -56,7 +58,9 @@ skia-safe = { version = "0.153", features = ["textlayout"] }
 punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", features = ["quic"] }
 pf-client-core = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", default-features = false }
 pf-console-ui = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", default-features = false }
-pf-client-video = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", default-features = false, features = ["pyrowave"] }
+# No `pyrowave` here: pf-nx-vk's own feature turns the lane on (plan D14), so a default build
+# compiles none of the wavelet decoder for the console.
+pf-client-video = { git = "https://git.unom.io/unom/punktfunk", rev = "e7da9ad3dcfef09bcc2e3fadf930686f9c959edb", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

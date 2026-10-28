@@ -1,0 +1,23 @@
+# devkitA64's GCC and the Switch's CPU flags for C built through cc-rs, with libnx's headers for
+# sockets and `__SWITCH__` as devkitPro's own rules set it. With -mtp=soft, C reads the thread
+# pointer through libnx, which the probe's `userAppInit` and thread wrapper keep equal to
+# TPIDR_EL0 (bevy-horizon's `.cargo/config.toml`).
+[env]
+CC_aarch64_nintendo_horizon = "aarch64-none-elf-gcc"
+CFLAGS_aarch64_nintendo_horizon = "-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -D__SWITCH__ -isystem /opt/devkitpro/libnx/include"
+CXX_aarch64_nintendo_horizon = "aarch64-none-elf-g++"
+CXXFLAGS_aarch64_nintendo_horizon = "-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -D__SWITCH__ -isystem /opt/devkitpro/libnx/include"
+AR_aarch64_nintendo_horizon = "aarch64-none-elf-gcc-ar"
+
+# The crate legs (toolchain/patches/*/LEG.md). A patch in a config file also reaches std's own
+# workspace under -Z build-std, which a [patch] in Cargo.toml never does; scripts/cargo-nx.sh moves
+# std's lock onto this libc. Each leg is upstream plus Horizon-only arms, so host builds see the
+# same code they would from crates.io.
+[patch.crates-io]
+libc = { path = "toolchain/patches/libc" }
+getrandom = { path = "toolchain/patches/getrandom" }
+# A renamed key patches a second semver family of the same crate.
+getrandom02 = { path = "toolchain/patches/getrandom-0.2", package = "getrandom" }
+mio = { path = "toolchain/patches/mio" }
+quinn-udp = { path = "toolchain/patches/quinn-udp" }
+tokio = { path = "toolchain/patches/tokio" }

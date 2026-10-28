@@ -1,0 +1,39 @@
+# Every push and PR: the host lane tests the workspace on Linux; the console lane builds the
+# toolchain image and the probe NRO, which every run uploads.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev pkg-config libfreetype-dev libfontconfig1-dev mesa-vulkan-drivers libvulkan1
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+  console:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain image
+        run: . scripts/pins.env && docker build -t "$NX_IMAGE" - < docker/Dockerfile
+      - name: Probe
+        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --no-default-features && scripts/package-nro.sh pf-nx-probe'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pf-nx-probe
+          path: dist/pf-nx-probe.nro

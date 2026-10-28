@@ -1,0 +1,20 @@
+# The console tasks in the toolchain image (docker/Dockerfile), through scripts/docker.sh.
+version: '3'
+
+tasks:
+  build:
+    desc: Build the toolchain image (tag NX_IMAGE in scripts/pins.env)
+    cmds:
+      - . scripts/pins.env && docker build -t "$NX_IMAGE" - < docker/Dockerfile
+
+  cross-check:
+    desc: Type-check the probe for the console
+    deps: [build]
+    cmds:
+      - bash scripts/docker.sh scripts/cargo-nx.sh check -p pf-nx-probe {{.CLI_ARGS}}
+
+  probe:
+    desc: 'The probe NRO in dist/ (checks 1-2 until core skips if-addrs on Horizon: plan §7)'
+    deps: [build]
+    cmds:
+      - bash scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --no-default-features && scripts/package-nro.sh pf-nx-probe'
