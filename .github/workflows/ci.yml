@@ -29,8 +29,25 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # The image's layers live in the Actions cache: devkitPro's servers are hit only when a pin
+      # or the Dockerfile changes, not on every run (they answered 403 to repeated runs).
+      - name: Pins
+        id: pins
+        run: grep -E '^[A-Z0-9_]+=' scripts/pins.env >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
       - name: Toolchain image
-        run: . scripts/pins.env && docker build -t "$NX_IMAGE" - < docker/Dockerfile
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          load: true
+          tags: ${{ steps.pins.outputs.NX_IMAGE }}
+          build-args: |
+            DEVKITA64=${{ steps.pins.outputs.DEVKITA64 }}
+            LIBNX=${{ steps.pins.outputs.LIBNX }}
+            SWITCH_TOOLS=${{ steps.pins.outputs.SWITCH_TOOLS }}
+            RUST_NIGHTLY=${{ steps.pins.outputs.RUST_NIGHTLY }}
+          cache-from: type=gha,scope=nx-toolchain
+          cache-to: type=gha,scope=nx-toolchain,mode=max
       - name: Probe
         run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe && scripts/package-nro.sh pf-nx-probe'
       - uses: actions/upload-artifact@v4
