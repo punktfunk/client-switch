@@ -1,5 +1,6 @@
 [package]
 name = "pf-nx-vk"
+description = "The Switch client's Vulkan plane: one device for the title's life, the presenter (stream picture + UI layer → swapchain), the NV12 upload, the PyroWave lane and read-back."
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +8,22 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[dependencies]
+[features]
+# Skia's Vulkan backend for the UI layer, on the shared device. Off by default: without it the
+# UI rasters on the CPU and is uploaded each frame.
+skia-vulkan = ["skia-safe/vulkan", "skia-safe/ganesh"]
+# The PyroWave lane and the device features it needs. Out of v1 (plan D14).
+pyrowave = ["pf-client-video/pyrowave"]
+
+# The crate is empty elsewhere, so a Mac check compiles none of this.
+[target.'cfg(any(target_os = "linux", target_os = "horizon"))'.dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+ash.workspace = true
+skia-safe.workspace = true
+punktfunk-core.workspace = true
+pf-client-video.workspace = true
+pf-nx-app = { path = "../pf-nx-app" }
 
 [lints]
 workspace = true

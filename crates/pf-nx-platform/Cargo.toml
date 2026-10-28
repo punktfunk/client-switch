@@ -1,5 +1,6 @@
 [package]
 name = "pf-nx-platform"
+description = "The console's implementations of the Switch client's seams: the NVK and framebuffer displays, NVDEC through libavcodec, audout, hid pads, the applet lifecycle, sdmc: storage and the nxlink log."
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +8,17 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+# The pure maps need only core's wire constants; everything else is the console's.
 [dependencies]
+punktfunk-core.workspace = true
+
+[target.'cfg(target_os = "horizon")'.dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+skia-safe.workspace = true
+pf-nx-app = { path = "../pf-nx-app" }
+pf-nx-sys = { path = "../pf-nx-sys" }
+pf-nx-vk = { path = "../pf-nx-vk", features = ["skia-vulkan"] }
 
 [lints]
 workspace = true
