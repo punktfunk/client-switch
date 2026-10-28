@@ -37,8 +37,7 @@ export "BINDGEN_EXTRA_CLANG_ARGS_$t=--target=aarch64-none-elf -D__SWITCH__ -isys
 export "AWS_LC_SYS_CFLAGS_$t=-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -D__SWITCH__ -isystem $dkp/libnx/include -isystem $root/toolchain/include -D_DEFAULT_SOURCE -DOPENSSL_NO_SOCK -DOPENSSL_STATIC_ARMCAP -DOPENSSL_WASM"
 
 # The archives under /opt/pf-nx (scripts/docker.sh mounts the volume): Skia as skia-bindings
-# expects it (scripts/build-skia.sh), NVK's localized library (scripts/build-nvk.sh), and, until
-# plan §7's monorepo PRs land, the pinned shared crates with their Horizon cfgs (PF_NX_MONO).
+# expects it (scripts/build-skia.sh) and NVK's localized library (scripts/build-nvk.sh).
 tc=${PF_NX_TOOLCHAINS:-/opt/pf-nx}
 # Not a `${VAR:-…}` default: the placeholders' braces would end it early.
 if [[ -z ${SKIA_BINARIES_URL:-} ]]; then
@@ -46,18 +45,6 @@ if [[ -z ${SKIA_BINARIES_URL:-} ]]; then
 fi
 export SKIA_BINARIES_URL
 export PF_NX_NVK_LIB="${PF_NX_NVK_LIB:-$tc/nvk/lib}"
-mono=${PF_NX_MONO:-$tc/mono}
-# The patch goes into the tree's config, not the command line: pf-nx-app's build script runs a
-# nested `cargo metadata`, which must resolve the same sources. The tree here is the image's copy.
-if [[ -d $mono/crates ]] && ! grep -q "^# mono patch" "$root/.cargo/config.toml"; then
-    {
-        echo '# mono patch (scripts/cargo-nx.sh): the pinned shared crates with their Horizon cfgs.'
-        echo '[patch."https://git.unom.io/unom/punktfunk"]'
-        for p in core/punktfunk-core client/pf-client-core client/pf-client-video client/pf-console-ui; do
-            echo "${p##*/} = { path = \"$mono/crates/$p\" }"
-        done
-    } >> "$root/.cargo/config.toml"
-fi
 
 exec cargo "+$RUST_NIGHTLY" "$cmd" --release -Z build-std=core,alloc,std,panic_abort -Z json-target-spec \
     --target "$root/toolchain/aarch64-nintendo-horizon.json" "$@"

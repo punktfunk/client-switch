@@ -15,7 +15,7 @@ git ls-files -co --exclude-standard -z | while IFS= read -r -d '' f; do [[ ! -e 
     COPYFILE_DISABLE=1 tar --null -T - -czf - |
     docker run --rm -i -v "$vol-src:/w" alpine:3 sh -c \
         'find /w -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} + && tar -xzf - -C /w'
-# The archives every build reads (Skia, NVK, the patched shared crates) live in one volume at
+# The archives every build reads (Skia, NVK) live in one volume at
 # /opt/pf-nx, shared by every source volume: PF_NX_VOLUME separates parallel builds, not these.
 docker run --rm -v "$vol-src:/w" -v "$vol-target:/w/target" -v "$vol-cargo:/usr/local/cargo/registry" \
     -v "$vol-git:/usr/local/cargo/git" -v "${PF_NX_TOOLCHAINS_VOLUME:-pf-nx-toolchains}:/opt/pf-nx" \
