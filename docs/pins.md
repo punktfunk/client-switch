@@ -30,6 +30,8 @@ twice. A skia-safe bump moves all three; `toolchain/skia/horizon.patch` is re-ma
 The archive is `/opt/pf-nx/skia/{tag}/skia-binaries-{key}.tar.gz`, `{key}` being the hash, the
 target, then the sorted features: `aarch64-nintendo-horizon-jpegd-jpege-pdf-textlayout` for CPU
 raster, `aarch64-nintendo-horizon-ganesh-jpegd-jpege-pdf-textlayout-vulkan` for `skia-vulkan`.
+The volume holds an arm64 host's build: raster 19 969 272 bytes, sha256 `7c37cd2403ba196b…`;
+vulkan 22 748 757 bytes, sha256 `6a670e066df15b39…`. The tar carries mtimes, so a rebuild's differ.
 
 ## NVK
 

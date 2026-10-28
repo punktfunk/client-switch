@@ -1,0 +1,6 @@
+# Skia's gn args for the console, after skia-bindings' own (scripts/build-skia.sh passes this file
+# as SKIA_GN_ARGS). Every library is Skia's bundled copy; fonts come from the title, never the OS.
+ar = "aarch64-none-elf-ar"
+skia_use_system_freetype2 = false
+skia_enable_fontmgr_android = false
+skia_enable_fontmgr_custom_directory = false

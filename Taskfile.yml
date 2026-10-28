@@ -8,6 +8,8 @@ silent: true
 includes:
   docker:
     taskfile: ./taskfiles/docker.yml
+  nvk:
+    taskfile: ./taskfiles/nvk.yml
 
 tasks:
   test:
@@ -23,6 +25,11 @@ tasks:
   probe:
     desc: The WP0 probe's checks on this box (--panic ends with the panic check)
     cmds: ['cargo run -p pf-nx-probe -- {{.CLI_ARGS}}']
+
+  skia:
+    desc: 'The console''s Skia archive in the archives volume (`task skia -- vulkan` for the Vulkan one)'
+    deps: [docker:build]
+    cmds: ['bash scripts/docker.sh scripts/build-skia.sh {{.CLI_ARGS}}']
 
   package:
     desc: The title's NRO in dist/ (punktfunk.nro), built in the image

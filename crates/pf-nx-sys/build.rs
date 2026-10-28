@@ -50,9 +50,10 @@ fn main() {
         libs.extend(["avcodec", "avutil"]);
     }
     if nvk_on {
-        libs.extend(["vulkan_bh", "expat", "zstd", "z", "stdc++"]);
+        libs.extend(["vulkan_bh", "expat", "zstd", "z"]);
     }
-    libs.extend(["nx", "sysbase", "c", "m", "gcc"]);
+    // Skia is C++ too, and names no system library on this target: libstdc++ links either way.
+    libs.extend(["stdc++", "nx", "sysbase", "c", "m", "gcc"]);
     for lib in libs {
         println!("cargo:rustc-link-lib={lib}");
     }

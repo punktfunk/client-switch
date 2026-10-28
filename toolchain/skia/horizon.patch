@@ -1,0 +1,38 @@
+Horizon on rust-skia's Skia (scripts/build-skia.sh applies it). devkitA64 defines no __unix__,
+so the platform is named for Skia and for the defines skia-bindings reads from ninja; logging
+takes the stdio port. zlib's gn asserts on an ARM OS it does not know, so the console takes
+zlib's portable C path.
+
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -32,6 +32,9 @@
+   if (is_linux) {
+     defines += [ "SK_R32_SHIFT=16" ]
+   }
++  if (target_os == "horizon") {
++    defines += [ "SK_BUILD_FOR_UNIX" ]
++  }
+   if (skia_enable_optimize_size) {
+     defines += [ "SK_ENABLE_OPTIMIZE_SIZE" ]
+   }
+@@ -2202,7 +2205,7 @@
+     ]
+   }
+ 
+-  if (is_linux || is_wasm) {
++  if (is_linux || is_wasm || target_os == "horizon") {
+     sources += [ "src/ports/SkLog_stdio.cpp" ]
+     if (skia_use_egl) {
+       libs += [ "GLESv2" ]
+--- a/third_party/zlib/BUILD.gn
++++ b/third_party/zlib/BUILD.gn
+@@ -30,7 +30,8 @@
+   }
+ 
+   use_arm_neon_optimizations =
+-      (current_cpu == "arm" || current_cpu == "arm64") && (is_clang || !is_win)
++      (current_cpu == "arm" || current_cpu == "arm64") && (is_clang || !is_win) &&
++      target_os != "horizon"
+   use_x86_x64_optimizations =
+       (current_cpu == "x86" || current_cpu == "x64") && !is_ios
+ 

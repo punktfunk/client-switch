@@ -33,6 +33,23 @@ What builds, and how; nothing here has run on a console.
   title: unused, the link drops them. NVK still takes GPU backing from the top of the heap
   (patch 0001; `NOUVEAU_HORIZON_TOP_DOWN=false` turns it off).
 - Check 4 (`vulkan`) has not run anywhere: Ryujinx does not run NVK builds (plan D15).
+- `scripts/build-skia.sh [raster|vulkan]` (`task skia`) compiles Skia with devkitA64's G++
+  through skia-bindings' offline build and writes the archive cargo-nx.sh's `SKIA_BINARIES_URL`
+  names (docs/pins.md). `check -p skia-safe` takes the `vulkan` one: a `-p` outside the workspace
+  unifies pf-nx-platform's `skia-vulkan` in. `check -p pf-nx-app` takes `raster`.
+- devkitA64 defines no `__unix__`, so Skia took its Mac branch; `toolchain/skia/horizon.patch`
+  names the platform in gn, where skia-bindings reads its defines. It also gives the console
+  Skia's stdio log port, and zlib its portable C path: zlib's gn asserts on an unknown ARM OS.
+- Under `-std=c++20` newlib hides POSIX (`fileno`): the compiler wrappers add `_GNU_SOURCE`, as
+  g++ does on Linux. newlib has no `sys/mman.h`: Skia and ICU get a header, and `libskia.a` gets
+  weak `mmap` (a heap copy), `munmap`, `pread` and `posix_madvise` (`toolchain/skia/compat.c`).
+- bindgen parses as aarch64 Linux: clang 14, and libclang 18 too, reject libstdc++ 16's
+  `__normal_iterator`. `toolchain/skia/layout-check.py` holds G++'s sizes and alignments to
+  bindings.rs on every build: none differ (raster 352 of 383 types, vulkan 390 of 426; the rest
+  are private or anonymous).
+- Either archive leaves one symbol to the title, `sysconf` (pf-nx-sys has it), and needs
+  `-lstdc++`, which pf-nx-sys links only with `nvk`. `kN32` is RGBA: Linux's BGRA comes from
+  `is_linux` alone. `FontMgr::new()` is the empty manager; the title's fonts load from data.
 
 The monorepo change check 3 needs, as a diff against the pinned rev: `docs/monorepo-horizon.diff`
 (plan §7, PR 2). It goes away when that PR lands and the pin moves.

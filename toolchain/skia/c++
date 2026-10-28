@@ -1,0 +1,8 @@
+#!/bin/sh
+# devkitA64's G++ for Skia's gn build, with the console's flags and the headers newlib lacks.
+# _GNU_SOURCE is what g++ predefines on Linux: under -std=c++20 newlib hides POSIX without it.
+# skia-bindings adds clang's --target= to every compile; GCC is the target by name, so it goes.
+for a; do shift; case $a in --target=*) ;; *) set -- "$@" "$a" ;; esac; done
+exec aarch64-none-elf-g++ -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE \
+    -D__SWITCH__ -D_GNU_SOURCE \
+    -isystem "$(dirname "$0")/include" -isystem /opt/devkitpro/libnx/include "$@"
