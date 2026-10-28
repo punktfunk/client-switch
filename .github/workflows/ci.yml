@@ -31,8 +31,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Toolchain image
         run: . scripts/pins.env && docker build -t "$NX_IMAGE" - < docker/Dockerfile
+      # Until plan §7's monorepo PRs land: the pinned shared crates with docs/monorepo-horizon.diff
+      # applied, in the toolchain volume where scripts/cargo-nx.sh patches them in.
+      - name: Shared crates
+        run: |
+          . scripts/pins.env
+          git init -q mono
+          git -C mono fetch -q --depth 1 https://git.unom.io/unom/punktfunk "$PUNKTFUNK_REV" ||
+            git -C mono fetch -q https://git.unom.io/unom/punktfunk
+          git -C mono checkout -q "$PUNKTFUNK_REV"
+          patch -d mono -p1 < docs/monorepo-horizon.diff
+          tar -cf - -C mono --exclude=.git . |
+            docker run --rm -i -v pf-nx-toolchains:/opt/pf-nx alpine:3 sh -c \
+              'rm -rf /opt/pf-nx/mono && mkdir -p /opt/pf-nx/mono && tar -xf - -C /opt/pf-nx/mono'
       - name: Probe
-        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --no-default-features && scripts/package-nro.sh pf-nx-probe'
+        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe && scripts/package-nro.sh pf-nx-probe'
       - uses: actions/upload-artifact@v4
         with:
           name: pf-nx-probe

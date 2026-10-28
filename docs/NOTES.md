@@ -70,3 +70,6 @@ probe build's commit and the run's date.
   (`os error 105`); `getaddrinfo` still answers (probe at `5222fb9`, 2026-10-28). The UDP sizes
   are each new socket's reservation, so the probe starts sockets on libnx's defaults and check 2
   measures how far `SO_RCVBUF` grows instead.
+- On libnx's default UDP sizes (42240 rx, 9216 tx) UDP send and receive, `sendmsg`/`recvmsg`, the
+  mDNS group join and `getaddrinfo` all work. `SO_RCVBUF` takes 1 MiB at most: 4 MiB and 2 MiB
+  fail with ENOBUFS, and `getsockopt` reads 1048576 back (probe at `4b0bd19`, 2026-10-28).
