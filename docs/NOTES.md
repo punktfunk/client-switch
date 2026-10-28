@@ -73,3 +73,6 @@ probe build's commit and the run's date.
   bytes: Horizon does not let EL0 read the virtual counter (libnx reads CNTPCT_EL0). The console
   build sets `AWS_LC_SYS_NO_JITTER_ENTROPY`, so aws-lc seeds from getentropy (probe at `528c0ee`,
   2026-10-28; Atmosphère report `01793228241_05446530aca7e000`).
+- Without jitter entropy, check 3 passes: tokio on two workers, an EC identity through aws-lc-rs
+  (542-byte certificate) and punktfunk-core's client endpoint bound on the shared UDP socket. No
+  host was dialled yet (probe at `d90d956`, 2026-10-28).
