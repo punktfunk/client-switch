@@ -69,9 +69,7 @@ You need [rustup](https://rustup.rs) (`rust-toolchain.toml` installs the pinned 
 | `task package` | `dist/punktfunk.nro` |
 | `task nvk:probe` | `dist/pf-nx-probe.nro` with all four checks |
 
-The archives live in the `pf-nx-toolchains` Docker volume. Until the monorepo carries the Horizon
-cfgs (`docs/monorepo-horizon.diff`, plan §7), the console build also needs the pinned shared crates
-patched into that volume at `/opt/pf-nx/mono`; `scripts/cargo-nx.sh` applies them.
+The archives live in the `pf-nx-toolchains` Docker volume.
 
 ## Repository
 
