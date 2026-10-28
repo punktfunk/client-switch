@@ -12,7 +12,7 @@ What builds, and how; nothing here has run on a console.
   pf-nx-probe` writes `dist/pf-nx-probe.nro`. Checks 1–2 build with `--no-default-features`.
 - Check 3 (`quic`) needs punktfunk-core's Horizon arm for `if-addrs` (monorepo #2180, in the pin).
 - aws-lc builds with its CC builder: no BIO sockets, CPU features from `-march`, getentropy for
-  entropy (`scripts/cargo-nx.sh`). rustls's provider is aws-lc-rs; ring is not linked.
+  entropy and no CPU jitter entropy (`scripts/cargo-nx.sh`). rustls's provider is aws-lc-rs; ring is not linked.
 - quinn-udp runs its fallback (no ECN, one datagram per call) until the console shows `sendmsg`.
 - tokio's I/O driver wakes through a loopback UDP socket (the mio leg): unproven on the console.
 - devkitPro's `switch-ffmpeg` in the image carries the `nvtegra` hwaccel (`libavutil/
@@ -68,5 +68,8 @@ probe build's commit and the run's date.
   fail with ENOBUFS, and `getsockopt` reads 1048576 back (probe at `4b0bd19`, 2026-10-28).
 - With check 3 linked, checks 1 and 2 read as before, then the probe dies in check 3 before its
   line: a data abort reading address 0 on the main thread, with tokio's two workers already up.
-  The crash report's offsets were not resolvable, as CI kept no ELF (probe at `528c0ee`,
+  Resolved against `2e66719`'s ELF (the same code but for check 3's log lines), the abort is
+  `mrs x0, cntvct_el0` in aws-lc's `jent_get_nstime`, under `EVP_PKEY_keygen`'s first random
+  bytes: Horizon does not let EL0 read the virtual counter (libnx reads CNTPCT_EL0). The console
+  build sets `AWS_LC_SYS_NO_JITTER_ENTROPY`, so aws-lc seeds from getentropy (probe at `528c0ee`,
   2026-10-28; Atmosphère report `01793228241_05446530aca7e000`).

@@ -34,6 +34,9 @@ export "BINDGEN_EXTRA_CLANG_ARGS_$t=--target=aarch64-none-elf -D__SWITCH__ -isys
 # aws-lc takes its own CFLAGS whole. No BIO sockets (no <sys/un.h>); toolchain/include has the
 # <sys/termios.h> newlib lacks; CPU features from -march, as no OS reports them; OPENSSL_WASM
 # only selects getentropy (the probe's `_getentropy_r`) over /dev/urandom (rand_extra/internal.h).
+# No CPU jitter entropy: it reads CNTVCT_EL0, which Horizon does not open to EL0 (the first
+# console run aborted there; libnx reads CNTPCT_EL0). aws-lc then seeds from getentropy alone.
+export "AWS_LC_SYS_NO_JITTER_ENTROPY_$t=1"
 export "AWS_LC_SYS_CFLAGS_$t=-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -D__SWITCH__ -isystem $dkp/libnx/include -isystem $root/toolchain/include -D_DEFAULT_SOURCE -DOPENSSL_NO_SOCK -DOPENSSL_STATIC_ARMCAP -DOPENSSL_WASM"
 
 # The archives under /opt/pf-nx (scripts/docker.sh mounts the volume): Skia as skia-bindings
