@@ -5,7 +5,8 @@
 //! swapchain and the GPU clock before and after.
 //!
 //! The text console holds the same window through libnx's framebuffer, so it is closed for the
-//! frames and opened again after: what the probe prints meanwhile goes to the log file only.
+//! frames and stays closed (`nx::screen_pause`): this check runs last, and what the probe prints
+//! from here on goes to the log file only.
 
 use std::time::{Duration, Instant};
 
@@ -79,7 +80,6 @@ pub fn steps(gpu: &Gpu, steps: &mut Steps, out: &mut Out) {
     // SAFETY: every queued frame is waited for before the objects go; each handle is this
     // run's own or null.
     unsafe { teardown(gpu.device, &surface_i, &swap_d, &mut objects) };
-    nx::screen_resume();
     if let Err((step, why)) = result {
         steps.push((step, Err(why)));
     }

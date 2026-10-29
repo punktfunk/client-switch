@@ -62,15 +62,16 @@ fn main() {
         let steps = quic_steps(&dir, &mut out);
         out.check(3, "quic", steps);
     }
-    #[cfg(all(target_os = "horizon", feature = "vulkan"))]
-    {
-        let steps = vk::steps(&mut out);
-        out.check(4, "vulkan", steps);
-    }
     #[cfg(all(target_os = "horizon", feature = "nvdec"))]
     {
         let steps = nvdec::steps(&dir, &mut out);
         out.check(6, "nvdec", steps);
+    }
+    // Last: its swapchain takes the screen from the text console for good (`crate::swap`).
+    #[cfg(all(target_os = "horizon", feature = "vulkan"))]
+    {
+        let steps = vk::steps(&mut out);
+        out.check(4, "vulkan", steps);
     }
 
     out.line(&format!("probe end {} failed", out.failed));
@@ -105,7 +106,13 @@ impl Out {
     }
 
     fn line(&mut self, text: &str) {
-        println!("{text}");
+        #[cfg(target_os = "horizon")]
+        let shown = !nx::screen_paused();
+        #[cfg(not(target_os = "horizon"))]
+        let shown = true;
+        if shown {
+            println!("{text}");
+        }
         if let Some(file) = self.file.as_mut() {
             let _ = writeln!(file, "{text}").and_then(|()| file.sync_data());
         }

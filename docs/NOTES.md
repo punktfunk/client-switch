@@ -98,3 +98,15 @@ probe build's commit and the run's date.
   asks the transfer for NV12 (probe at `d69e5a4`, 2026-10-29).
 - The probe stays on its last screen until it is closed from HOME: a run that ends looks the
   same as one that hangs. Only the `probe end` line tells them apart.
+- Check 4's swapchain half passes: `VK_NN_vi_surface` on libnx's default window (1280x720 in
+  handheld, the current extent, 3 images exactly), a FIFO `B8G8R8A8_UNORM` swapchain, a 256x256
+  texture uploaded through a staging buffer in 4.8 ms, and the presenter's committed SPIR-V
+  (`fullscreen.vert`, `overlay.frag`) building on NVK. 600 frames of a clear plus a textured quad
+  presented at 60.30 fps: present-to-present median 16.67 ms, 99th percentile 16.84 ms, worst
+  18.56 ms, 596 of 599 intervals within 14–19 ms and none over 19 ms; 55 ms from surface to the
+  first frame. The tester saw the animation smooth. Clocks before and after: GPU 307 MHz, CPU
+  1785 MHz, EMC 1600 MHz (probe at `73f3ca8`, 2026-10-29).
+- In that run the text console, opened again after the swapchain was destroyed, printed check 6's
+  lines, then libnx aborted the title at the next line: `framebufferBegin` →
+  `LibnxError_BadGfxDequeueBuffer` (2345-0021) from `nwindowDequeueBuffer` (Atmosphère report
+  `01793287821_05446530aca7e000`). The probe now runs check 4 last and leaves the console closed.
