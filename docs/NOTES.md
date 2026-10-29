@@ -57,6 +57,10 @@ What builds, and how; nothing here has run on a console.
 Runs on the tester's Switch 1 (Atmosphère, from hbmenu). No bundles yet: each item cites the
 probe build's commit and the run's date.
 
+The tester's console runs an overclock profile: the CPU at 1785 MHz is above stock, the GPU at
+307 MHz and EMC at 1600 MHz are what the profile left. The runs before 2026-10-29 12:30 do not
+record their clocks; the numbers below are under that profile unless an item says otherwise.
+
 - Check 1 (`std`) passes: four threads with their own `thread_local!`, `HashMap`, a 10 ms sleep,
   the wall clock, a file on `sdmc:` and `read_dir` (probe at `5222fb9`, 2026-10-28).
 - `socketInitialize` takes 4 MiB UDP buffers, but every UDP socket then fails with ENOBUFS
