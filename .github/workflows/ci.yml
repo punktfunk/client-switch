@@ -48,8 +48,28 @@ jobs:
             RUST_NIGHTLY=${{ steps.pins.outputs.RUST_NIGHTLY }}
           cache-from: type=gha,scope=nx-toolchain
           cache-to: type=gha,scope=nx-toolchain,mode=max
+      # NVK (libvulkan_bh.a) for check 4: built once per pin, then kept in the Actions cache and
+      # loaded into the toolchain volume where pf-nx-sys links it.
+      - name: NVK cache
+        id: nvk
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nvk-archive
+          key: nvk-${{ hashFiles('scripts/build-nvk.sh', 'scripts/pins.env') }}
+      - name: NVK
+        if: steps.nvk.outputs.cache-hit != 'true'
+        run: |
+          JOBS=$(nproc) PF_NX_NVK_WORK="$RUNNER_TEMP/nvk" scripts/build-nvk.sh
+          mkdir -p "$RUNNER_TEMP/nvk-archive"
+          docker run --rm -v pf-nx-toolchains:/opt/pf-nx alpine:3 tar -cf - -C /opt/pf-nx/nvk . |
+            tar -xf - -C "$RUNNER_TEMP/nvk-archive"
+      - name: NVK into the volume
+        if: steps.nvk.outputs.cache-hit == 'true'
+        run: |
+          tar -cf - -C "$RUNNER_TEMP/nvk-archive" . | docker run --rm -i -v pf-nx-toolchains:/opt/pf-nx alpine:3 sh -c \
+            'rm -rf /opt/pf-nx/nvk && mkdir -p /opt/pf-nx/nvk && tar -xf - -C /opt/pf-nx/nvk'
       - name: Probe
-        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe && scripts/package-nro.sh pf-nx-probe'
+        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --features vulkan && scripts/package-nro.sh pf-nx-probe'
       - uses: actions/upload-artifact@v4
         with:
           name: pf-nx-probe
