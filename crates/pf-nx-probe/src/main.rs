@@ -373,7 +373,10 @@ fn quic_steps(dir: &Path, out: &mut Out) -> Steps {
         ("provider", Ok("aws-lc-rs".into())),
         (
             "identity",
-            identity.as_ref().map(|(cert, _)| format!("{}B", cert.len())).map_err(Clone::clone),
+            identity
+                .as_ref()
+                .map(|(cert, _)| format!("{}B", cert.len()))
+                .map_err(Clone::clone),
         ),
         ("endpoint", bound),
     ];
