@@ -76,3 +76,7 @@ probe build's commit and the run's date.
 - Without jitter entropy, check 3 passes: tokio on two workers, an EC identity through aws-lc-rs
   (542-byte certificate) and punktfunk-core's client endpoint bound on the shared UDP socket. No
   host was dialled yet (probe at `d90d956`, 2026-10-28).
+- Check 3 against a real host on the LAN (Wi-Fi): PIN pairing, then a session at 720p60 that
+  negotiated HEVC (`codec=2`), and the first video frame received, reassembled and decrypted
+  3061 ms after the connect returned. The pairing was kept on the SD card and reused on the next
+  run (probe at `3a07655`, 2026-10-28).
