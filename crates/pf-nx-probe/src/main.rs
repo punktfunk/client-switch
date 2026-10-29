@@ -63,7 +63,10 @@ fn main() {
     #[cfg(all(target_os = "horizon", feature = "vulkan"))]
     out.check(4, "vulkan", vk::steps());
     #[cfg(all(target_os = "horizon", feature = "nvdec"))]
-    out.check(6, "nvdec", nvdec::steps(&dir));
+    {
+        let steps = nvdec::steps(&dir, &mut out);
+        out.check(6, "nvdec", steps);
+    }
 
     out.line(&format!("probe end {} failed", out.failed));
     if std::env::args().any(|a| a == "--panic") {

@@ -3,6 +3,7 @@
 //! decoded through pf-nx-sys's `nvtegra` decoder, one AU at a time as the session will send them.
 //! Each stream reports its pictures, the first picture's latency, fps, decode and VIC transfer
 //! times, frames in flight and the first picture's mean luma. 10-bit is reported, not required.
+//! `probe 6 nvdec at` lines mark the way through: the first console run stopped in here unlogged.
 
 use std::path::Path;
 use std::thread;
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use pf_nx_sys::av::{Codec, Decoder, SendStatus};
 
-use crate::{err, Steps};
+use crate::{err, Out, Steps};
 
 const WIDTH: usize = 1920;
 /// The decoder may pad 1080 to the macroblock: room for 1088 rows.
@@ -23,12 +24,13 @@ const STREAMS: [(&str, &str, Codec, bool); 3] = [
     ("hevc10", "nvdec-hevc10.265", Codec::Hevc, false),
 ];
 
-pub fn steps(dir: &Path) -> Steps {
+pub fn steps(dir: &Path, out: &mut Out) -> Steps {
     let mut steps = Steps::new();
     for (step, file, codec, needed) in STREAMS {
+        out.line(&format!("probe 6 nvdec at {step} read"));
         let result = std::fs::read(dir.join(file))
             .map_err(|e| format!("{file}: {e}"))
-            .and_then(|data| decode(codec, &data));
+            .and_then(|data| decode(step, codec, &data, out));
         steps.push((
             step,
             result.or_else(|e| if needed { Err(e) } else { Ok(format!("no({e})")) }),
@@ -77,14 +79,16 @@ impl Times {
     }
 }
 
-fn decode(codec: Codec, data: &[u8]) -> Result<String, String> {
+fn decode(step: &str, codec: Codec, data: &[u8], out: &mut Out) -> Result<String, String> {
     let aus = access_units(data, codec);
     if aus.is_empty() {
         return Err("no access unit delimiters".into());
     }
+    out.line(&format!("probe 6 nvdec at {step} open {}B aus={}", data.len(), aus.len()));
     let opened = Instant::now();
     let mut dec = Decoder::open(codec, 1920, 1080).map_err(err)?;
     let open_ms = opened.elapsed().as_millis();
+    out.line(&format!("probe 6 nvdec at {step} send open={open_ms}ms"));
 
     let (mut y, mut uv) = (vec![0u8; WIDTH * ROWS], vec![0u8; WIDTH * ROWS / 2]);
     let (mut decode_us, mut transfer_us) = (Times::default(), Times::default());
@@ -108,6 +112,14 @@ fn decode(codec: Codec, data: &[u8]) -> Result<String, String> {
     };
 
     for (pts, au) in aus.iter().enumerate() {
+        // After the first AU, then once a second of stream.
+        if pts == 1 || (pts > 0 && pts % 60 == 0) {
+            out.line(&format!(
+                "probe 6 nvdec at {step} au={pts} pictures={} {}ms",
+                dec.stats().decoded,
+                start.elapsed().as_millis()
+            ));
+        }
         let mut full = 0;
         while dec.send(au, pts as u64).map_err(err)? == SendStatus::Again {
             if !receive(&mut dec)? {
