@@ -145,9 +145,10 @@ fn device_steps(entry: &ash::Entry, instance: &ash::Instance, steps: &mut Steps,
         .queue_priorities(&[1.0])];
     // SAFETY: `gpu` came from this instance.
     let offered = unsafe { instance.enumerate_device_extension_properties(gpu) }.map_err(at("device"))?;
-    let swapchain = offered
-        .iter()
-        .any(|e| e.extension_name_as_c_str().is_ok_and(|n| n == ash::khr::swapchain::NAME));
+    let swapchain = offered.iter().any(|e| {
+        e.extension_name_as_c_str()
+            .is_ok_and(|n| n == ash::khr::swapchain::NAME)
+    });
     let exts: Vec<*const c_char> = if swapchain {
         vec![ash::khr::swapchain::NAME.as_ptr()]
     } else {

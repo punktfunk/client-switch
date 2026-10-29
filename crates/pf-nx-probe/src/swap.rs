@@ -84,7 +84,12 @@ pub fn steps(gpu: &Gpu, steps: &mut Steps, out: &mut Out) {
         steps.push((step, Err(why)));
     }
     let mhz = |c: Option<clk::Clocks>| match c {
-        Some(c) => format!("gpu{}/cpu{}/emc{}MHz", c.gpu_hz / 1_000_000, c.cpu_hz / 1_000_000, c.emc_hz / 1_000_000),
+        Some(c) => format!(
+            "gpu{}/cpu{}/emc{}MHz",
+            c.gpu_hz / 1_000_000,
+            c.cpu_hz / 1_000_000,
+            c.emc_hz / 1_000_000
+        ),
         None => "?".into(),
     };
     steps.push(("clock", Ok(format!("{}->{}", mhz(before), mhz(after)))));
@@ -222,21 +227,31 @@ fn run(
     out.note("probe 4 vulkan at texture");
     let uploaded = Instant::now();
     texture(gpu, o, cmds[IN_FLIGHT])?;
-    steps.push(("texture", Ok(format!("{TEX}x{TEX} upload={}us", uploaded.elapsed().as_micros()))));
+    steps.push((
+        "texture",
+        Ok(format!("{TEX}x{TEX} upload={}us", uploaded.elapsed().as_micros())),
+    ));
 
     // SAFETY: a live device; teardown destroys them after the queue is idle.
     unsafe {
         for _ in 0..IN_FLIGHT {
-            o.ready
-                .push(d.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).map_err(at("frames"))?);
-            o.fences.push(
-                d.create_fence(&vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED), None)
+            o.ready.push(
+                d.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
                     .map_err(at("frames"))?,
+            );
+            o.fences.push(
+                d.create_fence(
+                    &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
+                    None,
+                )
+                .map_err(at("frames"))?,
             );
         }
         for _ in &images {
-            o.done
-                .push(d.create_semaphore(&vk::SemaphoreCreateInfo::default(), None).map_err(at("frames"))?);
+            o.done.push(
+                d.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
+                    .map_err(at("frames"))?,
+            );
         }
     }
 
@@ -301,7 +316,8 @@ fn render_pass(d: &ash::Device, format: vk::Format) -> Result<vk::RenderPass, Fa
 /// The presenter's overlay pipeline: one sampled image at binding 0, no push constants, the
 /// bufferless fullscreen triangle scaled into a dynamic viewport.
 fn pipeline(d: &ash::Device, o: &mut Objects) -> Result<(), Fail> {
-    let words = |bytes: &[u8]| ash::util::read_spv(&mut std::io::Cursor::new(bytes)).map_err(|e| ("pipeline", e.to_string()));
+    let words =
+        |bytes: &[u8]| ash::util::read_spv(&mut std::io::Cursor::new(bytes)).map_err(|e| ("pipeline", e.to_string()));
     let (vert_words, frag_words) = (words(spv::FULLSCREEN_VERT)?, words(spv::OVERLAY_FRAG)?);
     // SAFETY: every builder below is a local that outlives its call; the objects land in `o`
     // and the modules are destroyed once the pipeline exists.
@@ -391,7 +407,10 @@ fn pipeline(d: &ash::Device, o: &mut Objects) -> Result<(), Fail> {
             descriptor_count: 1,
         }];
         o.descriptors = d
-            .create_descriptor_pool(&vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes), None)
+            .create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::default().max_sets(1).pool_sizes(&sizes),
+                None,
+            )
             .map_err(at("pipeline"))?;
     }
     Ok(())
@@ -435,7 +454,8 @@ fn texture(gpu: &Gpu, o: &mut Objects, cmd: vk::CommandBuffer) -> Result<(), Fai
                 None,
             )
             .map_err(at("texture"))?;
-        d.bind_buffer_memory(o.staging, o.staging_mem, 0).map_err(at("texture"))?;
+        d.bind_buffer_memory(o.staging, o.staging_mem, 0)
+            .map_err(at("texture"))?;
         let ptr = d
             .map_memory(o.staging_mem, 0, bytes, vk::MemoryMapFlags::empty())
             .map_err(at("texture"))?
@@ -485,7 +505,8 @@ fn texture(gpu: &Gpu, o: &mut Objects, cmd: vk::CommandBuffer) -> Result<(), Fai
                 None,
             )
             .map_err(at("texture"))?;
-        d.bind_image_memory(o.texture, o.texture_mem, 0).map_err(at("texture"))?;
+        d.bind_image_memory(o.texture, o.texture_mem, 0)
+            .map_err(at("texture"))?;
         o.texture_view = view(d, o.texture, vk::Format::R8G8B8A8_UNORM).map_err(|(_, e)| ("texture", e))?;
 
         let barrier = |old, new, src, dst| {
