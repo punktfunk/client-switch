@@ -5,10 +5,10 @@
 //! the console names every failure. `--panic` ends the run with a panic: the hook writes
 //! `panic.txt`, and the next run prints it as `probe 1 panic-log`. Runs the same on a dev box.
 
-#[cfg(target_os = "horizon")]
-mod nx;
 #[cfg(all(target_os = "horizon", feature = "nvdec"))]
 mod nvdec;
+#[cfg(target_os = "horizon")]
+mod nx;
 #[cfg(all(target_os = "horizon", feature = "vulkan"))]
 mod vk;
 

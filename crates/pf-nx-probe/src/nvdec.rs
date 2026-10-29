@@ -29,7 +29,10 @@ pub fn steps(dir: &Path) -> Steps {
         let result = std::fs::read(dir.join(file))
             .map_err(|e| format!("{file}: {e}"))
             .and_then(|data| decode(codec, &data));
-        steps.push((step, result.or_else(|e| if needed { Err(e) } else { Ok(format!("no({e})")) })));
+        steps.push((
+            step,
+            result.or_else(|e| if needed { Err(e) } else { Ok(format!("no({e})")) }),
+        ));
     }
     steps
 }
