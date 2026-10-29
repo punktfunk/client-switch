@@ -10,6 +10,8 @@ mod nvdec;
 #[cfg(target_os = "horizon")]
 mod nx;
 #[cfg(all(target_os = "horizon", feature = "vulkan"))]
+mod swap;
+#[cfg(all(target_os = "horizon", feature = "vulkan"))]
 mod vk;
 
 use std::cell::Cell;
@@ -61,7 +63,10 @@ fn main() {
         out.check(3, "quic", steps);
     }
     #[cfg(all(target_os = "horizon", feature = "vulkan"))]
-    out.check(4, "vulkan", vk::steps());
+    {
+        let steps = vk::steps(&mut out);
+        out.check(4, "vulkan", steps);
+    }
     #[cfg(all(target_os = "horizon", feature = "nvdec"))]
     {
         let steps = nvdec::steps(&dir, &mut out);
@@ -106,6 +111,14 @@ impl Out {
         }
         #[cfg(target_os = "horizon")]
         nx::screen_flush();
+    }
+
+    /// The log file only, for while check 4's frames hold the screen.
+    #[cfg(all(target_os = "horizon", feature = "vulkan"))]
+    fn note(&mut self, text: &str) {
+        if let Some(file) = self.file.as_mut() {
+            let _ = writeln!(file, "{text}").and_then(|()| file.sync_data());
+        }
     }
 
     fn check(&mut self, n: u32, name: &str, steps: Steps) {

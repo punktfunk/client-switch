@@ -1,29 +1,29 @@
 //! Check 4, `vulkan`: the linked NVK's instance and first device, then a 16 MiB host-visible
-//! buffer written through one mapping and read back through a second. Steps stop at the first
-//! failure, and everything made is destroyed in reverse order. The swapchain half of WP0.4 is
-//! not here.
+//! buffer written through one mapping and read back through a second, then the swapchain half
+//! (`crate::swap`) on the same device. Steps stop at the first failure, and everything made is
+//! destroyed in reverse order.
 
 use std::ffi::{c_char, CStr};
 use std::time::Instant;
 
 use ash::vk;
 
-use crate::Steps;
+use crate::{swap, Out, Steps};
 
 const BUF_BYTES: vk::DeviceSize = 16 << 20;
 
 /// A failed step and why.
-type Fail = (&'static str, String);
+pub(crate) type Fail = (&'static str, String);
 
-pub fn steps() -> Steps {
+pub fn steps(out: &mut Out) -> Steps {
     let mut steps = Steps::new();
-    if let Err((step, why)) = instance_steps(&mut steps) {
+    if let Err((step, why)) = instance_steps(&mut steps, out) {
         steps.push((step, Err(why)));
     }
     steps
 }
 
-fn at(step: &'static str) -> impl Fn(vk::Result) -> Fail {
+pub(crate) fn at(step: &'static str) -> impl Fn(vk::Result) -> Fail {
     move |e| (step, format!("{e:?}"))
 }
 
@@ -40,7 +40,7 @@ fn join<T: ToString>(items: impl Iterator<Item = T>) -> String {
     items.map(|i| i.to_string()).collect::<Vec<_>>().join(",")
 }
 
-fn instance_steps(steps: &mut Steps) -> Result<(), Fail> {
+fn instance_steps(steps: &mut Steps, out: &mut Out) -> Result<(), Fail> {
     let entry = pf_nx_sys::nvk::entry();
     // SAFETY: global commands of the linked driver; they take no handles.
     let loader = unsafe { entry.try_enumerate_instance_version() }.map_err(at("loader"))?;
@@ -68,7 +68,7 @@ fn instance_steps(steps: &mut Steps) -> Result<(), Fail> {
     // SAFETY: `info` and the names it points at outlive the call.
     let instance = unsafe { entry.create_instance(&info, None) }.map_err(at("instance"))?;
     steps.push(("instance", Ok(format!("1.3+{}ext", wanted.len()))));
-    let result = device_steps(&instance, steps);
+    let result = device_steps(&entry, &instance, steps, out);
     // SAFETY: device_steps destroyed every child of the instance.
     unsafe { instance.destroy_instance(None) };
     result?;
@@ -76,7 +76,7 @@ fn instance_steps(steps: &mut Steps) -> Result<(), Fail> {
     Ok(())
 }
 
-fn device_steps(instance: &ash::Instance, steps: &mut Steps) -> Result<(), Fail> {
+fn device_steps(entry: &ash::Entry, instance: &ash::Instance, steps: &mut Steps, out: &mut Out) -> Result<(), Fail> {
     // SAFETY: a live instance.
     let gpus = unsafe { instance.enumerate_physical_devices() }.map_err(at("gpus"))?;
     let gpu = *gpus.first().ok_or(("gpus", "0".to_string()))?;
@@ -143,8 +143,20 @@ fn device_steps(instance: &ash::Instance, steps: &mut Steps) -> Result<(), Fail>
     let queues = [vk::DeviceQueueCreateInfo::default()
         .queue_family_index(family)
         .queue_priorities(&[1.0])];
-    let info = vk::DeviceCreateInfo::default().queue_create_infos(&queues);
-    // SAFETY: `gpu` came from this instance; `info` outlives the call.
+    // SAFETY: `gpu` came from this instance.
+    let offered = unsafe { instance.enumerate_device_extension_properties(gpu) }.map_err(at("device"))?;
+    let swapchain = offered
+        .iter()
+        .any(|e| e.extension_name_as_c_str().is_ok_and(|n| n == ash::khr::swapchain::NAME));
+    let exts: Vec<*const c_char> = if swapchain {
+        vec![ash::khr::swapchain::NAME.as_ptr()]
+    } else {
+        Vec::new()
+    };
+    let info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queues)
+        .enabled_extension_names(&exts);
+    // SAFETY: `gpu` came from this instance; `info` and the names outlive the call.
     let device = unsafe { instance.create_device(gpu, &info, None) }.map_err(at("device"))?;
     // SAFETY: the device was made with one queue in `family`.
     let queue = unsafe { device.get_device_queue(family, 0) };
@@ -152,8 +164,23 @@ fn device_steps(instance: &ash::Instance, steps: &mut Steps) -> Result<(), Fail>
         true => ("device", Err(format!("family{family} has no queue 0"))),
         false => ("device", Ok(format!("family{family}"))),
     });
-    let result = buffer_steps(&device, &memory, steps);
-    // SAFETY: buffer_steps destroyed the device's children, and nothing was submitted.
+    let mut result = buffer_steps(&device, &memory, steps);
+    if result.is_ok() {
+        if swapchain {
+            let gpu = swap::Gpu {
+                entry,
+                instance,
+                pdev: gpu,
+                device: &device,
+                family,
+                queue,
+            };
+            swap::steps(&gpu, steps, out);
+        } else {
+            result = Err(("swapchain", "no VK_KHR_swapchain".into()));
+        }
+    }
+    // SAFETY: buffer_steps and swap::steps destroyed the device's children and left it idle.
     unsafe { device.destroy_device(None) };
     result
 }

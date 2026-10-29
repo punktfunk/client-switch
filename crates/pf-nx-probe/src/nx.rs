@@ -29,10 +29,31 @@ pub fn stdio_up() {
     SCREEN.store(true, Ordering::Relaxed);
 }
 
+/// Set while check 4's swapchain holds the window the console draws on.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
 /// Shows what was printed since the last call, when the screen console holds stdout.
 pub fn screen_flush() {
-    if SCREEN.load(Ordering::Relaxed) {
+    if SCREEN.load(Ordering::Relaxed) && !PAUSED.load(Ordering::Relaxed) {
         console::update();
+    }
+}
+
+/// Closes the screen console, which lets go of the default window's framebuffer, so a
+/// swapchain can take the window. Nothing may print until `screen_resume`.
+#[cfg(feature = "vulkan")]
+pub fn screen_pause() {
+    if SCREEN.load(Ordering::Relaxed) {
+        PAUSED.store(true, Ordering::Relaxed);
+        console::exit();
+    }
+}
+
+/// Opens the screen console again on a cleared screen; the earlier lines are in the log.
+#[cfg(feature = "vulkan")]
+pub fn screen_resume() {
+    if PAUSED.swap(false, Ordering::Relaxed) {
+        console::init();
     }
 }
 
