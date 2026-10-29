@@ -1,7 +1,7 @@
 //! The client's seams on a developer box, so the app runs against a real Vulkan device and real
-//! sockets without a console. Linux gets the presenter offscreen on the system loader with the
-//! `PyroWave` lane; elsewhere the UI rasters on the CPU. H.264/HEVC are received and counted, not
-//! decoded: the console's NVDEC has no stand-in here.
+//! sockets without a console. Linux gets the presenter offscreen on the system loader, the
+//! console's video lane on libavcodec's software decoders in place of NVDEC, and the `PyroWave`
+//! lane; elsewhere the UI rasters on the CPU and H.264/HEVC are received and counted, not decoded.
 
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -80,7 +80,7 @@ impl Lifecycle for HostLifecycle {
     }
 }
 
-/// Receives H.264/HEVC and counts it; there is no NVDEC off the console.
+/// Receives H.264/HEVC and counts it, where no Vulkan device carries the console's video lane.
 struct CountingSink {
     fed: Arc<AtomicU64>,
     started: std::time::Instant,
@@ -119,6 +119,9 @@ impl MediaClock for CountingSink {
 struct HostVideo {
     #[cfg(all(target_os = "linux", feature = "pyrowave"))]
     pyro: Option<pf_nx_vk::PyroLane>,
+    /// The console's H.264/HEVC lane on the presenter's device, decoding in software.
+    #[cfg(target_os = "linux")]
+    lane: Option<pf_nx_platform::video::NxVideo>,
     fed: Arc<AtomicU64>,
 }
 
@@ -139,6 +142,10 @@ impl VideoDecoders for HostVideo {
             if let Some(pyro) = &self.pyro {
                 return pyro.open(spec);
             }
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(lane) = &self.lane {
+            return lane.open(spec);
         }
         let _ = spec;
         Ok(Box::new(CountingSink {
@@ -271,6 +278,7 @@ fn display(opts: &Options) -> Result<(Box<dyn Display>, HostVideo, String, Strin
                 let presenter = pf_nx_vk::Presenter::new(dev.clone(), slot.clone())?;
                 let gpu = dev.name.clone();
                 let ui = presenter.ui();
+                let lane = Some(pf_nx_platform::video::NxVideo::gpu(dev.clone(), slot.clone()));
                 #[cfg(feature = "pyrowave")]
                 let pyro = Some(pf_nx_vk::PyroLane::new(dev, slot));
                 #[cfg(not(feature = "pyrowave"))]
@@ -280,6 +288,7 @@ fn display(opts: &Options) -> Result<(Box<dyn Display>, HostVideo, String, Strin
                     HostVideo {
                         #[cfg(feature = "pyrowave")]
                         pyro,
+                        lane,
                         fed,
                     },
                     gpu,
@@ -294,6 +303,8 @@ fn display(opts: &Options) -> Result<(Box<dyn Display>, HostVideo, String, Strin
         HostVideo {
             #[cfg(all(target_os = "linux", feature = "pyrowave"))]
             pyro: None,
+            #[cfg(target_os = "linux")]
+            lane: None,
             fed,
         },
         "CPU raster".into(),

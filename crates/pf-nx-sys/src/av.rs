@@ -2,7 +2,8 @@
 //! the only code that names libavcodec's structs; this side binds its six calls and `av_strerror`
 //! (`libavutil/error.h`). Pictures come out as pitch-linear NV12 copied into the caller's planes.
 //!
-//! Off the console [`Decoder::open`] returns an error, so the workspace builds anywhere.
+//! On Linux the same shim decodes in software against the system's libavcodec, for the dev box;
+//! elsewhere [`Decoder::open`] returns an error, so the workspace builds anywhere.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Codec {
@@ -54,7 +55,7 @@ pub struct RawStats {
 pub const PF_AV_NOT_NV12: i32 = -0x7066_0001;
 pub const PF_AV_TOO_SMALL: i32 = -0x7066_0002;
 
-#[cfg(target_os = "horizon")]
+#[cfg(pf_av)]
 mod ffi {
     use super::{PictureMeta, RawStats};
     use core::ffi::{c_char, c_int};
@@ -85,7 +86,7 @@ mod ffi {
     }
 }
 
-#[cfg(target_os = "horizon")]
+#[cfg(pf_av)]
 fn av_error(op: &str, code: i32) -> anyhow::Error {
     if code == PF_AV_NOT_NV12 {
         return anyhow::anyhow!("{op}: a software picture came out, so nvtegra did not take the stream");
@@ -98,24 +99,24 @@ fn av_error(op: &str, code: i32) -> anyhow::Error {
     anyhow::anyhow!("{op}: {msg} ({code})")
 }
 
-/// One hardware decoder. Used by one thread at a time.
+/// One decoder: NVDEC on the console, software on a Linux dev box. Used by one thread at a time.
 pub struct Decoder {
-    #[cfg(target_os = "horizon")]
+    #[cfg(pf_av)]
     raw: core::ptr::NonNull<ffi::PfAvDecoder>,
-    #[cfg(not(target_os = "horizon"))]
+    #[cfg(not(pf_av))]
     never: Never,
 }
 
-#[cfg(not(target_os = "horizon"))]
+#[cfg(not(pf_av))]
 enum Never {}
 
 // SAFETY: the shim's decoder has no thread affinity; `&mut self` keeps it to one thread at once.
-#[cfg(target_os = "horizon")]
+#[cfg(pf_av)]
 unsafe impl Send for Decoder {}
 
-#[cfg(target_os = "horizon")]
+#[cfg(pf_av)]
 impl Decoder {
-    /// Opens `codec` on NVDEC for a `width`×`height` stream.
+    /// Opens `codec` for a `width`×`height` stream.
     pub fn open(codec: Codec, width: u32, height: u32) -> anyhow::Result<Self> {
         let (w, h) = (i32::try_from(width)?, i32::try_from(height)?);
         let mut raw = core::ptr::null_mut();
@@ -199,7 +200,7 @@ impl Decoder {
     }
 }
 
-#[cfg(target_os = "horizon")]
+#[cfg(pf_av)]
 impl Drop for Decoder {
     fn drop(&mut self) {
         // SAFETY: `raw` came from pf_av_open and is closed once.
@@ -207,10 +208,10 @@ impl Drop for Decoder {
     }
 }
 
-#[cfg(not(target_os = "horizon"))]
+#[cfg(not(pf_av))]
 impl Decoder {
     pub fn open(codec: Codec, _width: u32, _height: u32) -> anyhow::Result<Self> {
-        anyhow::bail!("open the {codec:?} decoder: NVDEC exists only on the console")
+        anyhow::bail!("open the {codec:?} decoder: no decoder on this box (NVDEC on the console, libavcodec on Linux)")
     }
 
     pub fn send(&mut self, _au: &[u8], _pts: u64) -> anyhow::Result<SendStatus> {
@@ -240,14 +241,24 @@ impl Decoder {
 mod tests {
     use super::*;
 
-    #[cfg(not(target_os = "horizon"))]
+    #[cfg(not(pf_av))]
     #[test]
     fn open_fails_off_the_console() {
         let err = Decoder::open(Codec::Hevc, 1920, 1080).err().unwrap();
         assert_eq!(
             err.to_string(),
-            "open the Hevc decoder: NVDEC exists only on the console"
+            "open the Hevc decoder: no decoder on this box (NVDEC on the console, libavcodec on Linux)"
         );
+    }
+
+    #[cfg(all(pf_av, target_os = "linux"))]
+    #[test]
+    fn a_dev_box_opens_both_codecs_in_software() {
+        for codec in [Codec::H264, Codec::Hevc] {
+            let mut d = Decoder::open(codec, 1920, 1080).unwrap();
+            assert_eq!(d.stats(), Stats::default());
+            d.flush();
+        }
     }
 
     #[test]

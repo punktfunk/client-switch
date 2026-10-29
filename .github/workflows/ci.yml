@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Packages
-        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev pkg-config libfreetype-dev libfontconfig1-dev mesa-vulkan-drivers libvulkan1
+        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev pkg-config libfreetype-dev libfontconfig1-dev mesa-vulkan-drivers libvulkan1 libavcodec-dev
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check

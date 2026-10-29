@@ -22,6 +22,7 @@ pyrowave = ["pf-nx-vk/pyrowave"]
 [target.'cfg(target_os = "linux")'.dependencies]
 ash = { workspace = true, features = ["loaded"] }
 pf-nx-vk = { path = "../pf-nx-vk" }
+pf-nx-platform = { path = "../pf-nx-platform" }
 
 [lints]
 workspace = true

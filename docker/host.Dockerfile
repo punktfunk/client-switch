@@ -4,8 +4,8 @@
 FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates clang cmake curl git libclang-dev libfontconfig1-dev \
-        libfreetype-dev libvulkan1 mesa-vulkan-drivers pkg-config python3 \
+        build-essential ca-certificates clang cmake curl git libavcodec-dev libclang-dev \
+        libfontconfig1-dev libfreetype-dev libvulkan1 mesa-vulkan-drivers pkg-config python3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV RUSTUP_HOME=/usr/local/rustup \

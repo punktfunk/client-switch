@@ -1,13 +1,16 @@
 //! The console's side of the Switch client's seams.
 //!
 //! The pure half (the pad map) builds and tests anywhere; everything that calls libnx, NVK or
-//! libavcodec is `cfg(target_os = "horizon")`. The binary calls [`platform`] once and hands the
-//! result to `pf_nx_app::run`.
+//! libavcodec is `cfg(target_os = "horizon")`, but for the video lane, which a Linux dev box runs
+//! on libavcodec's software decoders through the same shim. The binary calls [`platform`] once and
+//! hands the result to `pf_nx_app::run`.
 
 pub mod pad_map;
 
 #[cfg(target_os = "horizon")]
 mod console;
+#[cfg(any(target_os = "horizon", target_os = "linux"))]
+pub mod video;
 
 #[cfg(target_os = "horizon")]
 pub use console::{platform, DisplayKind};
