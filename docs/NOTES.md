@@ -86,4 +86,6 @@ probe build's commit and the run's date.
   family 0, and a 16 MiB host-visible buffer written in 1.8 ms and read back in 38.8 ms (probe
   at `f0b53c0`, 2026-10-29).
 - In the same run check 3 paired from the saved fingerprint and negotiated HEVC, but no frame
-  came in 15 s (probe at `f0b53c0`, 2026-10-29).
+  came in 15 s (probe at `f0b53c0`, 2026-10-29). The next run, with the host's screen on and
+  unlocked, had its first frame 2429 ms after the connect without the keyframe request, and check
+  4 passed again (probe at `6ba89b2`, 2026-10-29).
