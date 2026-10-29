@@ -32,6 +32,10 @@ pub struct TestRun {
     pub host: Option<String>,
     #[serde(default)]
     pub port: Option<u16>,
+    /// The PIN on the host's Pairing page: the run pairs with `host` first when it is not paired
+    /// here yet, since nobody is at the pad to type it.
+    #[serde(default)]
+    pub pin: Option<String>,
     #[serde(default = "default_seconds")]
     pub seconds: u64,
     /// Seconds into the stream at which to save a frame.
@@ -178,6 +182,13 @@ mod tests {
         );
         assert_eq!(run.capture_due(Duration::from_secs(6), Duration::from_secs(7)), None);
         assert!(run.settings.is_none());
+        assert!(run.pin.is_none());
+    }
+
+    #[test]
+    fn a_scenario_file_carries_the_pin_to_pair_with() {
+        let run: TestRun = serde_json::from_str(r#"{"scenario":"stream","host":"10.0.0.2","pin":"123456"}"#).unwrap();
+        assert_eq!(run.pin.as_deref(), Some("123456"));
     }
 
     #[test]

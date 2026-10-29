@@ -656,6 +656,28 @@ impl Service {
         self.handles.console.set_pair(PairStatus { req, phase });
     }
 
+    /// Pairs with `addr:port` on this thread and saves the host: a scripted run that carries the
+    /// host's PIN, with nobody at the pad to type it.
+    pub(crate) fn pair_now(&mut self, addr: &str, port: u16, pin: &str, device_name: &str) -> Result<(), String> {
+        let (name, mgmt_port, mac, os) = self.advert_facts(addr, port);
+        let identity = (self.identity.0.as_str(), self.identity.1.as_str());
+        let fingerprint = NativeClient::pair(addr, port, identity, pin, device_name, budget::HOST_WAIT)
+            .map_err(|e| crate::core::errors::pair_message(&e))?;
+        tracing::info!("console: paired with {addr}:{port}");
+        let outcome = PairOutcome {
+            req: RequestKey::default(),
+            name,
+            addr: addr.into(),
+            port,
+            mgmt_port,
+            mac,
+            os,
+            result: Ok(fingerprint),
+        };
+        self.remember_paired(outcome, fingerprint);
+        Ok(())
+    }
+
     /// Save a host this console just paired with, returning its row key.
     fn remember_paired(&mut self, outcome: PairOutcome, fingerprint: [u8; 32]) -> String {
         let key = shared::host_key(&shared::hex(fingerprint), &outcome.addr, outcome.port);

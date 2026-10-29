@@ -58,6 +58,12 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
     };
     let scripted = app.test_run.as_ref().and_then(|run| {
         let host = run.host.as_deref()?;
+        if let (None, Some(pin)) = (service.row_for(host, run.port), &run.pin) {
+            let port = run.port.unwrap_or(pf_client_core::deeplink::DEFAULT_PORT);
+            if let Err(e) = service.pair_now(host, port, pin, &opts.device_name) {
+                tracing::warn!("test run: pairing with {host}:{port} failed: {e}");
+            }
+        }
         let row = service.row_for(host, run.port);
         if row.is_none() {
             tracing::warn!("test run: {host} is not a paired host here");
