@@ -118,6 +118,9 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         if let Some(pads) = app.pads.as_mut() {
             pads.poll(&mut batch);
         }
+        if let Some(scripted) = app.test_run.as_ref().and_then(testrun::TestRun::pad_sample) {
+            batch.insert(0, scripted);
+        }
         menu_out.clear();
         nav.poll(&menu_sample(&batch), Instant::now(), &mut menu_out);
         for ev in menu_out.drain(..) {

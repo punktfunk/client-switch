@@ -10,12 +10,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{App, UiOutcome};
-use crate::platform::Rgba;
+use crate::platform::{Display, PadSample, Rgba};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Scenario {
-    /// Draw the console for a few seconds, capture it, leave.
+    /// Draw the console for a few seconds, or press through [`TestRun::pads`], capture it, leave.
     Menu,
     /// Connect to `host` with the saved pairing, stream for `seconds`, capture, leave.
     Stream,
@@ -45,12 +45,79 @@ pub struct TestRun {
     /// launch resolves. Nothing is saved, so the next launch streams with the user's settings.
     #[serde(default)]
     pub settings: Option<pf_client_core::presets::SettingsOverlay>,
+    /// The menu scenario's pad, step by step, in place of the frame count: nobody is at the pad.
+    #[serde(default)]
+    pub pads: Vec<PadStep>,
     #[serde(skip)]
     pub bundle: PathBuf,
+    #[serde(skip)]
+    cursor: PadCursor,
 }
 
 fn default_seconds() -> u64 {
     60
+}
+
+/// One press: the buttons down for a frame, then `wait` frames with none, then a capture as
+/// `frame-<capture>.png` when named. An empty `press` only waits.
+#[derive(Clone, Debug, Deserialize)]
+pub struct PadStep {
+    #[serde(default)]
+    pub press: Vec<Button>,
+    #[serde(default = "default_wait")]
+    pub wait: u64,
+    #[serde(default)]
+    pub capture: Option<String>,
+}
+
+fn default_wait() -> u64 {
+    30
+}
+
+/// The buttons by their Nintendo labels.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Button {
+    A,
+    B,
+    X,
+    Y,
+    L,
+    R,
+    Plus,
+    Minus,
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Button {
+    fn bit(self) -> u32 {
+        use punktfunk_core::input::gamepad;
+        let [a, b, x, y] = super::pads::FACE;
+        match self {
+            Self::A => a,
+            Self::B => b,
+            Self::X => x,
+            Self::Y => y,
+            Self::L => gamepad::BTN_LB,
+            Self::R => gamepad::BTN_RB,
+            Self::Plus => gamepad::BTN_START,
+            Self::Minus => gamepad::BTN_BACK,
+            Self::Up => gamepad::BTN_DPAD_UP,
+            Self::Down => gamepad::BTN_DPAD_DOWN,
+            Self::Left => gamepad::BTN_DPAD_LEFT,
+            Self::Right => gamepad::BTN_DPAD_RIGHT,
+        }
+    }
+}
+
+/// Where [`TestRun::pads`] stands: the step, and the frames drawn in it.
+#[derive(Clone, Copy, Debug, Default)]
+struct PadCursor {
+    step: usize,
+    frame: u64,
 }
 
 /// Reads and deletes `test-run.json`, so a crash mid-run does not loop on the next launch.
@@ -128,6 +195,39 @@ impl TestRun {
         copy_log(&self.bundle);
     }
 
+    /// The scripted pad for the frame about to be drawn, in slot 0; `None` without a script or
+    /// once it has run out.
+    pub fn pad_sample(&self) -> Option<PadSample> {
+        let step = self.pads.get(self.cursor.step)?;
+        let buttons = if self.cursor.frame == 0 {
+            step.press.iter().fold(0, |bits, b| bits | b.bit())
+        } else {
+            0
+        };
+        Some(PadSample {
+            buttons,
+            ..PadSample::default()
+        })
+    }
+
+    /// Counts a drawn frame against the script: the capture name when a step just ended with
+    /// one, and whether the script has now run out.
+    fn pad_frame_drawn(&mut self) -> (Option<String>, bool) {
+        let Some(step) = self.pads.get(self.cursor.step) else {
+            return (None, true);
+        };
+        self.cursor.frame += 1;
+        if self.cursor.frame <= step.wait {
+            return (None, false);
+        }
+        let capture = step.capture.clone();
+        self.cursor = PadCursor {
+            step: self.cursor.step + 1,
+            frame: 0,
+        };
+        (capture, self.cursor.step >= self.pads.len())
+    }
+
     /// Whether `elapsed` just crossed one of [`Self::captures`].
     pub fn capture_due(&self, before: Duration, after: Duration) -> Option<u64> {
         self.captures
@@ -137,23 +237,40 @@ impl TestRun {
     }
 }
 
-/// The menu scenario's step: after [`MENU_FRAMES`], capture and leave.
+/// The menu scenario's step after each frame: the pad script's captures as they come, then,
+/// once the script has run out (or after [`MENU_FRAMES`] without one), capture and leave.
 pub(super) fn menu_step(app: &mut App, frames: u64) -> Option<UiOutcome> {
-    let run = app.test_run.as_ref()?;
-    if run.scenario != Scenario::Menu || frames < MENU_FRAMES {
+    let run = app.test_run.as_mut().filter(|r| r.scenario == Scenario::Menu)?;
+    let done = if run.pads.is_empty() {
+        frames >= MENU_FRAMES
+    } else {
+        let (capture, done) = run.pad_frame_drawn();
+        if let Some(name) = capture {
+            if let Err(e) = capture_now(run, &mut *app.display, &name) {
+                let run = app.test_run.take()?;
+                run.finish(app, false, &format!("capture {name}: {e}"));
+                return Some(UiOutcome::Quit(None));
+            }
+        }
+        done
+    };
+    if !done {
         return None;
     }
     let run = app.test_run.take()?;
-    let ok = match app.display.read_back() {
-        Ok(Some(frame)) => run.capture("menu", frame).map_err(|e| format!("{e:#}")),
-        Ok(None) => Err("no read-back on this display".into()),
-        Err(e) => Err(format!("{e:#}")),
-    };
-    match ok {
+    match capture_now(&run, &mut *app.display, "menu") {
         Ok(()) => run.finish(app, true, "menu drawn and captured"),
         Err(e) => run.finish(app, false, &e),
     }
     Some(UiOutcome::Quit(None))
+}
+
+fn capture_now(run: &TestRun, display: &mut dyn Display, name: &str) -> Result<(), String> {
+    match display.read_back() {
+        Ok(Some(frame)) => run.capture(name, frame).map_err(|e| format!("{e:#}")),
+        Ok(None) => Err("no read-back on this display".into()),
+        Err(e) => Err(format!("{e:#}")),
+    }
 }
 
 /// The log as it stands, best-effort: lines still queued in the appender are missing.
@@ -189,6 +306,30 @@ mod tests {
     fn a_scenario_file_carries_the_pin_to_pair_with() {
         let run: TestRun = serde_json::from_str(r#"{"scenario":"stream","host":"10.0.0.2","pin":"123456"}"#).unwrap();
         assert_eq!(run.pin.as_deref(), Some("123456"));
+    }
+
+    #[test]
+    fn a_pad_script_presses_once_per_step_and_captures_at_its_end() {
+        let mut run: TestRun = serde_json::from_str(
+            r#"{"scenario":"menu","pads":[{"press":["right","a"],"wait":2,"capture":"next"},{"press":["b"],"wait":0}]}"#,
+        )
+        .unwrap();
+        let [a, b, ..] = super::super::pads::FACE;
+        let right = punktfunk_core::input::gamepad::BTN_DPAD_RIGHT;
+        let mut seen = Vec::new();
+        while let Some(sample) = run.pad_sample() {
+            let (capture, done) = run.pad_frame_drawn();
+            seen.push((sample.buttons, capture, done));
+        }
+        assert_eq!(
+            seen,
+            [
+                (right | a, None, false),
+                (0, None, false),
+                (0, Some("next".into()), false),
+                (b, None, true),
+            ]
+        );
     }
 
     #[test]
