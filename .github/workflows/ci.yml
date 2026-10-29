@@ -86,10 +86,14 @@ jobs:
           tar -cf - -C "$RUNNER_TEMP/nvk-archive" . | docker run --rm -i -v pf-nx-toolchains:/opt/pf-nx alpine:3 sh -c \
             'rm -rf /opt/pf-nx/nvk && mkdir -p /opt/pf-nx/nvk && tar -xf - -C /opt/pf-nx/nvk'
       - name: Probe
-        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --features vulkan && scripts/package-nro.sh pf-nx-probe'
+        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --features vulkan,nvdec && scripts/package-nro.sh pf-nx-probe'
+      # Check 6 reads these from the SD card next to the NRO.
+      - name: NVDEC streams
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg && scripts/nvdec-streams.sh
       - uses: actions/upload-artifact@v4
         with:
           name: pf-nx-probe
           path: |
             dist/pf-nx-probe.nro
             dist/pf-nx-probe.elf
+            dist/nvdec-*

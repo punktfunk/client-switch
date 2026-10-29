@@ -13,7 +13,7 @@ on Vulkan (Mesa NVK, linked statically), the shared console UI and NVDEC through
 | `pf-nx-sys` | hand-written libnx / libavcodec / NVK FFI, layout tests, newlib shims | with `// SAFETY:` |
 | `pf-nx-platform` | the console's seam implementations (pure maps build anywhere) | via sys/vk |
 | `pf-nx-host` | the seams on a dev box (Vulkan on Linux, CPU raster on macOS) | one loader call |
-| `pf-nx-probe` | WP0's numbered checks, its own NRO on `pf-nx-sys` (no `av`; NVK behind `vulkan`) | with `// SAFETY:` in `vk.rs` |
+| `pf-nx-probe` | WP0's numbered checks, its own NRO on `pf-nx-sys` (`av` behind `nvdec`, NVK behind `vulkan`) | with `// SAFETY:` in `vk.rs` |
 
 The app never names a libnx call or a Vulkan handle; the binary hands it a `Platform`.
 

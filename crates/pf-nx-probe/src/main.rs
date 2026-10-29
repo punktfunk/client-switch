@@ -7,6 +7,8 @@
 
 #[cfg(target_os = "horizon")]
 mod nx;
+#[cfg(all(target_os = "horizon", feature = "nvdec"))]
+mod nvdec;
 #[cfg(all(target_os = "horizon", feature = "vulkan"))]
 mod vk;
 
@@ -60,6 +62,8 @@ fn main() {
     }
     #[cfg(all(target_os = "horizon", feature = "vulkan"))]
     out.check(4, "vulkan", vk::steps());
+    #[cfg(all(target_os = "horizon", feature = "nvdec"))]
+    out.check(6, "nvdec", nvdec::steps(&dir));
 
     out.line(&format!("probe end {} failed", out.failed));
     if std::env::args().any(|a| a == "--panic") {
