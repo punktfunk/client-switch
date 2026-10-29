@@ -88,3 +88,13 @@ probe build's commit and the run's date.
 - In the same run check 3 paired from the saved fingerprint and negotiated HEVC, but no frame
   came in 15 s (probe at `f0b53c0`, 2026-10-29). The next run had its first frame 2429 ms after
   the connect, without the keyframe request, and check 4 passed again (probe at `6ba89b2`, 2026-10-29).
+- Check 6 (`nvdec`) passes: 1080p60 H.264 and HEVC from `sdmc:` (no B-frames, one IDR, ten
+  seconds each, `scripts/nvdec-streams.sh`) through `nvtegra`, one AU at a time. Every AU came
+  out as a picture with one in flight; the decoder opened in 1 ms and the first picture took
+  8 ms. Send to picture out averaged 7.7 ms for H.264 (8.7 ms worst) and 7.2 ms for HEVC
+  (8.3 ms), the VIC transfer to NV12 2.7 ms (3.2 ms), and the whole loop with the copy into the
+  caller's planes ran 87.9 and 92.0 fps. The first pictures' mean luma is 126, so they are not
+  blank. 10-bit HEVC opens, but receiving its first picture fails with `EINVAL` (-22); the shim
+  asks the transfer for NV12 (probe at `d69e5a4`, 2026-10-29).
+- The probe stays on its last screen until it is closed from HOME: a run that ends looks the
+  same as one that hangs. Only the `probe end` line tells them apart.
