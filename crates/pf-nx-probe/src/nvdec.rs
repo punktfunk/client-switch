@@ -84,7 +84,11 @@ fn decode(step: &str, codec: Codec, data: &[u8], out: &mut Out) -> Result<String
     if aus.is_empty() {
         return Err("no access unit delimiters".into());
     }
-    out.line(&format!("probe 6 nvdec at {step} open {}B aus={}", data.len(), aus.len()));
+    out.line(&format!(
+        "probe 6 nvdec at {step} open {}B aus={}",
+        data.len(),
+        aus.len()
+    ));
     let opened = Instant::now();
     let mut dec = Decoder::open(codec, 1920, 1080).map_err(err)?;
     let open_ms = opened.elapsed().as_millis();
