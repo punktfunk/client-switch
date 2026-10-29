@@ -33,7 +33,7 @@ What builds, and how; nothing here has run on a console.
 - `nouveau_horizon_region_{alloc,free,stats}` are defined in the archive, not needed from the
   title: unused, the link drops them. NVK still takes GPU backing from the top of the heap
   (patch 0001; `NOUVEAU_HORIZON_TOP_DOWN=false` turns it off).
-- Check 4 (`vulkan`) has not run anywhere: Ryujinx does not run NVK builds (plan D15).
+- Ryujinx does not run NVK builds (plan D15): check 4 runs on the console only.
 - `scripts/build-skia.sh [raster|vulkan]` (`task skia`) compiles Skia with devkitA64's G++
   through skia-bindings' offline build and writes the archive cargo-nx.sh's `SKIA_BINARIES_URL`
   names (docs/pins.md). `check -p skia-safe` takes the `vulkan` one: a `-p` outside the workspace
@@ -80,3 +80,10 @@ probe build's commit and the run's date.
   negotiated HEVC (`codec=2`), and the first video frame received, reassembled and decrypted
   3061 ms after the connect returned. The pairing was kept on the SD card and reused on the next
   run (probe at `3a07655`, 2026-10-28).
+- Check 4 (`vulkan`) passes with NVK linked: loader 1.4.354 with `VK_NN_vi_surface` among 15
+  instance extensions, no layers, one GPU `NVIDIA Tegra X1 (GM20B) (NVK GM20B)` (10de:0fe0,
+  driver 26.2.4) with one graphics/compute/transfer queue and a 2391 MiB heap, a device on
+  family 0, and a 16 MiB host-visible buffer written in 1.8 ms and read back in 38.8 ms (probe
+  at `f0b53c0`, 2026-10-29).
+- In the same run check 3 paired from the saved fingerprint and negotiated HEVC, but no frame
+  came in 15 s (probe at `f0b53c0`, 2026-10-29).

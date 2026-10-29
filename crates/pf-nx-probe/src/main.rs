@@ -496,17 +496,52 @@ fn host_steps(dir: &Path, identity: &(String, String), out: &mut Out) -> Steps {
     steps.push(("connect", Ok(format!("codec={}", client.codec))));
 
     out.line("probe 3 quic start frame");
+    // One keyframe request at 5 s: the run at 3a07655 waited 3 s for the first frame, the one at
+    // f0b53c0 saw none in 15 s.
     let start = Instant::now();
+    let mut keyframe = None;
     let frame = loop {
         match client.next_frame(Duration::from_millis(250)) {
-            Ok(_) => break Ok(format!("{}ms", start.elapsed().as_millis())),
-            Err(PunktfunkError::NoFrame) if start.elapsed() < Duration::from_secs(15) => {}
-            Err(e) => break Err(format!("{e} after {}ms", start.elapsed().as_millis())),
+            Ok(_) => {
+                let kf = keyframe.map_or(String::new(), |r| format!(" keyframe={r}"));
+                break Ok(format!("{}ms{kf}", start.elapsed().as_millis()));
+            }
+            Err(PunktfunkError::NoFrame) if start.elapsed() < Duration::from_secs(15) => {
+                if keyframe.is_none() && start.elapsed() >= Duration::from_secs(5) {
+                    keyframe = Some(match client.request_keyframe() {
+                        Ok(()) => "asked@5s".to_owned(),
+                        Err(e) => format!("FAIL({e})"),
+                    });
+                }
+            }
+            Err(e) => {
+                let facts = session_facts(&client, keyframe.as_deref());
+                break Err(format!("{e} after {}ms {facts}", start.elapsed().as_millis()));
+            }
         }
     };
     steps.push(("frame", frame));
     client.disconnect_quit();
     steps
+}
+
+/// What the session knows when no frame came: whether it ended, the round trip, the data
+/// socket's buffer and drops, and the link the host paces at.
+#[cfg(feature = "quic")]
+fn session_facts(client: &punktfunk_core::client::NativeClient, keyframe: Option<&str>) -> String {
+    format!(
+        "keyframe={} ended={} reason={:?} rtt={}us rcvbuf={}KiB os_drops={:?} dropped={} fec={} \
+         link=\"{}\"",
+        keyframe.unwrap_or("no"),
+        client.is_session_ended(),
+        client.end_reason(),
+        client.rtt_us(),
+        client.recv_buffer_kb(),
+        client.socket_drops(),
+        client.frames_dropped(),
+        client.fec_recovered_shards(),
+        client.link_line(),
+    )
 }
 
 #[cfg(feature = "quic")]
