@@ -93,6 +93,10 @@ Read [`AGENTS.md`](AGENTS.md) before changing code: layering, commands and invar
   facts the code relies on.
 - [`docs/pins.md`](docs/pins.md): every pinned dependency and how it moves.
 
+## Use of AI
+
+This project uses AI for writing code. The rules the agents follow are in [AGENTS.md](AGENTS.md).
+
 ## Licence
 
 MIT OR Apache-2.0, at your option ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE)).
