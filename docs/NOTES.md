@@ -114,3 +114,10 @@ record their clocks; the numbers below are under that profile unless an item say
   lines, then libnx aborted the title at the next line: `framebufferBegin` →
   `LibnxError_BadGfxDequeueBuffer` (2345-0021) from `nwindowDequeueBuffer` (Atmosphère report
   `01793287821_05446530aca7e000`). The probe now runs check 4 last and leaves the console closed.
+- At stock clocks (GPU 307 MHz, CPU 1020 MHz, EMC 1331 MHz before and after check 4) the probe
+  runs to `probe end` with check 2 the only failure, and no crash on HOME. Check 3's first frame
+  took 2457 ms. Check 6 ran 78.8 fps for H.264 (decode 8.0 ms, 10.5 ms worst; transfer 3.4 ms,
+  4.2 ms) and 82.7 fps for HEVC (7.4 ms, 9.1 ms; 3.4 ms, 3.8 ms), every AU a picture. Check 4
+  presented 600 frames at 60.23 fps: median 16.67 ms, 99th percentile 16.85 ms, worst 17.04 ms,
+  596 of 599 intervals within 14–19 ms; 41 ms from surface to the first frame. The tester saw
+  the animation smooth (probe at `70a80e5`, 2026-10-29).
