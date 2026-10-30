@@ -2,7 +2,10 @@
 # devkitA64's GCC for Skia's gn build, with the console's flags and the headers newlib lacks.
 # _GNU_SOURCE is what g++ predefines on Linux: under -std=c++20 newlib hides POSIX without it.
 # skia-bindings adds clang's --target= to every compile; GCC is the target by name, so it goes.
+# Skia's -fPIC makes thread-locals global-dynamic, which devkitA64's GCC 16 under -mtp=soft
+# compiles to a read at tp + tp; local-exec is the model of the one static title anyway.
 for a; do shift; case $a in --target=*) ;; *) set -- "$@" "$a" ;; esac; done
 exec aarch64-none-elf-gcc -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE \
+    -ftls-model=local-exec \
     -D__SWITCH__ -D_GNU_SOURCE \
     -isystem "$(dirname "$0")/include" -isystem /opt/devkitpro/libnx/include "$@"

@@ -95,6 +95,15 @@ cp "$out"/lib{skia,skia-bindings,skshaper,skparagraph,skunicode_core,skunicode_i
 cp "$src/LICENSE" "$stage/LICENSE_SKIA"
 toolchain/skia/cc -O2 -c toolchain/skia/compat.c -o "$work/compat.o"
 aarch64-none-elf-ar rs "$stage/libskia.a" "$work/compat.o"
+# A thread-local compiled global-dynamic reads tp + tp: the title faults on its first SkSL
+# compile. Objects ninja kept from a build before toolchain/skia/'s -ftls-model still have it.
+bad=$(aarch64-none-elf-objdump -d "$stage"/lib*.a |
+    awk '/^[0-9a-f]+ </ { fn = $2; n = 9 } /bl\t.*<__aarch64_read_tp>/ { n = 0; next }
+        { n++ } n <= 4 && /\[x0, x0\]/ { print fn }' | sort -u)
+if [[ -n $bad ]]; then
+    printf 'thread-locals at tp + tp (remove %s and rebuild):\n%s\n' "$work" "$bad" >&2
+    exit 1
+fi
 printf %s "$ver" >"$stage/tag.txt"
 printf %s "$key" >"$stage/key.txt"
 # A build that reads the archive mid-write would take it for corrupt and compile Skia itself.
