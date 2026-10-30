@@ -5,7 +5,6 @@ mod display_fb;
 mod display_nvk;
 mod lifecycle;
 mod pads;
-mod video;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -94,7 +93,7 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let ui = presenter.ui();
             (
                 Box::new(display_nvk::NvkDisplay::new(presenter, mode)),
-                Arc::new(video::NxVideo::gpu(dev, slot)),
+                Arc::new(crate::video::NxVideo::gpu(dev, slot)),
                 gpu,
                 ui,
             )
@@ -104,7 +103,7 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let ui = fb.describe();
             (
                 Box::new(fb),
-                Arc::new(video::NxVideo::cpu()),
+                Arc::new(crate::video::NxVideo::cpu()),
                 "none (framebuffer)".into(),
                 ui,
             )

@@ -7,11 +7,22 @@ tasks:
     cmds:
       - . scripts/pins.env && docker build -t "$NX_IMAGE" - < docker/Dockerfile
 
+  host-build:
+    desc: Build the dev box's image (tag HOST_IMAGE in scripts/pins.env), for a box that is not Linux
+    cmds:
+      - . scripts/pins.env && docker build --build-arg RUST_NIGHTLY="$RUST_NIGHTLY" -t "$HOST_IMAGE" - < docker/host.Dockerfile
+
+  host-test:
+    desc: Every workspace test in the dev box's image, as CI's host lane runs them
+    deps: [host-build]
+    cmds:
+      - . scripts/pins.env && PF_NX_IMAGE="$HOST_IMAGE" PF_NX_VOLUME=pf-nx-host bash scripts/docker.sh cargo test --workspace {{.CLI_ARGS}}
+
   cross-check:
-    desc: Type-check the probe for the console
+    desc: Type-check the title and the probe for the console (the title needs `task skia -- vulkan`)
     deps: [build]
     cmds:
-      - bash scripts/docker.sh scripts/cargo-nx.sh check -p pf-nx-probe {{.CLI_ARGS}}
+      - bash scripts/docker.sh scripts/cargo-nx.sh check -p pf-nx -p pf-nx-probe {{.CLI_ARGS}}
 
   probe:
     desc: 'The probe NRO in dist/ with checks 1-3 (`task nvk:probe` adds check 4)'

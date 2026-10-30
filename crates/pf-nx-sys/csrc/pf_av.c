@@ -1,5 +1,7 @@
 // NVDEC through libavcodec's nvtegra hwaccel, as six calls the Rust side binds (src/av.rs).
 // One thread uses a decoder at a time; pictures leave as pitch-linear NV12 via the VIC.
+// Built for a Linux dev box (no __SWITCH__), the same calls decode in software against the
+// system's libavcodec and interleave its 4:2:0 chroma into the same NV12 planes.
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
@@ -49,20 +51,28 @@ int pf_av_open(int codec, int width, int height, PfAvDecoder **out) {
     *out = NULL;
     const AVCodec *c = avcodec_find_decoder(codec == 1 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264);
     if (!c) return AVERROR_DECODER_NOT_FOUND;
+#ifdef __SWITCH__
     enum AVHWDeviceType type = av_hwdevice_find_type_by_name("nvtegra");
     if (type == AV_HWDEVICE_TYPE_NONE) return AVERROR(ENOSYS);
+#endif
     PfAvDecoder *d = av_mallocz(sizeof(*d));
     if (!d) return AVERROR(ENOMEM);
-    int err = av_hwdevice_ctx_create(&d->device, type, NULL, NULL, 0);
+    int err = 0;
+#ifdef __SWITCH__
+    err = av_hwdevice_ctx_create(&d->device, type, NULL, NULL, 0);
     if (err < 0) goto fail;
+#endif
     d->ctx = avcodec_alloc_context3(c);
     d->pkt = av_packet_alloc();
     d->hw = av_frame_alloc();
     d->sw = av_frame_alloc();
     err = AVERROR(ENOMEM);
-    if (!d->ctx || !d->pkt || !d->hw || !d->sw ||
-        !(d->ctx->hw_device_ctx = av_buffer_ref(d->device)))
+    if (!d->ctx || !d->pkt || !d->hw || !d->sw)
         goto fail;
+#ifdef __SWITCH__
+    if (!(d->ctx->hw_device_ctx = av_buffer_ref(d->device)))
+        goto fail;
+#endif
     // The default get_format picks the device's hw format when hw_device_ctx is set.
     d->ctx->width = width;
     d->ctx->height = height;
@@ -99,6 +109,20 @@ static void copy_plane(uint8_t *dst, size_t dst_stride, const uint8_t *src, int 
         memcpy(dst + i * dst_stride, src + i * (size_t)src_stride, row);
 }
 
+// A software decoder's planar 4:2:0 chroma, `pairs` U/V samples a row, as NV12's one plane.
+static void interleave_uv(uint8_t *dst, size_t dst_stride, const AVFrame *src, size_t pairs,
+                          size_t rows) {
+    for (size_t i = 0; i < rows; i++) {
+        const uint8_t *u = src->data[1] + i * (size_t)src->linesize[1];
+        const uint8_t *v = src->data[2] + i * (size_t)src->linesize[2];
+        uint8_t *out = dst + i * dst_stride;
+        for (size_t j = 0; j < pairs; j++) {
+            out[2 * j] = u[j];
+            out[2 * j + 1] = v[j];
+        }
+    }
+}
+
 // 1 a picture written, 0 none ready, < 0 an AVERROR; the picture is dropped on error. `meta`
 // is filled whenever a picture came out, so a too-small buffer reports the size it needs.
 int pf_av_receive(PfAvDecoder *d, uint8_t *y, size_t y_stride, size_t y_len, uint8_t *uv,
@@ -120,16 +144,28 @@ int pf_av_receive(PfAvDecoder *d, uint8_t *y, size_t y_stride, size_t y_len, uin
         if (err < 0) goto out;
         src = d->sw;
     }
-    err = PF_AV_NOT_NV12; // a software frame: the hwaccel did not take the stream
-    if (src->format != AV_PIX_FMT_NV12)
+    // On the console a software frame means the hwaccel did not take the stream.
+#ifdef __SWITCH__
+    int planar = 0;
+#else
+    int planar = src->format == AV_PIX_FMT_YUV420P || src->format == AV_PIX_FMT_YUVJ420P;
+#endif
+    err = PF_AV_NOT_NV12;
+    if (src->format != AV_PIX_FMT_NV12 && !planar)
         goto out;
     size_t w = (size_t)src->width, h = (size_t)src->height;
     size_t uw = (w + 1) & ~(size_t)1, uh = (h + 1) / 2;
     err = PF_AV_TOO_SMALL;
     if (y_stride < w || uv_stride < uw || y_len < y_stride * h || uv_len < uv_stride * uh)
         goto out;
+    int64_t t = av_gettime_relative();
     copy_plane(y, y_stride, src->data[0], src->linesize[0], w, h);
-    copy_plane(uv, uv_stride, src->data[1], src->linesize[1], uw, uh);
+    if (planar) {
+        interleave_uv(uv, uv_stride, src, uw / 2, uh);
+        d->stats.last_transfer_us = (uint32_t)(av_gettime_relative() - t);
+    } else {
+        copy_plane(uv, uv_stride, src->data[1], src->linesize[1], uw, uh);
+    }
     err = 1;
 out:
     av_frame_unref(d->hw);

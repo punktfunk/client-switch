@@ -4,7 +4,8 @@
 //! Every `#[repr(C)]` struct is pinned by `tests/layout.rs` at the size and offsets derived from
 //! the libnx 4.12.0 headers; `tools/gen-layout.sh` prints the same numbers through bindgen.
 //! Everything that calls the console is `cfg(target_os = "horizon")`: off the console only the
-//! pure types and maps build, and `av` opens to an error. Each module names the header its
+//! pure types and maps build, and `av` decodes in software on Linux (the dev box) and opens to an
+//! error elsewhere. Each module names the header its
 //! externs come from.
 //!
 //! Conventions: a libnx `Result` is a `u32`, zero on success; a C enum is a 32-bit integer.

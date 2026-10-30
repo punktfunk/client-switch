@@ -1,12 +1,19 @@
 //! On the console target: builds `csrc/pf_av.c` and links libnx, newlib, the pinned libavcodec and
-//! NVK. Off it: nothing.
+//! NVK. On Linux with `av`: the same shim against the system's libavcodec, which decodes in
+//! software for the dev box. Elsewhere: nothing. `cfg(pf_av)` says the shim is linked.
 
 use std::env;
 use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("horizon") {
+    println!("cargo:rustc-check-cfg=cfg(pf_av)");
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if os == "linux" && env::var_os("CARGO_FEATURE_AV").is_some() {
+        build_dev_box_shim();
+        return;
+    }
+    if os != "horizon" {
         return;
     }
     println!("cargo:rerun-if-env-changed=DEVKITPRO");
@@ -18,6 +25,7 @@ fn main() {
 
     if av {
         build_shim(&dkp, &portlibs);
+        println!("cargo:rustc-cfg=pf_av");
     }
 
     let nvk = PathBuf::from(env::var_os("PF_NX_NVK_LIB").unwrap_or_else(|| "/opt/pf-nx/nvk/lib".into()));
@@ -83,4 +91,19 @@ fn build_shim(dkp: &Path, portlibs: &Path) {
         .define("__SWITCH__", None)
         .warnings(true)
         .compile("pf_av");
+}
+
+/// The shim against the system's libavcodec (`libavcodec-dev` on Debian and Ubuntu).
+fn build_dev_box_shim() {
+    println!("cargo:rerun-if-changed=csrc/pf_av.c");
+    let mut build = cc::Build::new();
+    for lib in ["libavcodec", "libavutil"] {
+        let found = pkg_config::probe_library(lib)
+            .unwrap_or_else(|e| panic!("{lib} for the dev box's software decoder (libavcodec-dev): {e}"));
+        for dir in found.include_paths {
+            build.include(dir);
+        }
+    }
+    build.file("csrc/pf_av.c").warnings(true).compile("pf_av");
+    println!("cargo:rustc-cfg=pf_av");
 }

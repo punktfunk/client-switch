@@ -1,4 +1,6 @@
-//! H.264 and HEVC on NVDEC through libavcodec's `nvtegra` hwaccel (plan D6, §3.2).
+//! H.264 and HEVC on NVDEC through libavcodec's `nvtegra` hwaccel (plan D6, §3.2). On a Linux dev
+//! box the same lane runs on libavcodec's software decoders (`pf_nx_sys::av`), so the presenter
+//! shows real pictures there.
 //!
 //! `feed` decodes on the session's video thread: send the access unit, then receive every
 //! picture straight into the presenter's next staging buffer, which `commit` copies into a
@@ -19,6 +21,12 @@ use punktfunk_core::quic;
 
 /// How often the lane logs where a picture's time went.
 const TIMING_WINDOW: Duration = Duration::from_secs(2);
+
+/// The decoder behind the lane, for the sink's name and the log.
+#[cfg(target_os = "horizon")]
+const DECODER: &str = "NVDEC";
+#[cfg(not(target_os = "horizon"))]
+const DECODER: &str = "libavcodec (software)";
 
 pub struct NxVideo {
     /// The presenter's device and slot; `None` on the framebuffer display.
@@ -44,11 +52,11 @@ impl VideoDecoders for NxVideo {
         let codec = match spec.codec {
             quic::CODEC_H264 => av::Codec::H264,
             quic::CODEC_HEVC => av::Codec::Hevc,
-            other => bail!("NVDEC here decodes H.264 and HEVC, not codec 0x{other:02x}"),
+            other => bail!("{DECODER} here decodes H.264 and HEVC, not codec 0x{other:02x}"),
         };
         ensure!(
             spec.bit_depth <= 8 && !spec.chroma444,
-            "NVDEC here decodes 8-bit 4:2:0, not {}-bit{}",
+            "{DECODER} here decodes 8-bit 4:2:0, not {}-bit{}",
             spec.bit_depth,
             if spec.chroma444 { " 4:4:4" } else { "" }
         );
@@ -57,7 +65,7 @@ impl VideoDecoders for NxVideo {
             Some((dev, slot)) => Out::Gpu(Nv12Upload::new(dev.clone(), slot.clone(), spec)?),
             None => Out::scratch(spec),
         };
-        tracing::info!("nvdec: {codec:?} {}x{}", spec.width, spec.height);
+        tracing::info!("{DECODER}: {codec:?} {}x{}", spec.width, spec.height);
         Ok(Box::new(NxSink {
             lane: Mutex::new(Lane {
                 decoder,
@@ -67,6 +75,10 @@ impl VideoDecoders for NxVideo {
             }),
             started: Instant::now(),
         }))
+    }
+
+    fn lane_name(&self, _codec: u8) -> &'static str {
+        DECODER
     }
 }
 
@@ -227,7 +239,7 @@ impl NxSink {
 
 impl VideoSink for NxSink {
     fn name(&self) -> &'static str {
-        "NVDEC"
+        DECODER
     }
 
     fn caps(&self) -> VideoSinkCaps {

@@ -45,9 +45,19 @@ What builds, and how; nothing here has run on a console.
   g++ does on Linux. newlib has no `sys/mman.h`: Skia and ICU get a header, and `libskia.a` gets
   weak `mmap` (a heap copy), `munmap`, `pread` and `posix_madvise` (`toolchain/skia/compat.c`).
 - bindgen parses as aarch64 Linux: clang 14, and libclang 18 too, reject libstdc++ 16's
-  `__normal_iterator`. `toolchain/skia/layout-check.py` holds G++'s sizes and alignments to
+  `__normal_iterator`. Off an arm64 box that needs Debian's arm64 cross libstdc++ in the image
+  (CI's x86_64 runner had no `cassert`). `toolchain/skia/layout-check.py` holds G++'s sizes and alignments to
   bindings.rs on every build: none differ (raster 352 of 383 types, vulkan 390 of 426; the rest
   are private or anonymous).
+- On a box that is not Linux the dev box runs in `docker/host.Dockerfile` (`task docker:host-test`;
+  `PF_NX_IMAGE=$HOST_IMAGE scripts/docker.sh …` for anything else). `pf_av.c` builds there against
+  the system's libavcodec and decodes in software, so `pf-nx-host` streams H.264/HEVC through the
+  console's video lane into the presenter on lavapipe. docker.sh drops ignored files from the
+  source volume each run: the dev box's data dir lives under `target/` (`--data-dir /w/target/devbox`).
+  mDNS does not reach the container, so a test run names the host and its management port
+  (`mgmt_port`), which a host can move off 47990.
+- `task cross-check` type-checks the title and the probe; the title takes the Vulkan Skia
+  archive (`task skia -- vulkan`). CI keeps that archive in its cache, as it does NVK's.
 - Either archive leaves one symbol to the title, `sysconf` (pf-nx-sys has it), and needs
   `-lstdc++`, which pf-nx-sys links only with `nvk`. `kN32` is RGBA: Linux's BGRA comes from
   `is_linux` alone. `FontMgr::new()` is the empty manager; the title's fonts load from data.

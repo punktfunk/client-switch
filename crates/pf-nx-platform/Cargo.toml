@@ -20,5 +20,13 @@ pf-nx-app = { path = "../pf-nx-app" }
 pf-nx-sys = { path = "../pf-nx-sys" }
 pf-nx-vk = { path = "../pf-nx-vk", features = ["skia-vulkan"] }
 
+# The video lane, for the dev box: libavcodec's software decoders into the same presenter.
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+pf-nx-app = { path = "../pf-nx-app" }
+pf-nx-sys = { path = "../pf-nx-sys" }
+pf-nx-vk = { path = "../pf-nx-vk" }
+
 [lints]
 workspace = true

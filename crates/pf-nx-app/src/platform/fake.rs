@@ -93,6 +93,10 @@ impl VideoDecoders for FakeVideo {
             clock: std::time::Instant::now(),
         }))
     }
+
+    fn lane_name(&self, _codec: u8) -> &'static str {
+        "fake"
+    }
 }
 
 /// A sink that takes whole access units with timestamps, like the console's lanes.

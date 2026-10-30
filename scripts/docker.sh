@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Runs a command in the toolchain image on a copy of this tree: scripts/docker.sh <command…>
+# PF_NX_IMAGE runs it in another image instead (HOST_IMAGE, the dev box's).
 # The tree goes in over stdin (git's file list) instead of a bind mount, which can hang Docker
 # Desktop on an external disk. target/ and cargo's registry live in volumes; dist/ comes back out.
 set -euo pipefail
@@ -19,7 +20,7 @@ git ls-files -co --exclude-standard -z | while IFS= read -r -d '' f; do [[ ! -e 
 # /opt/pf-nx, shared by every source volume: PF_NX_VOLUME separates parallel builds, not these.
 docker run --rm -v "$vol-src:/w" -v "$vol-target:/w/target" -v "$vol-cargo:/usr/local/cargo/registry" \
     -v "$vol-git:/usr/local/cargo/git" -v "${PF_NX_TOOLCHAINS_VOLUME:-pf-nx-toolchains}:/opt/pf-nx" \
-    -w /w -e PKG_VERSION "$NX_IMAGE" "$@"
+    -w /w -e PKG_VERSION "${PF_NX_IMAGE:-$NX_IMAGE}" "$@"
 if docker run --rm -v "$vol-src:/w" alpine:3 test -d /w/dist; then
     docker run --rm -v "$vol-src:/w" alpine:3 tar -cf - -C /w dist | tar -xf - -C "$root"
 fi

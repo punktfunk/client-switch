@@ -58,11 +58,21 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
     };
     let scripted = app.test_run.as_ref().and_then(|run| {
         let host = run.host.as_deref()?;
+        if let (None, Some(pin)) = (service.row_for(host, run.port), &run.pin) {
+            let port = run.port.unwrap_or(pf_client_core::deeplink::DEFAULT_PORT);
+            if let Err(e) = service.pair_now(host, port, pin, &opts.device_name) {
+                tracing::warn!("test run: pairing with {host}:{port} failed: {e}");
+            }
+        }
+        if let Some(mgmt) = run.mgmt_port {
+            service.set_mgmt_port(host, run.port, mgmt);
+        }
         let row = service.row_for(host, run.port);
         if row.is_none() {
             tracing::warn!("test run: {host} is not a paired host here");
         }
-        row
+        // The menu scenario names a host to pair with or reach, not to stream from.
+        row.filter(|_| run.scenario == testrun::Scenario::Stream)
     });
     let entry = match scripted {
         Some(row) => ConsoleEntry::Stream(Box::new(row)),
@@ -111,6 +121,9 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         batch.clear();
         if let Some(pads) = app.pads.as_mut() {
             pads.poll(&mut batch);
+        }
+        if let Some(scripted) = app.test_run.as_ref().and_then(testrun::TestRun::pad_sample) {
+            batch.insert(0, scripted);
         }
         menu_out.clear();
         nav.poll(&menu_sample(&batch), Instant::now(), &mut menu_out);

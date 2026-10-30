@@ -268,6 +268,23 @@ impl Service {
         Some(self.saved_row(known))
     }
 
+    /// Saves `mgmt` as a paired host's management port, as its advert would have: a scripted run
+    /// where mDNS does not reach (a container) names it instead.
+    pub(crate) fn set_mgmt_port(&self, addr: &str, port: Option<u16>, mgmt: u16) {
+        self.store.edit(|state| {
+            let Some(h) = state
+                .known_hosts
+                .iter_mut()
+                .find(|h| h.addr == addr && port.is_none_or(|p| h.port == p) && h.is_paired())
+            else {
+                return false;
+            };
+            let changed = h.shared.mgmt_port != Some(mgmt);
+            h.shared.mgmt_port = Some(mgmt);
+            changed
+        });
+    }
+
     fn saved_row(&self, h: &KnownHost) -> HostRow {
         let key = shared::known_host_key(h);
         let advert = self.discovered.iter().find(|d| same_host(h, d));
@@ -654,6 +671,28 @@ impl Service {
         let key = self.remember_paired(outcome, fingerprint);
         let phase = PairPhase::Paired { key };
         self.handles.console.set_pair(PairStatus { req, phase });
+    }
+
+    /// Pairs with `addr:port` on this thread and saves the host: a scripted run that carries the
+    /// host's PIN, with nobody at the pad to type it.
+    pub(crate) fn pair_now(&mut self, addr: &str, port: u16, pin: &str, device_name: &str) -> Result<(), String> {
+        let (name, mgmt_port, mac, os) = self.advert_facts(addr, port);
+        let identity = (self.identity.0.as_str(), self.identity.1.as_str());
+        let fingerprint = NativeClient::pair(addr, port, identity, pin, device_name, budget::HOST_WAIT)
+            .map_err(|e| crate::core::errors::pair_message(&e))?;
+        tracing::info!("console: paired with {addr}:{port}");
+        let outcome = PairOutcome {
+            req: RequestKey::default(),
+            name,
+            addr: addr.into(),
+            port,
+            mgmt_port,
+            mac,
+            os,
+            result: Ok(fingerprint),
+        };
+        self.remember_paired(outcome, fingerprint);
+        Ok(())
     }
 
     /// Save a host this console just paired with, returning its row key.

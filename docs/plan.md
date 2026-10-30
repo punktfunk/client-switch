@@ -1,6 +1,7 @@
 # Nintendo Switch client — a Rust homebrew title on NVDEC
 
-> **Status: designed 2026-10-28, nothing built.** Target: the Switch 1 (Erista and Mariko, Tegra
+> **Status: designed 2026-10-28; WP0's probe passed on the console and WP1 closed on 2026-10-29
+> (`docs/NOTES.md`, §4). WP2 is next.** Target: the Switch 1 (Erista and Mariko, Tegra
 > X1), on Atmosphère, as an `.nro`. The Switch 2 is a later leg behind the same seams (§9); no
 > modded one exists to test on. The maintainer's fellow developer holds the only test device, so
 > every work package is written for a developer who never holds the console — the PS5 client's
@@ -187,6 +188,20 @@ the Mac, the software rung, SDL pads.
 
 **Exit:** `task test` green on the Mac; the host client lists hosts, pairs and streams a game
 on a Linux box through the real presenter; `task cross-check` type-checks the console code.
+
+**Outcome (2026-10-29).** The dev box is a container (`docker/host.Dockerfile`, `task
+docker:host-test`) on the maintainer's Windows PC, which also runs the host; no Mac or Linux box
+took part. There `task test` is green, and `pf-nx-host` lists the PC's host, pairs from a test
+run's PIN and streams 1080p60 HEVC through the presenter on lavapipe, decoded by the console's
+own video lane on libavcodec's software decoder: 770 pictures in 20 s, decode to present p50
+12 ms, none dropped. The library loads with its covers. `task cross-check` type-checks the
+title and the probe; CI's console lane builds `punktfunk.nro` beside the probe. Departures:
+
+- The pads are scripted, not SDL: a container on Windows sees no controller, and the developer
+  who tests the dev box is the agent. `test-run.json`'s `pads` presses through the menu and
+  saves a frame per step. SDL pads wait for a Linux or Mac box that wants them.
+- The UI rasters on the CPU there; `skia-vulkan` is the console's.
+- mDNS does not cross Docker's network: a test run names the host and its management port.
 
 ### WP2 — The console on the console (two weeks)
 
