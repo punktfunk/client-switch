@@ -139,3 +139,11 @@ record their clocks; the numbers below are under that profile unless an item say
   the strike cache, `AtlasTextOp` and libjpeg-turbo's SIMD flags all had it. The Skia wrappers now
   pass `-ftls-model=local-exec`, and `scripts/build-skia.sh` refuses an archive that still has the
   pattern (title at `d484d57`, 2026-10-30; Atmosphère report `01793372003_05446530aca7e000`).
+- With that archive the title boots on NVK to the console UI: the tabs warm in 647 ms, mDNS
+  resolves the PC's host on the LAN, and the menu drew 586 frames in 10 s at a CPU p50 of 2.8 ms
+  (p99 5.4 ms). Quitting from the menu then faulted hbl, not the title: a user break while it
+  loaded the next NRO (2001-0106), the title's threads all gone. Closing from HOME did not
+  (title at `5b7dfa2`, 2026-10-30; Atmosphère report `01793385393_05446530aca7e000`).
+- Dropping the display, the decoders and the pads before `Lifecycle::exit` ends that: the menu's
+  Exit returns to hbmenu. The title paired with the host by PIN; its identity is its own, not the
+  probe's (title at `a29f5d6`, 2026-10-30).
