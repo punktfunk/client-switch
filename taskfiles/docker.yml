@@ -19,10 +19,10 @@ tasks:
       - . scripts/pins.env && PF_NX_IMAGE="$HOST_IMAGE" PF_NX_VOLUME=pf-nx-host bash scripts/docker.sh cargo test --workspace {{.CLI_ARGS}}
 
   cross-check:
-    desc: Type-check the probe for the console
+    desc: Type-check the title and the probe for the console (the title needs `task skia -- vulkan`)
     deps: [build]
     cmds:
-      - bash scripts/docker.sh scripts/cargo-nx.sh check -p pf-nx-probe {{.CLI_ARGS}}
+      - bash scripts/docker.sh scripts/cargo-nx.sh check -p pf-nx -p pf-nx-probe {{.CLI_ARGS}}
 
   probe:
     desc: 'The probe NRO in dist/ with checks 1-3 (`task nvk:probe` adds check 4)'
