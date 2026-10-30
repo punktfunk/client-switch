@@ -130,8 +130,18 @@ pub fn run(platform: Platform) -> ! {
         plan.run();
     }
     tracing::info!("exiting");
+    // The console's GPU memory lives in the title's heap: a device left open keeps those pages
+    // mapped, and hbl faults loading the next NRO over them. `exit` never returns to drop them.
+    let App {
+        display,
+        pads,
+        lifecycle,
+        media,
+        ..
+    } = app;
+    drop((display, pads, media));
     drop(flush);
-    app.lifecycle.exit()
+    lifecycle.exit()
 }
 
 /// The menu and the stream in turn, until one of them quits.

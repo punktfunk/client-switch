@@ -131,3 +131,33 @@ record their clocks; the numbers below are under that profile unless an item say
   presented 600 frames at 60.23 fps: median 16.67 ms, 99th percentile 16.85 ms, worst 17.04 ms,
   596 of 599 intervals within 14–19 ms; 41 ms from surface to the first frame. The tester saw
   the animation smooth (probe at `70a80e5`, 2026-10-29).
+- The title's first launch logs its start line (Erista, firmware 22.5.0, NVK on the GM20B, Skia on
+  Vulkan at 1280x720) and stamps `settings.json`, then dies building the console UI: a data abort
+  reading address 0 in `SkSL::Pool::AllocMemory`, under the backdrop's `SkRuntimeEffect::
+  MakeForShader`. Skia's `-fPIC` makes its thread-locals global-dynamic, and devkitA64's GCC 16
+  under `-mtp=soft` compiles that to a load from tp + tp with no TLS relocation; the SkSL pool,
+  the strike cache, `AtlasTextOp` and libjpeg-turbo's SIMD flags all had it. The Skia wrappers now
+  pass `-ftls-model=local-exec`, and `scripts/build-skia.sh` refuses an archive that still has the
+  pattern (title at `d484d57`, 2026-10-30; Atmosphère report `01793372003_05446530aca7e000`).
+- With that archive the title boots on NVK to the console UI: the tabs warm in 647 ms, mDNS
+  resolves the PC's host on the LAN, and the menu drew 586 frames in 10 s at a CPU p50 of 2.8 ms
+  (p99 5.4 ms). Quitting from the menu then faulted hbl, not the title: a user break while it
+  loaded the next NRO (2001-0106), the title's threads all gone. Closing from HOME did not
+  (title at `5b7dfa2`, 2026-10-30; Atmosphère report `01793385393_05446530aca7e000`).
+- The title paired with the host by PIN (its identity is its own, not the probe's), streamed
+  720p60 HEVC through NVDEC, came back to the menu, and quit: hbl faulted the same way, so
+  dropping the display, the decoders and the pads before `Lifecycle::exit` was not enough. The
+  settings writer failed every save after the first: `rename` onto an existing file is EEXIST
+  on Horizon (title at `a29f5d6`, 2026-10-30; Atmosphère report `01793390067_05446530aca7e000`).
+- libnx 4.12 leaves `pthread_detach`'s back end undefined, so a detached std thread that ended
+  kept its stack mapped and its heap pages locked; bevy-horizon names that as one cause of the
+  same hbl fault. `pf-nx-sys::rt` now closes them, `rename` replaces, and the exit writes
+  `exit.log` with what still holds the heap and leaves through AM to HOME if anything does.
+- With that, quitting from the menu returns to hbmenu, three times in a row, the test run's
+  included: `exit.log` reads one detached thread closed and the heap clean at once. The test
+  run (`menu`) drew the Hosts screen, moved right and back, and wrote its verdict with three
+  frames. The host started unpaired and paired again by PIN; then a 720p60 HEVC stream through
+  NVDEC, back to the menu, a renamed host, the client's name and a setting changed, and all
+  three still there on the next launch, with no failed save. Of 23 ten-second windows in the
+  menu, 14 drew 595–601 frames; the other 9 drew 567–593, mostly with a frame of 65–213 ms
+  (title at `927533b`, 2026-10-30; bundle `verdict/1793400050`).

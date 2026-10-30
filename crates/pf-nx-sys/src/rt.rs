@@ -6,6 +6,8 @@
 
 use core::arch::asm;
 use core::ffi::{c_char, c_int, c_long, c_void};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 extern "C" {
     fn __real_threadCreate(
@@ -21,6 +23,10 @@ extern "C" {
     fn __real_rename(old: *const c_char, new: *const c_char) -> c_int;
     fn __real_rmdir(path: *const c_char) -> c_int;
     fn __errno() -> *mut c_int;
+    fn threadClose(t: *mut c_void) -> u32;
+    fn __libnx_free(p: *mut c_void);
+    fn svcWaitSynchronization(index: *mut i32, handles: *const u32, count: i32, timeout_ns: u64) -> u32;
+    fn svcSleepThread(nano: i64);
 }
 
 /// libnx `ThreadFunc`.
@@ -29,14 +35,16 @@ type ThreadFunc = unsafe extern "C" fn(arg: *mut c_void);
 /// newlib's errno values.
 const ENOSYS: c_int = 88;
 const EFAULT: c_int = 14;
+const EEXIST: c_int = 17;
 
 /// Keeps this module in the link. A binary's own object references these strongly, so the
 /// linker extracts the member that defines them.
 #[inline(never)]
 pub fn link_guard() {
-    let keep: [*const (); 10] = [
+    let keep: [*const (); 11] = [
         userAppInit as *const (),
         __wrap_threadCreate as *const (),
+        __syscall_thread_detach as *const (),
         __wrap_fchmod as *const (),
         __wrap_rename as *const (),
         __wrap_rmdir as *const (),
@@ -87,6 +95,8 @@ pub unsafe extern "C" fn __wrap_threadCreate(
     prio: c_int,
     cpuid: c_int,
 ) -> u32 {
+    // Frees the stacks of detached threads that have exited before taking another one.
+    close_detached_threads(Duration::ZERO);
     let start = Box::into_raw(Box::new((entry, arg)));
     // SAFETY: the caller's arguments, with `thread_start` owning `start` once the thread runs.
     let rc = unsafe { __real_threadCreate(t, thread_start, start.cast(), stack_mem, stack_sz, prio, cpuid) };
@@ -103,6 +113,134 @@ unsafe extern "C" fn thread_start(start: *mut c_void) {
     let (entry, arg) = *unsafe { Box::from_raw(start.cast::<(ThreadFunc, *mut c_void)>()) };
     // SAFETY: the entry and argument the thread's creator passed to `threadCreate`.
     unsafe { entry(arg) };
+}
+
+// std detaches a thread whenever its `JoinHandle` drops unjoined (tokio's blocking pool, the
+// log writer, fire-and-forget spawns): `pthread_detach`. devkitPro newlib's calls the weak
+// `__syscall_thread_detach`, which libnx 4.12 leaves undefined, so a detached thread that
+// finished kept its stack mapped and the heap pages under it locked, and hbl faulted reading
+// the next NRO over them at exit (2001-0106). A thread cannot unmap the stack it runs on, so
+// detaching records it here, and it is closed as `pthread_join` would once its handle signals:
+// at the next thread created or detached, and at exit. After bevy-horizon's `compat.rs`.
+
+/// newlib.c's `THRD_MAIN_HANDLE`, what `pthread_self` returns on the main thread.
+const MAIN_THREAD: usize = !0;
+const DETACHED_SLOTS: usize = 256;
+/// libnx `struct __pthread_t` pointers (`{ Thread thr; void *rc; }`, from `__libnx_alloc`); 0
+/// is a free slot. Only the closer, holding `CLOSING`, empties slots.
+static DETACHED: [AtomicUsize; DETACHED_SLOTS] = [const { AtomicUsize::new(0) }; DETACHED_SLOTS];
+static DETACHED_COUNT: AtomicUsize = AtomicUsize::new(0);
+static CLOSING: AtomicBool = AtomicBool::new(false);
+/// Detached while every slot was taken: never closed.
+static UNTRACKED: AtomicU32 = AtomicU32::new(0);
+/// Exited detached threads `threadClose` refused, since launch.
+static CLOSE_FAILED: AtomicU32 = AtomicU32::new(0);
+/// `svcWaitSynchronization` takes at most 0x40 handles.
+const MAX_WAIT_HANDLES: usize = 0x40;
+
+/// libnx's missing `pthread_detach` back end. It never fails: std `debug_assert`s that.
+///
+/// # Safety
+/// `thread` is a pthread newlib created, detached once.
+#[no_mangle]
+pub unsafe extern "C" fn __syscall_thread_detach(thread: *mut c_void) -> c_int {
+    let thread = thread as usize;
+    if thread == 0 || thread == MAIN_THREAD {
+        return 0;
+    }
+    let tracked = DETACHED.iter().any(|slot| {
+        slot.compare_exchange(0, thread, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    });
+    if tracked {
+        DETACHED_COUNT.fetch_add(1, Ordering::AcqRel);
+    } else {
+        UNTRACKED.fetch_add(1, Ordering::Relaxed);
+    }
+    close_detached_threads(Duration::ZERO);
+    0
+}
+
+/// What [`close_detached_threads`] did.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DetachedThreads {
+    /// Closed by this call.
+    pub closed: u32,
+    /// Detached and still running when it returned.
+    pub running: u32,
+    /// Since launch: exited ones `threadClose` refused, and ones detached past the slots.
+    pub close_failed: u32,
+    pub untracked: u32,
+}
+
+/// Closes every detached thread that has exited: unmaps its stack, which unlocks those heap
+/// pages, closes its handle and frees it. A non-zero `wait` keeps waiting that long in all for
+/// the running ones. `None` when another thread held the closer for all of `wait`.
+pub fn close_detached_threads(wait: Duration) -> Option<DetachedThreads> {
+    let deadline = (!wait.is_zero()).then(|| Instant::now() + wait);
+    let mut result = DetachedThreads::default();
+    if DETACHED_COUNT.load(Ordering::Acquire) != 0 {
+        while CLOSING
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            match deadline {
+                // SAFETY: sleeps the calling thread.
+                Some(deadline) if Instant::now() < deadline => unsafe { svcSleepThread(1_000_000) },
+                _ => return None,
+            }
+        }
+        loop {
+            let mut handles = [0u32; MAX_WAIT_HANDLES];
+            let mut count = 0;
+            result.running = 0;
+            for slot in &DETACHED {
+                let thread = slot.load(Ordering::Acquire);
+                if thread == 0 {
+                    continue;
+                }
+                // SAFETY: a live pthread from the slot, whose first field is libnx's `Thread`,
+                // whose first is the handle; a thread's handle signals once it has exited.
+                let handle = unsafe { (thread as *const u32).read() };
+                let mut index = 0;
+                // SAFETY: one handle, a zero timeout.
+                if unsafe { svcWaitSynchronization(&mut index, &handle, 1, 0) } != 0 {
+                    result.running += 1;
+                    if count < MAX_WAIT_HANDLES {
+                        handles[count] = handle;
+                        count += 1;
+                    }
+                    continue;
+                }
+                slot.store(0, Ordering::Release);
+                DETACHED_COUNT.fetch_sub(1, Ordering::AcqRel);
+                // SAFETY: the thread has exited and nothing else holds it: detached, so never
+                // joined. `threadClose` unmaps its stack; the pthread is libnx's allocation.
+                if unsafe { threadClose(thread as *mut c_void) } == 0 {
+                    // SAFETY: closed, so the pthread is ours alone to free, as `pthread_join` does.
+                    unsafe { __libnx_free(thread as *mut c_void) };
+                    result.closed += 1;
+                } else {
+                    CLOSE_FAILED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            let left = deadline.map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()));
+            if count == 0 || left.is_zero() {
+                break;
+            }
+            // Sleeps until one of them exits, the time is up, or a handle is bad.
+            let mut index = 0;
+            let nanos = u64::try_from(left.as_nanos()).unwrap_or(u64::MAX);
+            // SAFETY: `count` live handles from the array.
+            if unsafe { svcWaitSynchronization(&mut index, handles.as_ptr(), count as i32, nanos) } != 0 {
+                break;
+            }
+        }
+        CLOSING.store(false, Ordering::Release);
+    }
+    result.close_failed = CLOSE_FAILED.load(Ordering::Relaxed);
+    result.untracked = UNTRACKED.load(Ordering::Relaxed);
+    Some(result)
 }
 
 /// Horizon's file systems have no permission bits and fsdev fails `fchmod` with ENOSYS, which
@@ -122,15 +260,73 @@ pub unsafe extern "C" fn __wrap_fchmod(fd: c_int, mode: u32) -> c_int {
     }
 }
 
-// ponytail: rename and rmdir pass through; replace-on-rename and the ENOTEMPTY mapping come
-// when the app renames or removes folders.
+/// Added to the destination's name while it is moved aside.
+const REPLACED_SUFFIX: &[u8] = b".replaced";
+
+/// Horizon's file systems will not rename onto an existing file (libnx turns
+/// `PathAlreadyExists` into EEXIST), where POSIX and std's `fs::rename` replace it: the settings
+/// writer's temporary file failed every save after the first. Between two files this moves the
+/// destination aside, renames, then deletes it, or moves it back if the rename failed. Unlike
+/// POSIX it is not atomic: a title that dies in between leaves `<new>.replaced` and no `<new>`.
+///
 /// # Safety
 /// As `rename`.
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_rename(old: *const c_char, new: *const c_char) -> c_int {
-    // SAFETY: the caller's arguments.
-    unsafe { __real_rename(old, new) }
+    // SAFETY: the caller's arguments; errno is this thread's.
+    unsafe {
+        let rc = __real_rename(old, new);
+        if rc == 0 || *__errno() != EEXIST {
+            return rc;
+        }
+        match replace_file(old, new) {
+            Ok(()) => 0,
+            Err(errno) => {
+                *__errno() = errno;
+                -1
+            }
+        }
+    }
 }
+
+/// `rename` onto an existing file. Errors are errno values.
+///
+/// # Safety
+/// As `rename`.
+unsafe fn replace_file(old: *const c_char, new: *const c_char) -> Result<(), c_int> {
+    use std::ffi::{CStr, CString, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = |c: &CStr| OsStr::from_bytes(c.to_bytes()).to_owned();
+    let is_file = |c: &CStr| std::fs::symlink_metadata(path(c)).is_ok_and(|m| m.is_file());
+    // SAFETY: the caller's NUL-terminated paths.
+    let (old_c, new_c) = unsafe { (CStr::from_ptr(old), CStr::from_ptr(new)) };
+    if !is_file(old_c) || !is_file(new_c) {
+        return Err(EEXIST);
+    }
+    let mut aside = new_c.to_bytes().to_vec();
+    aside.extend_from_slice(REPLACED_SUFFIX);
+    let aside = CString::new(aside).map_err(|_| EEXIST)?;
+    if std::fs::symlink_metadata(path(&aside)).is_ok() {
+        return Err(EEXIST);
+    }
+    // SAFETY: NUL-terminated paths; errno is this thread's.
+    unsafe {
+        if __real_rename(new, aside.as_ptr()) != 0 {
+            return Err(EEXIST);
+        }
+        if __real_rename(old, new) == 0 {
+            let _ = std::fs::remove_file(path(&aside));
+            return Ok(());
+        }
+        // Also the way out when `old` and `new` name the same file: it is now `aside`.
+        let errno = *__errno();
+        __real_rename(aside.as_ptr(), new);
+        Err(errno)
+    }
+}
+
+// ponytail: rmdir passes through; the ENOTEMPTY mapping comes when the app removes folders.
 
 /// # Safety
 /// As `rmdir`.
