@@ -15,7 +15,11 @@ RUN dkp-pacman -Syu --noconfirm --needed devkitA64 libnx switch-tools switch-lib
     && grep -qx "libnx $LIBNX" /opt/devkitpro/VERSIONS \
     && grep -qx "switch-tools $SWITCH_TOOLS" /opt/devkitpro/VERSIONS
 
+# bindgen reads Skia's headers as aarch64 Linux (scripts/build-skia.sh): off an arm64 box that
+# takes Debian's arm64 cross libstdc++, where clang finds it.
 RUN apt-get update && apt-get install -y --no-install-recommends clang libclang-dev ninja-build pkg-config \
+    && if [ "$(dpkg --print-architecture)" != arm64 ]; then \
+        apt-get install -y --no-install-recommends libstdc++-12-dev-arm64-cross; fi \
     && rm -rf /var/lib/apt/lists/*
 
 ENV RUSTUP_HOME=/usr/local/rustup \

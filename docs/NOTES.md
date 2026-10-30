@@ -45,7 +45,8 @@ What builds, and how; nothing here has run on a console.
   g++ does on Linux. newlib has no `sys/mman.h`: Skia and ICU get a header, and `libskia.a` gets
   weak `mmap` (a heap copy), `munmap`, `pread` and `posix_madvise` (`toolchain/skia/compat.c`).
 - bindgen parses as aarch64 Linux: clang 14, and libclang 18 too, reject libstdc++ 16's
-  `__normal_iterator`. `toolchain/skia/layout-check.py` holds G++'s sizes and alignments to
+  `__normal_iterator`. Off an arm64 box that needs Debian's arm64 cross libstdc++ in the image
+  (CI's x86_64 runner had no `cassert`). `toolchain/skia/layout-check.py` holds G++'s sizes and alignments to
   bindings.rs on every build: none differ (raster 352 of 383 types, vulkan 390 of 426; the rest
   are private or anonymous).
 - On a box that is not Linux the dev box runs in `docker/host.Dockerfile` (`task docker:host-test`;
