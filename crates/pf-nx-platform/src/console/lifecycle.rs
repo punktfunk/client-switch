@@ -84,10 +84,12 @@ const MIB: f64 = 1_048_576.0;
 fn release_heap() {
     let mut report = String::new();
     match rt::close_detached_threads(RELEASE_WAIT) {
-        Some(t) => report += &format!(
-            "detached threads: closed {}, {} still running, {} close failures and {} untracked since launch\n",
-            t.closed, t.running, t.close_failed, t.untracked
-        ),
+        Some(t) => {
+            report += &format!(
+                "detached threads: closed {}, {} still running, {} close failures and {} untracked since launch\n",
+                t.closed, t.running, t.close_failed, t.untracked
+            )
+        }
         None => report += "detached threads: another thread held the closer\n",
     }
     let started = Instant::now();

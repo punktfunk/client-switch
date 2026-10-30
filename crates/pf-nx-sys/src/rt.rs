@@ -148,9 +148,10 @@ pub unsafe extern "C" fn __syscall_thread_detach(thread: *mut c_void) -> c_int {
     if thread == 0 || thread == MAIN_THREAD {
         return 0;
     }
-    let tracked = DETACHED
-        .iter()
-        .any(|slot| slot.compare_exchange(0, thread, Ordering::AcqRel, Ordering::Relaxed).is_ok());
+    let tracked = DETACHED.iter().any(|slot| {
+        slot.compare_exchange(0, thread, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    });
     if tracked {
         DETACHED_COUNT.fetch_add(1, Ordering::AcqRel);
     } else {
@@ -179,7 +180,10 @@ pub fn close_detached_threads(wait: Duration) -> Option<DetachedThreads> {
     let deadline = (!wait.is_zero()).then(|| Instant::now() + wait);
     let mut result = DetachedThreads::default();
     if DETACHED_COUNT.load(Ordering::Acquire) != 0 {
-        while CLOSING.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while CLOSING
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             match deadline {
                 // SAFETY: sleeps the calling thread.
                 Some(deadline) if Instant::now() < deadline => unsafe { svcSleepThread(1_000_000) },
