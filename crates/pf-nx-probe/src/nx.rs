@@ -1,5 +1,5 @@
-//! The probe on the console: the socket driver with 4 MiB UDP buffers, stdout to nxlink when a
-//! host is listening and to the screen otherwise.
+//! The probe on the console: the socket driver on libnx's defaults, stdout to nxlink when a host
+//! is listening and to the screen otherwise.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -9,22 +9,14 @@ use pf_nx_sys::{applet, console, socket};
 /// Set once the screen console holds stdout.
 static SCREEN: AtomicBool = AtomicBool::new(false);
 
-/// A 4K burst at the host's pacing fits in this; libnx's default is 0xA500.
-const UDP_BUF: u32 = 4 << 20;
-
-/// Starts the socket driver with 4 MiB UDP buffers, else with libnx's defaults. Says which took.
+/// Starts the socket driver on libnx's defaults. The UDP sizes are every new socket's buffer
+/// reservation, and 4 MiB there failed every socket with ENOBUFS on the console; check 2's
+/// `rcvbuf` grows one socket instead and reports what the stack grants.
 pub fn sockets_up() -> String {
-    let config = socket::Config {
-        udp_rx_buf: UDP_BUF,
-        udp_tx_buf: UDP_BUF,
-        ..socket::Config::default()
-    };
+    let config = socket::Config::default();
     match socket::init(&config) {
-        Ok(()) => format!("ok udp_buf={UDP_BUF}"),
-        Err(e) => match socket::init(&socket::Config::default()) {
-            Ok(()) => format!("fail udp_buf={UDP_BUF} {e:#}, defaults ok"),
-            Err(e2) => format!("fail-both udp_buf={UDP_BUF} {e:#}, defaults {e2:#}"),
-        },
+        Ok(()) => format!("ok udp_rx_buf={} udp_tx_buf={}", config.udp_rx_buf, config.udp_tx_buf),
+        Err(e) => format!("fail {e:#}"),
     }
 }
 
@@ -37,21 +29,47 @@ pub fn stdio_up() {
     SCREEN.store(true, Ordering::Relaxed);
 }
 
+/// Set once check 4's swapchain took the window the console draws on.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
 /// Shows what was printed since the last call, when the screen console holds stdout.
 pub fn screen_flush() {
-    if SCREEN.load(Ordering::Relaxed) {
+    if SCREEN.load(Ordering::Relaxed) && !PAUSED.load(Ordering::Relaxed) {
         console::update();
     }
 }
 
-/// Keeps the screen's lines up until HOME closes the probe, then tears down.
+/// Closes the screen console for good, which lets go of the default window's framebuffer, so a
+/// swapchain can take the window. Nothing prints to the screen after it. A console opened again
+/// after the swapchain printed some 40 lines, then libnx aborted in `framebufferBegin` with
+/// `LibnxError_BadGfxDequeueBuffer` (2345-0021).
+#[cfg(feature = "vulkan")]
+pub fn screen_pause() {
+    if SCREEN.load(Ordering::Relaxed) {
+        PAUSED.store(true, Ordering::Relaxed);
+        console::exit();
+    }
+}
+
+/// The screen console was closed for check 4's swapchain: lines go to the log file only.
+pub fn screen_paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
+}
+
+/// Keeps the screen's lines up until HOME closes the probe, then tears down. After check 4 the
+/// console is closed and the screen holds what the swapchain left.
 pub fn finish() {
     if SCREEN.load(Ordering::Relaxed) {
+        let console = !screen_paused();
         while applet::main_loop() {
-            console::update();
+            if console {
+                console::update();
+            }
             std::thread::sleep(Duration::from_micros(16_667));
         }
-        console::exit();
+        if console {
+            console::exit();
+        }
     }
     socket::exit();
 }

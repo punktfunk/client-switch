@@ -1,6 +1,6 @@
 [package]
 name = "pf-nx-probe"
-description = "WP0's probe: numbered checks of what std, the sockets and punktfunk-core's QUIC plane need from the console."
+description = "WP0's probe: numbered checks of what std, the sockets, punktfunk-core's QUIC plane, NVK and NVDEC need from the console."
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
@@ -16,18 +16,24 @@ path = "src/main.rs"
 default = ["quic"]
 # Check 3: punktfunk-core's QUIC plane on tokio. Without it the NRO carries checks 1 and 2.
 quic = ["dep:punktfunk-core", "dep:tokio"]
-# Check 4: NVK's instance, device and a mapped buffer, on the console only. Links libvulkan_bh.a.
-vulkan = ["dep:ash", "pf-nx-sys/nvk"]
+# Check 4: NVK's instance, device, a mapped buffer and 600 frames on a swapchain, on the console
+# only. Links libvulkan_bh.a.
+vulkan = ["dep:ash", "dep:pf-client-video", "pf-nx-sys/nvk"]
+# Check 6: NVDEC through libavcodec's nvtegra hwaccel, on the console only. Links the image's
+# libavcodec; the streams come from scripts/nvdec-streams.sh.
+nvdec = ["pf-nx-sys/av"]
 
 [dependencies]
 libc = "0.2"
 punktfunk-core = { workspace = true, optional = true }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread"] }
 
-# libnx through the one FFI crate, without libavcodec; NVK only with `vulkan`.
+# libnx through the one FFI crate; libavcodec only with `nvdec`, NVK only with `vulkan`.
 [target.'cfg(target_os = "horizon")'.dependencies]
 pf-nx-sys = { path = "../pf-nx-sys", default-features = false }
 ash = { workspace = true, optional = true }
+# The presenter's committed SPIR-V for check 4's textured quad.
+pf-client-video = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -12,7 +12,7 @@ What builds, and how; nothing here has run on a console.
   pf-nx-probe` writes `dist/pf-nx-probe.nro`. Checks 1–2 build with `--no-default-features`.
 - Check 3 (`quic`) needs punktfunk-core's Horizon arm for `if-addrs` (monorepo #2180, in the pin).
 - aws-lc builds with its CC builder: no BIO sockets, CPU features from `-march`, getentropy for
-  entropy (`scripts/cargo-nx.sh`). rustls's provider is aws-lc-rs; ring is not linked.
+  entropy and no CPU jitter entropy (`scripts/cargo-nx.sh`). rustls's provider is aws-lc-rs; ring is not linked.
 - quinn-udp runs its fallback (no ECN, one datagram per call) until the console shows `sendmsg`.
 - tokio's I/O driver wakes through a loopback UDP socket (the mio leg): unproven on the console.
 - devkitPro's `switch-ffmpeg` in the image carries the `nvtegra` hwaccel (`libavutil/
@@ -33,7 +33,7 @@ What builds, and how; nothing here has run on a console.
 - `nouveau_horizon_region_{alloc,free,stats}` are defined in the archive, not needed from the
   title: unused, the link drops them. NVK still takes GPU backing from the top of the heap
   (patch 0001; `NOUVEAU_HORIZON_TOP_DOWN=false` turns it off).
-- Check 4 (`vulkan`) has not run anywhere: Ryujinx does not run NVK builds (plan D15).
+- Ryujinx does not run NVK builds (plan D15): check 4 runs on the console only.
 - `scripts/build-skia.sh [raster|vulkan]` (`task skia`) compiles Skia with devkitA64's G++
   through skia-bindings' offline build and writes the archive cargo-nx.sh's `SKIA_BINARIES_URL`
   names (docs/pins.md). `check -p skia-safe` takes the `vulkan` one: a `-p` outside the workspace
@@ -51,3 +51,73 @@ What builds, and how; nothing here has run on a console.
 - Either archive leaves one symbol to the title, `sysconf` (pf-nx-sys has it), and needs
   `-lstdc++`, which pf-nx-sys links only with `nvk`. `kN32` is RGBA: Linux's BGRA comes from
   `is_linux` alone. `FontMgr::new()` is the empty manager; the title's fonts load from data.
+
+## Proven on the console
+
+Runs on the tester's Switch 1 (Atmosphère, from hbmenu). No bundles yet: each item cites the
+probe build's commit and the run's date.
+
+The tester's console runs an overclock profile: the CPU at 1785 MHz is above stock, the GPU at
+307 MHz and EMC at 1600 MHz are what the profile left. The runs before 2026-10-29 12:30 do not
+record their clocks; the numbers below are under that profile unless an item says otherwise.
+
+- Check 1 (`std`) passes: four threads with their own `thread_local!`, `HashMap`, a 10 ms sleep,
+  the wall clock, a file on `sdmc:` and `read_dir` (probe at `5222fb9`, 2026-10-28).
+- `socketInitialize` takes 4 MiB UDP buffers, but every UDP socket then fails with ENOBUFS
+  (`os error 105`); `getaddrinfo` still answers (probe at `5222fb9`, 2026-10-28). The UDP sizes
+  are each new socket's reservation, so the probe starts sockets on libnx's defaults and check 2
+  measures how far `SO_RCVBUF` grows instead.
+- On libnx's default UDP sizes (42240 rx, 9216 tx) UDP send and receive, `sendmsg`/`recvmsg`, the
+  mDNS group join and `getaddrinfo` all work. `SO_RCVBUF` takes 1 MiB at most: 4 MiB and 2 MiB
+  fail with ENOBUFS, and `getsockopt` reads 1048576 back (probe at `4b0bd19`, 2026-10-28).
+- With check 3 linked, checks 1 and 2 read as before, then the probe dies in check 3 before its
+  line: a data abort reading address 0 on the main thread, with tokio's two workers already up.
+  Resolved against `2e66719`'s ELF (the same code but for check 3's log lines), the abort is
+  `mrs x0, cntvct_el0` in aws-lc's `jent_get_nstime`, under `EVP_PKEY_keygen`'s first random
+  bytes: Horizon does not let EL0 read the virtual counter (libnx reads CNTPCT_EL0). The console
+  build sets `AWS_LC_SYS_NO_JITTER_ENTROPY`, so aws-lc seeds from getentropy (probe at `528c0ee`,
+  2026-10-28; Atmosphère report `01793228241_05446530aca7e000`).
+- Without jitter entropy, check 3 passes: tokio on two workers, an EC identity through aws-lc-rs
+  (542-byte certificate) and punktfunk-core's client endpoint bound on the shared UDP socket. No
+  host was dialled yet (probe at `d90d956`, 2026-10-28).
+- Check 3 against a real host on the LAN (Wi-Fi): PIN pairing, then a session at 720p60 that
+  negotiated HEVC (`codec=2`), and the first video frame received, reassembled and decrypted
+  3061 ms after the connect returned. The pairing was kept on the SD card and reused on the next
+  run (probe at `3a07655`, 2026-10-28).
+- Check 4 (`vulkan`) passes with NVK linked: loader 1.4.354 with `VK_NN_vi_surface` among 15
+  instance extensions, no layers, one GPU `NVIDIA Tegra X1 (GM20B) (NVK GM20B)` (10de:0fe0,
+  driver 26.2.4) with one graphics/compute/transfer queue and a 2391 MiB heap, a device on
+  family 0, and a 16 MiB host-visible buffer written in 1.8 ms and read back in 38.8 ms (probe
+  at `f0b53c0`, 2026-10-29).
+- In the same run check 3 paired from the saved fingerprint and negotiated HEVC, but no frame
+  came in 15 s (probe at `f0b53c0`, 2026-10-29). The next run had its first frame 2429 ms after
+  the connect, without the keyframe request, and check 4 passed again (probe at `6ba89b2`, 2026-10-29).
+- Check 6 (`nvdec`) passes: 1080p60 H.264 and HEVC from `sdmc:` (no B-frames, one IDR, ten
+  seconds each, `scripts/nvdec-streams.sh`) through `nvtegra`, one AU at a time. Every AU came
+  out as a picture with one in flight; the decoder opened in 1 ms and the first picture took
+  8 ms. Send to picture out averaged 7.7 ms for H.264 (8.7 ms worst) and 7.2 ms for HEVC
+  (8.3 ms), the VIC transfer to NV12 2.7 ms (3.2 ms), and the whole loop with the copy into the
+  caller's planes ran 87.9 and 92.0 fps. The first pictures' mean luma is 126, so they are not
+  blank. 10-bit HEVC opens, but receiving its first picture fails with `EINVAL` (-22); the shim
+  asks the transfer for NV12 (probe at `d69e5a4`, 2026-10-29).
+- The probe stays on its last screen until it is closed from HOME: a run that ends looks the
+  same as one that hangs. Only the `probe end` line tells them apart.
+- Check 4's swapchain half passes: `VK_NN_vi_surface` on libnx's default window (1280x720 in
+  handheld, the current extent, 3 images exactly), a FIFO `B8G8R8A8_UNORM` swapchain, a 256x256
+  texture uploaded through a staging buffer in 4.8 ms, and the presenter's committed SPIR-V
+  (`fullscreen.vert`, `overlay.frag`) building on NVK. 600 frames of a clear plus a textured quad
+  presented at 60.30 fps: present-to-present median 16.67 ms, 99th percentile 16.84 ms, worst
+  18.56 ms, 596 of 599 intervals within 14–19 ms and none over 19 ms; 55 ms from surface to the
+  first frame. The tester saw the animation smooth. Clocks before and after: GPU 307 MHz, CPU
+  1785 MHz, EMC 1600 MHz (probe at `73f3ca8`, 2026-10-29).
+- In that run the text console, opened again after the swapchain was destroyed, printed check 6's
+  lines, then libnx aborted the title at the next line: `framebufferBegin` →
+  `LibnxError_BadGfxDequeueBuffer` (2345-0021) from `nwindowDequeueBuffer` (Atmosphère report
+  `01793287821_05446530aca7e000`). The probe now runs check 4 last and leaves the console closed.
+- At stock clocks (GPU 307 MHz, CPU 1020 MHz, EMC 1331 MHz before and after check 4) the probe
+  runs to `probe end` with check 2 the only failure, and no crash on HOME. Check 3's first frame
+  took 2457 ms. Check 6 ran 78.8 fps for H.264 (decode 8.0 ms, 10.5 ms worst; transfer 3.4 ms,
+  4.2 ms) and 82.7 fps for HEVC (7.4 ms, 9.1 ms; 3.4 ms, 3.8 ms), every AU a picture. Check 4
+  presented 600 frames at 60.23 fps: median 16.67 ms, 99th percentile 16.85 ms, worst 17.04 ms,
+  596 of 599 intervals within 14–19 ms; 41 ms from surface to the first frame. The tester saw
+  the animation smooth (probe at `70a80e5`, 2026-10-29).

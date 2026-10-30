@@ -15,4 +15,7 @@ mkdir -p "$root/dist"
 # Without --nacp and --icon the NRO has no asset section, which hbmenu forwarders refuse.
 nacptool --create "$title" punktfunk "$version" "$root/dist/$title.nacp"
 elf2nro "$elf" "$root/dist/$title.nro" --nacp="$root/dist/$title.nacp" --icon="${DEVKITPRO:-/opt/devkitpro}/libnx/default_icon.jpg"
-ls -la "$root/dist/$title.nro"
+# The ELF keeps the symbols and line tables the NRO drops: a crash report's offsets resolve
+# against it (`aarch64-none-elf-addr2line -fipe dist/<title>.elf <offset>`).
+cp "$elf" "$root/dist/$title.elf"
+ls -la "$root/dist/$title.nro" "$root/dist/$title.elf"

@@ -29,11 +29,71 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # The runner's preinstalled SDKs the console build never uses: about 25 GB back.
+      - name: Disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      # The image's layers live in the Actions cache: devkitPro's servers are hit only when a pin
+      # or the Dockerfile changes, not on every run (they answered 403 to repeated runs).
+      - name: Pins
+        id: pins
+        run: grep -E '^[A-Z0-9_]+=' scripts/pins.env >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
       - name: Toolchain image
-        run: . scripts/pins.env && docker build -t "$NX_IMAGE" - < docker/Dockerfile
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          load: true
+          tags: ${{ steps.pins.outputs.NX_IMAGE }}
+          build-args: |
+            DEVKITA64=${{ steps.pins.outputs.DEVKITA64 }}
+            LIBNX=${{ steps.pins.outputs.LIBNX }}
+            SWITCH_TOOLS=${{ steps.pins.outputs.SWITCH_TOOLS }}
+            RUST_NIGHTLY=${{ steps.pins.outputs.RUST_NIGHTLY }}
+          cache-from: type=gha,scope=nx-toolchain
+          cache-to: type=gha,scope=nx-toolchain,mode=max
+      # NVK (libvulkan_bh.a) for check 4: built once per pin, then kept in the Actions cache and
+      # loaded into the toolchain volume where pf-nx-sys links it.
+      # Saved right after the build, not at the job's end, so a later failing step keeps it.
+      - name: NVK cache
+        id: nvk
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/nvk-archive
+          key: nvk-${{ hashFiles('scripts/build-nvk.sh', 'scripts/pins.env') }}
+      - name: NVK
+        if: steps.nvk.outputs.cache-hit != 'true'
+        run: |
+          JOBS=$(nproc) PF_NX_NVK_WORK="$RUNNER_TEMP/nvk" scripts/build-nvk.sh
+          mkdir -p "$RUNNER_TEMP/nvk-archive"
+          docker run --rm -v pf-nx-toolchains:/opt/pf-nx alpine:3 tar -cf - -C /opt/pf-nx/nvk . |
+            tar -xf - -C "$RUNNER_TEMP/nvk-archive"
+          # Mesa's tree and the two NVK images fill the runner's disk before the probe's build.
+          sudo rm -rf "$RUNNER_TEMP/nvk"
+          docker image rm -f bevy-horizon-nvk:local bevy-horizon-toolchain:local
+          docker builder prune -af
+          df -h /
+      - name: NVK cache save
+        if: steps.nvk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/nvk-archive
+          key: ${{ steps.nvk.outputs.cache-primary-key }}
+      - name: NVK into the volume
+        if: steps.nvk.outputs.cache-hit == 'true'
+        run: |
+          tar -cf - -C "$RUNNER_TEMP/nvk-archive" . | docker run --rm -i -v pf-nx-toolchains:/opt/pf-nx alpine:3 sh -c \
+            'rm -rf /opt/pf-nx/nvk && mkdir -p /opt/pf-nx/nvk && tar -xf - -C /opt/pf-nx/nvk'
       - name: Probe
-        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --no-default-features && scripts/package-nro.sh pf-nx-probe'
+        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx-probe --features vulkan,nvdec && scripts/package-nro.sh pf-nx-probe'
+      # Check 6 reads these from the SD card next to the NRO.
+      - name: NVDEC streams
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg && scripts/nvdec-streams.sh
       - uses: actions/upload-artifact@v4
         with:
           name: pf-nx-probe
-          path: dist/pf-nx-probe.nro
+          path: |
+            dist/pf-nx-probe.nro
+            dist/pf-nx-probe.elf
+            dist/nvdec-*
