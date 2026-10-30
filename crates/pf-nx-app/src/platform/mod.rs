@@ -132,6 +132,9 @@ pub trait VideoDecoders: Send + Sync {
 
     /// Opens the decoder for the negotiated stream (`codec` is one `quic::CODEC_*` bit).
     fn open(&self, spec: &StreamSpec) -> Result<Box<dyn VideoSink>>;
+
+    /// The decoder [`Self::open`] picks for `codec`, as the stats overlay names it.
+    fn lane_name(&self, codec: u8) -> &'static str;
 }
 
 /// What the handshake settled on, as a decoder needs it.

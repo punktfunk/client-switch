@@ -86,9 +86,11 @@ struct CountingSink {
     started: std::time::Instant,
 }
 
+const COUNTING: &str = "counting (no decoder on this box)";
+
 impl VideoSink for CountingSink {
     fn name(&self) -> &'static str {
-        "counting (no decoder on this box)"
+        COUNTING
     }
 
     fn caps(&self) -> VideoSinkCaps {
@@ -152,6 +154,19 @@ impl VideoDecoders for HostVideo {
             fed: self.fed.clone(),
             started: std::time::Instant::now(),
         }))
+    }
+
+    fn lane_name(&self, codec: u8) -> &'static str {
+        #[cfg(all(target_os = "linux", feature = "pyrowave"))]
+        if codec == punktfunk_core::quic::CODEC_PYROWAVE && self.pyro.is_some() {
+            return "PyroWave (GPU)";
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(lane) = &self.lane {
+            return lane.lane_name(codec);
+        }
+        let _ = codec;
+        COUNTING
     }
 }
 

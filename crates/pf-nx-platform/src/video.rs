@@ -76,6 +76,10 @@ impl VideoDecoders for NxVideo {
             started: Instant::now(),
         }))
     }
+
+    fn lane_name(&self, _codec: u8) -> &'static str {
+        DECODER
+    }
 }
 
 /// Where received pictures go.

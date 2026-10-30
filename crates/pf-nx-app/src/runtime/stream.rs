@@ -271,7 +271,7 @@ fn stream(
     };
     let mut hud = StatsOverlay::new(initial_tier, settings.advanced_stats);
     connected.set_hud_enabled(initial_tier != StatsVerbosity::Off);
-    let decoder = lane_name(connected.client().codec);
+    let decoder = app.media.video.lane_name(connected.client().codec);
     let mut scale = overlay_scale(height);
     app.display.set_stream(true, Fit::Contain);
 
@@ -497,14 +497,6 @@ fn end_test_run(app: &mut App, ok: bool, detail: &str) -> Option<StreamOutcome> 
     let run = app.test_run.take().filter(|r| r.scenario == Scenario::Stream)?;
     run.finish(app, ok, detail);
     Some(StreamOutcome::Quit(None))
-}
-
-fn lane_name(codec: u8) -> &'static str {
-    if codec == punktfunk_core::quic::CODEC_PYROWAVE {
-        "PyroWave (GPU)"
-    } else {
-        "NVDEC"
-    }
 }
 
 fn fp_hex(fp: &[u8; 32]) -> String {
