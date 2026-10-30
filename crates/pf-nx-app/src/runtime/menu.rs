@@ -64,11 +64,15 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
                 tracing::warn!("test run: pairing with {host}:{port} failed: {e}");
             }
         }
+        if let Some(mgmt) = run.mgmt_port {
+            service.set_mgmt_port(host, run.port, mgmt);
+        }
         let row = service.row_for(host, run.port);
         if row.is_none() {
             tracing::warn!("test run: {host} is not a paired host here");
         }
-        row
+        // The menu scenario names a host to pair with or reach, not to stream from.
+        row.filter(|_| run.scenario == testrun::Scenario::Stream)
     });
     let entry = match scripted {
         Some(row) => ConsoleEntry::Stream(Box::new(row)),

@@ -268,6 +268,23 @@ impl Service {
         Some(self.saved_row(known))
     }
 
+    /// Saves `mgmt` as a paired host's management port, as its advert would have: a scripted run
+    /// where mDNS does not reach (a container) names it instead.
+    pub(crate) fn set_mgmt_port(&self, addr: &str, port: Option<u16>, mgmt: u16) {
+        self.store.edit(|state| {
+            let Some(h) = state
+                .known_hosts
+                .iter_mut()
+                .find(|h| h.addr == addr && port.is_none_or(|p| h.port == p) && h.is_paired())
+            else {
+                return false;
+            };
+            let changed = h.shared.mgmt_port != Some(mgmt);
+            h.shared.mgmt_port = Some(mgmt);
+            changed
+        });
+    }
+
     fn saved_row(&self, h: &KnownHost) -> HostRow {
         let key = shared::known_host_key(h);
         let advert = self.discovered.iter().find(|d| same_host(h, d));

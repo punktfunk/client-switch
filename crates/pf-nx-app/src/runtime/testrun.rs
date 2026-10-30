@@ -27,7 +27,7 @@ const MENU_FRAMES: u64 = 240;
 #[derive(Clone, Debug, Deserialize)]
 pub struct TestRun {
     pub scenario: Scenario,
-    /// A paired host's address; the stream scenario's target.
+    /// A paired host's address: the stream scenario's target, the menu scenario's to pair with.
     #[serde(default)]
     pub host: Option<String>,
     #[serde(default)]
@@ -36,6 +36,10 @@ pub struct TestRun {
     /// here yet, since nobody is at the pad to type it.
     #[serde(default)]
     pub pin: Option<String>,
+    /// `host`'s management port, saved on its record as its advert would: where mDNS does not
+    /// reach (the dev box in a container) the library otherwise asks the default port.
+    #[serde(default)]
+    pub mgmt_port: Option<u16>,
     #[serde(default = "default_seconds")]
     pub seconds: u64,
     /// Seconds into the stream at which to save a frame.
