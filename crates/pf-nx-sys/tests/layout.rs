@@ -12,6 +12,7 @@ use pf_nx_sys::av::{PictureMeta, RawStats};
 use pf_nx_sys::clk::ClkrstSession;
 use pf_nx_sys::fb::RawFramebuffer;
 use pf_nx_sys::hid::*;
+use pf_nx_sys::mem::MemoryInfo;
 use pf_nx_sys::setsys::SetSysFirmwareVersion;
 use pf_nx_sys::socket::SocketInitConfig;
 
@@ -27,6 +28,17 @@ fn socket_init_config() {
     assert_eq!(offset_of!(SocketInitConfig, sb_efficiency), 24);
     assert_eq!(offset_of!(SocketInitConfig, num_bsd_sessions), 28);
     assert_eq!(offset_of!(SocketInitConfig, bsd_service_type), 32);
+}
+
+#[test]
+fn memory_info() {
+    // u64 addr, u64 size, then six u32: type, attr, perm, ipc_refcount, device_refcount,
+    // padding → 40, align 8.
+    assert_eq!(layout::<MemoryInfo>(), (40, 8));
+    assert_eq!(offset_of!(MemoryInfo, kind), 16);
+    assert_eq!(offset_of!(MemoryInfo, attr), 20);
+    assert_eq!(offset_of!(MemoryInfo, perm), 24);
+    assert_eq!(offset_of!(MemoryInfo, padding), 36);
 }
 
 #[test]

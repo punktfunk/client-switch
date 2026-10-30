@@ -144,6 +144,12 @@ record their clocks; the numbers below are under that profile unless an item say
   (p99 5.4 ms). Quitting from the menu then faulted hbl, not the title: a user break while it
   loaded the next NRO (2001-0106), the title's threads all gone. Closing from HOME did not
   (title at `5b7dfa2`, 2026-10-30; Atmosphère report `01793385393_05446530aca7e000`).
-- Dropping the display, the decoders and the pads before `Lifecycle::exit` ends that: the menu's
-  Exit returns to hbmenu. The title paired with the host by PIN; its identity is its own, not the
-  probe's (title at `a29f5d6`, 2026-10-30).
+- The title paired with the host by PIN (its identity is its own, not the probe's), streamed
+  720p60 HEVC through NVDEC, came back to the menu, and quit: hbl faulted the same way, so
+  dropping the display, the decoders and the pads before `Lifecycle::exit` was not enough. The
+  settings writer failed every save after the first: `rename` onto an existing file is EEXIST
+  on Horizon (title at `a29f5d6`, 2026-10-30; Atmosphère report `01793390067_05446530aca7e000`).
+- libnx 4.12 leaves `pthread_detach`'s back end undefined, so a detached std thread that ended
+  kept its stack mapped and its heap pages locked; bevy-horizon names that as one cause of the
+  same hbl fault. `pf-nx-sys::rt` now closes them, `rename` replaces, and the exit writes
+  `exit.log` with what still holds the heap and leaves through AM to HOME if anything does.
