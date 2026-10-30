@@ -53,6 +53,10 @@ What builds, and how; nothing here has run on a console.
   the system's libavcodec and decodes in software, so `pf-nx-host` streams H.264/HEVC through the
   console's video lane into the presenter on lavapipe. docker.sh drops ignored files from the
   source volume each run: the dev box's data dir lives under `target/` (`--data-dir /w/target/devbox`).
+  mDNS does not reach the container, so a test run names the host and its management port
+  (`mgmt_port`), which a host can move off 47990.
+- `task cross-check` type-checks the title and the probe; the title takes the Vulkan Skia
+  archive (`task skia -- vulkan`). CI keeps that archive in its cache, as it does NVK's.
 - Either archive leaves one symbol to the title, `sysconf` (pf-nx-sys has it), and needs
   `-lstdc++`, which pf-nx-sys links only with `nvk`. `kN32` is RGBA: Linux's BGRA comes from
   `is_linux` alone. `FontMgr::new()` is the empty manager; the title's fonts load from data.
