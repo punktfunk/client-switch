@@ -153,3 +153,11 @@ record their clocks; the numbers below are under that profile unless an item say
   kept its stack mapped and its heap pages locked; bevy-horizon names that as one cause of the
   same hbl fault. `pf-nx-sys::rt` now closes them, `rename` replaces, and the exit writes
   `exit.log` with what still holds the heap and leaves through AM to HOME if anything does.
+- With that, quitting from the menu returns to hbmenu, three times in a row, the test run's
+  included: `exit.log` reads one detached thread closed and the heap clean at once. The test
+  run (`menu`) drew the Hosts screen, moved right and back, and wrote its verdict with three
+  frames. The host started unpaired and paired again by PIN; then a 720p60 HEVC stream through
+  NVDEC, back to the menu, a renamed host, the client's name and a setting changed, and all
+  three still there on the next launch, with no failed save. Of 23 ten-second windows in the
+  menu, 14 drew 595–601 frames; the other 9 drew 567–593, mostly with a frame of 65–213 ms
+  (title at `927533b`, 2026-10-30; bundle `verdict/1793400050`).

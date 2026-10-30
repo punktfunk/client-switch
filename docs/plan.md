@@ -214,6 +214,18 @@ settings screens, the log ring, the test-run bundle.
 (NVK); a host is found, paired, named; the UI holds 60 fps on glass; A confirms; the bundle
 fetches.
 
+**Outcome (2026-10-30).** On the tester's Switch 1 the title boots on NVK to the Hosts screen,
+finds the PC's host over mDNS, pairs by PIN, renames it, streams 720p60 HEVC through NVDEC and
+quits back to hbmenu; A confirms, B backs, the settings persist, and the test run writes its
+bundle to `sdmc:/switch/punktfunk/verdict/` (`docs/NOTES.md`, title at `927533b`). Departures:
+
+- No Ryujinx run: the tester is the developer and holds the console, so the emulator's reason
+  is gone. Ryubing recognised the NRO and then closed itself, untraced; the framebuffer
+  fallback waits for a console where NVK fails.
+- The menu holds 60 fps in most ten-second windows, not all: some lose up to 33 frames to
+  single frames of 65–213 ms. WP5 traces them.
+- The bundle is a folder of PNGs and JSON on the SD card, not a zip, fetched by hand.
+
 ### WP3 — The video plane (three weeks)
 
 The decode lane (`pf-nx-platform::video` over `pf-nx-sys::av`), the stream image path in
