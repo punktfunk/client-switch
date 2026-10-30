@@ -444,6 +444,7 @@ impl Service {
             | ConsoleCmd::EndGame { .. }
             | ConsoleCmd::Install { .. }
             | ConsoleCmd::FetchProfiles { .. }
+            | ConsoleCmd::FetchAvatar { .. }
             | ConsoleCmd::WakeProfile { .. }
             | ConsoleCmd::SetProfile { .. } => {}
         }
