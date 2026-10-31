@@ -17,7 +17,7 @@ pub mod ui;
 pub mod util;
 
 pub use device::{GpuDevice, Target};
-pub use picture::{Nv12Upload, Picture, Planes, StagingPlanes, VideoSlot};
+pub use picture::{Drops, Nv12Upload, Picture, Planes, StagingPlanes, VideoSlot};
 pub use presenter::Presenter;
 #[cfg(feature = "pyrowave")]
 pub use pyro::PyroLane;

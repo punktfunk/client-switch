@@ -82,6 +82,11 @@ impl VideoSlot {
         self.lock().clear();
     }
 
+    /// Pictures dropped unseen since the last call — see [`Drops`].
+    pub fn take_drops(&self) -> Drops {
+        std::mem::take(&mut self.lock().drops)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Queue<Arc<Picture>>> {
         self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -95,11 +100,22 @@ const SMOOTHING_SLACK: usize = 2;
 /// The most pictures the slot ever holds.
 const MAX_QUEUED: usize = MAX_SMOOTHING + SMOOTHING_SLACK;
 
+/// Pictures the slot dropped without showing them, the figure the smoothness intent exists to
+/// keep at zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Drops {
+    /// Passed over for a newer one: newest wins, or a smoothing backlog caught up.
+    pub replaced: u32,
+    /// Pushed out of a full smoothing queue.
+    pub overflow: u32,
+}
+
 /// The slot's rule, apart from the pictures, so the tests drive it with plain values.
 struct Queue<T> {
     items: VecDeque<(Option<Instant>, T)>,
     /// `0`: newest wins.
     smoothing: usize,
+    drops: Drops,
 }
 
 impl<T> Default for Queue<T> {
@@ -107,6 +123,7 @@ impl<T> Default for Queue<T> {
         Self {
             items: VecDeque::with_capacity(MAX_QUEUED + 1),
             smoothing: 0,
+            drops: Drops::default(),
         }
     }
 }
@@ -119,6 +136,7 @@ impl<T> Queue<T> {
 
     fn push(&mut self, due: Option<Instant>, item: T) {
         if self.smoothing == 0 {
+            self.drops.replaced += self.items.len() as u32;
             self.items.clear();
         }
         self.items.push_back((due, item));
@@ -140,7 +158,9 @@ impl<T> Queue<T> {
         if due == 0 {
             return None;
         }
-        self.items.drain(..due.saturating_sub(2));
+        let behind = due.saturating_sub(2);
+        self.drops.replaced += behind as u32;
+        self.items.drain(..behind);
         self.items.pop_front().map(|(_, item)| item)
     }
 
@@ -156,6 +176,7 @@ impl<T> Queue<T> {
         };
         while self.items.len() > cap {
             self.items.pop_front();
+            self.drops.overflow += 1;
         }
     }
 }
@@ -545,6 +566,7 @@ mod tests {
         q.push(Some(ms(t0, 500)), 2);
         assert_eq!(q.take(t0), Some(2), "the due time is not read");
         assert_eq!(q.take(t0), None);
+        assert_eq!((q.drops.replaced, q.drops.overflow), (1, 0));
     }
 
     #[test]
@@ -557,6 +579,7 @@ mod tests {
         assert_eq!(q.take(ms(t0, 16)), Some(1));
         assert_eq!(q.take(ms(t0, 33)), Some(2), "the second waits for the next vblank");
         assert_eq!(q.take(ms(t0, 50)), None);
+        assert_eq!(q.drops, Drops::default(), "nothing was lost");
     }
 
     #[test]
@@ -580,6 +603,7 @@ mod tests {
         }
         assert_eq!(q.take(ms(t0, 100)), Some(1), "three due: the oldest goes, one waits");
         assert_eq!(q.take(ms(t0, 116)), Some(2));
+        assert_eq!((q.drops.replaced, q.drops.overflow), (1, 0));
     }
 
     #[test]
@@ -592,6 +616,7 @@ mod tests {
         }
         assert_eq!(q.items.len(), 1 + SMOOTHING_SLACK);
         assert_eq!(q.items.front().map(|(_, i)| *i), Some(7));
+        assert_eq!((q.drops.replaced, q.drops.overflow), (0, 7));
     }
 
     #[test]

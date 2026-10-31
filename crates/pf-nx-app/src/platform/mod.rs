@@ -116,6 +116,10 @@ pub struct FrameReport {
     pub new_picture: bool,
     /// Decode-complete to present, for the picture shown, when it was new.
     pub decode_to_present_us: Option<u32>,
+    /// Decoded pictures dropped unseen since the last frame, passed over for a newer one.
+    pub replaced: u32,
+    /// Decoded pictures dropped unseen since the last frame, pushed out of a full smoothing queue.
+    pub overflow: u32,
 }
 
 /// A read-back frame.

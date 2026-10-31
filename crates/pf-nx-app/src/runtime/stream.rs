@@ -433,6 +433,8 @@ struct StreamPerf {
     frames: u64,
     missed: u64,
     pictures: u64,
+    replaced: u64,
+    overflow: u64,
     decode_to_present_us: Vec<u32>,
     window: PerfWindow,
 }
@@ -443,6 +445,8 @@ struct PerfWindow {
     frames: u32,
     missed: u32,
     pictures: u32,
+    replaced: u32,
+    overflow: u32,
     decode_to_present_us: Vec<u32>,
 }
 
@@ -451,11 +455,15 @@ impl StreamPerf {
         self.frames += 1;
         self.missed += u64::from(report.missed);
         self.pictures += u64::from(report.new_picture);
+        self.replaced += u64::from(report.replaced);
+        self.overflow += u64::from(report.overflow);
         let w = &mut self.window;
         w.since.get_or_insert_with(Instant::now);
         w.frames += 1;
         w.missed += u32::from(report.missed);
         w.pictures += u32::from(report.new_picture);
+        w.replaced += report.replaced;
+        w.overflow += report.overflow;
         if let Some(us) = report.decode_to_present_us {
             if self.decode_to_present_us.len() < 1 << 16 {
                 self.decode_to_present_us.push(us);
@@ -472,10 +480,13 @@ impl StreamPerf {
         let ms = |us: Option<&u32>| us.map_or("-".to_string(), |&us| format!("{:.1}", f64::from(us) / 1000.0));
         let d = &w.decode_to_present_us;
         format!(
-            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, decode to present p50 {} p95 {} max {} ms",
+            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, {} unseen ({} replaced, {} queue full), decode to present p50 {} p95 {} max {} ms",
             w.frames,
             w.missed,
             w.pictures,
+            w.replaced + w.overflow,
+            w.replaced,
+            w.overflow,
             ms(d.get(d.len() / 2)),
             ms(d.get(d.len() * 95 / 100)),
             ms(d.last()),
@@ -490,6 +501,7 @@ impl StreamPerf {
             "frames": self.frames,
             "missed_vblanks": self.missed,
             "new_pictures": self.pictures,
+            "unseen_pictures": { "replaced": self.replaced, "queue_full": self.overflow },
             "decode_to_present_us": { "p50": pct(50), "p95": pct(95), "p99": pct(99), "n": sorted.len() },
             "frames_dropped": connected.client().frames_dropped(),
             "rtt_us": connected.client().rtt_us(),

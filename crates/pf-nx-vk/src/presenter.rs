@@ -476,6 +476,9 @@ impl Display for Presenter {
                 report.decode_to_present_us = u32::try_from(picture.decoded_at.elapsed().as_micros()).ok();
                 self.current = Some(picture);
             }
+            let drops = self.slot.take_drops();
+            report.replaced = drops.replaced;
+            report.overflow = drops.overflow;
         }
         self.frames[f].in_use = self.current.clone();
         let sets = self.frames[f].sets;
