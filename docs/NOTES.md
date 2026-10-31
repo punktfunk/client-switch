@@ -175,3 +175,13 @@ record their clocks; the numbers below are under that profile unless an item say
   latency intent on the same Wi-Fi presented 47–58 a second at 5–6 ms decode to present, and in
   the earlier runs the automatic bitrate's climbs to 22–25 Mb/s preceded every 60–110 ms delay
   spike (title at `b8e2986` and `517083f`, 2026-10-31).
+- Sleep mid-stream crashes the title on wake. Nothing reached the log between the last stats
+  line and the wake 40 s later, so the title went to sleep without a word from the applet. On
+  wake the stream ended on a present error, and the teardown's first wake of tokio's I/O
+  driver failed: the loopback waker's send errs after sleep, tokio's `expect` panicked, the
+  panic hook's backtrace aborted (the title builds without unwind tables, so it never logged
+  the panic), and the logger thread wrote to `sdmc:` after `__appExit` had unmounted it: a data
+  abort at 0x20, `_write_r` through a null devoptab. The host saw the session drop and gave the
+  PC its display back (title at `b8e2986`, 2026-10-31; Atmosphère report
+  `01793482713_05446530aca7e000`). The hook now flushes the message before the walk, and the
+  waker leg treats a failed send as a wake that reached no one.

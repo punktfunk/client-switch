@@ -27,7 +27,11 @@ impl Waker {
                 Ok(())
             }
             Err(ref err) if err.kind() == io::ErrorKind::Interrupted => self.wake(),
-            Err(err) => Err(err),
+            // After the console sleeps a send here fails, and tokio aborts the title on a failed
+            // wake (Atmosphère report `01793482713_05446530aca7e000`). A dead waker wakes no one:
+            // the driver runs again on its next event or timer.
+            // TODO(verify): the error sleep leaves, and that the driver's poll survives it.
+            Err(_) => Ok(()),
         }
     }
 

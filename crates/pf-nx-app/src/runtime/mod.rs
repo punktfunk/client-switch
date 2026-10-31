@@ -177,14 +177,17 @@ fn client_label(device: &crate::platform::DeviceInfo) -> String {
     format!("Switch {}", device.firmware).trim_end().to_string()
 }
 
-/// A panic on any thread goes to the log with its frames, then the process aborts.
+/// A panic on any thread goes to the log, then its frames where the target can walk them, then
+/// the process aborts. The message is flushed before the walk: on the console, which builds
+/// without unwind tables, the walk itself aborts.
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("unnamed");
+        tracing::error!("PANIC on thread {name:?}: {info}");
+        crate::logger::flush();
         let backtrace = std::backtrace::Backtrace::force_capture();
-        tracing::error!(
-            "PANIC on thread {:?}: {info}\n{backtrace}",
-            std::thread::current().name().unwrap_or("unnamed"),
-        );
+        tracing::error!("PANIC on thread {name:?}, frames:\n{backtrace}");
         crate::logger::flush();
     }));
 }
