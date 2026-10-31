@@ -109,7 +109,9 @@ impl Output {
         } else {
             caps.current_extent
         };
-        let mut count = 3.max(caps.min_image_count);
+        // Two images: one on the panel, one queued. A third let FIFO hold two frames ahead of
+        // the panel, a vblank of latency on every picture.
+        let mut count = 2.max(caps.min_image_count);
         if caps.max_image_count > 0 {
             count = count.min(caps.max_image_count);
         }

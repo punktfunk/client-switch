@@ -461,6 +461,9 @@ impl Display for Presenter {
         }
 
         self.ui.draw(ui);
+        // The acquire blocks until the panel frees an image, just after a vblank: the picture is
+        // taken after it, so one that lands during the wait still makes this frame.
+        let index = self.acquire(ready)?;
         let mut report = FrameReport::default();
         if self.stream.is_some() {
             if let Some(picture) = self.slot.take() {
@@ -473,7 +476,6 @@ impl Display for Presenter {
             }
         }
         self.frames[f].in_use = self.current.clone();
-        let index = self.acquire(ready)?;
         let sets = self.frames[f].sets;
 
         // SAFETY: the command buffer is not in flight (fence waited) and its pool allows reset;
