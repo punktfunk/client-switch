@@ -192,3 +192,14 @@ record their clocks; the numbers below are under that profile unless an item say
   (title at `b8e2986`, 2026-10-31; Atmosphère reports `01793488062_010000000000100d` and
   `01793488512_05446530aca7e000`). Applet mode is left untested until a build that logs its
   panics runs there.
+- On the WP4 build two sleeps mid-stream (37 s and 28 s) no longer crash the title. Again no
+  applet message or hook arrived before sleep; on wake the session's socket read failed with
+  "Network interface is not configured" (os error 115), the session ended as lost, and the
+  stream redialled the host and was back in 0.3 s, so the player lands in the game, not on
+  Hosts (plan D12 expected Hosts). The touch screen drives the host's desktop as touch, the
+  host's rumble reaches the Joy-Cons, and the gyro turns a game's camera the right way on the
+  pitch and yaw axes. hid's accelerometer reads gravity's pull, [0, 0, -1] g lying still,
+  which the first build sent upside down as [0, -1, 0]. audout reports volume 1.0; the host's
+  audio peaked at -4 to -12 dBFS in play, so the level arrives near full scale. Audio
+  underruns reached 47 in the first session's three minutes and 38 in the last one's twenty
+  (title at `be98e16`, 2026-10-31).

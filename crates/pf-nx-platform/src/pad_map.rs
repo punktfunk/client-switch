@@ -83,12 +83,12 @@ pub fn rumble(low: u16, high: u16) -> (f32, f32) {
 /// One hid motion sample into the wire's frame, as `(gyro in rad/s, accel in g)`. hid's frame,
 /// for a pad held level: +x right, +y away from the player, +z up; the wire's is SDL's: +x
 /// right, +y up, +z toward the player. Both are right-handed, so a rotation turns with its
-/// axis. hid's gyro counts rotations per second.
-// TODO(verify): hid's frame and units on the console. The stream logs each pad's first sample:
-// a pad lying still should read accel about [0, 1, 0].
+/// axis. hid's gyro counts rotations per second. hid's accel reads gravity's pull, -1 on z
+/// lying still; the wire's reads the table's push, +1 on y, so it changes sign.
+// TODO(verify): the gyro's units; its axes turn the game's camera the right way (2026-10-31).
 pub fn motion(accel: [f32; 3], gyro: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     let frame = |[x, y, z]: [f32; 3]| [x, z, -y];
-    (frame(gyro).map(|v| v * std::f32::consts::TAU), frame(accel))
+    (frame(gyro).map(|v| v * std::f32::consts::TAU), frame(accel).map(|v| -v))
 }
 
 /// The touch screen's size in the pixels hid reports.
@@ -136,8 +136,10 @@ mod tests {
 
     #[test]
     fn motion_turns_into_the_wire_frame() {
-        // Lying still: hid's gravity on +z is the wire's +y.
-        assert_eq!(motion([0.0, 0.0, 1.0], [0.0; 3]).1, [0.0, 1.0, 0.0]);
+        // Lying still: hid reads gravity's pull on -z, the wire the table's push on +y.
+        assert_eq!(motion([0.0, 0.0, -1.0], [0.0; 3]).1, [-0.0, 1.0, 0.0]);
+        // Standing on its bottom edge: the push is along hid's +y, away from the player.
+        assert_eq!(motion([0.0, -1.0, 0.0], [0.0; 3]).1, [-0.0, -0.0, -1.0]);
         // Tipping the far edge up turns about +x; a quarter turn a second is π/2 rad/s.
         assert_eq!(
             motion([0.0; 3], [0.25, 0.0, 0.0]).0,

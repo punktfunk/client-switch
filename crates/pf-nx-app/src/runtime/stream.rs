@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use pf_client_core::ring::{RingCommand, RingFacts, RingInput};
 use pf_console_ui::theme;
-use punktfunk_core::client::PunktfunkEndReason;
+use punktfunk_core::client::{NativeClient, PunktfunkEndReason};
 use punktfunk_core::hud::StatsVerbosity;
+use punktfunk_core::input::PadMouseMode;
 
 use super::connect::{self, ConnectOutcome};
 use super::hud::StatsOverlay;
@@ -317,8 +318,11 @@ fn stream(
     // The output size the overlay and the stream mode were last fitted to.
     let mut fitted = (output_w, output_h);
     let (mut width, mut height) = app.display.ui_size();
-    ring.set_facts(&RingFacts {
+    let mut facts = RingFacts {
         overlay_actions: settings.overlay_actions.clone(),
+        // The screen passes touches straight through; the trackpad model is not here yet.
+        touch_mode: "touch".into(),
+        host_accepts_touch: true,
         stats_tier: settings.stats_verbosity().label().into(),
         mode: (mode.width, mode.height, mode.refresh_hz),
         native_mode: (output_w, output_h, app.display.refresh().hz()),
@@ -326,7 +330,8 @@ fn stream(
         fp_hex: fp_hex(&target.fingerprint),
         pad_type: settings.gamepad_type().to_core(),
         ..RingFacts::default()
-    });
+    };
+    ring.set_facts(&facts);
     // A test run records everything; otherwise the player's stats setting.
     let initial_tier = if app.test_run.is_some() {
         StatsVerbosity::Detailed
@@ -367,8 +372,11 @@ fn stream(
         if let Some(n) = take_routed(&input, &mut ring, width, height) {
             break n;
         }
+        if follow_pad_mouse(connected.client(), &mut facts) {
+            ring.set_facts(&facts);
+        }
         ring.tick();
-        if let Some(n) = take_ring_commands(&mut ring, &mut hud) {
+        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client()) {
             break n;
         }
         for cmd in ring.take_cmds() {
@@ -482,17 +490,46 @@ fn take_routed(input: &InputThread, ring: &mut pf_console_ui::Ring, width: u32, 
     None
 }
 
-fn take_ring_commands(ring: &mut pf_console_ui::Ring, hud: &mut StatsOverlay) -> Option<Next> {
+fn take_ring_commands(ring: &mut pf_console_ui::Ring, hud: &mut StatsOverlay, client: &NativeClient) -> Option<Next> {
     while let Some(cmd) = ring.take_command() {
         match cmd {
             RingCommand::EndStream | RingCommand::DisconnectLinger => {
                 return Some(Next::End(StreamOutcome::ReturnToMenu(None)));
             }
             RingCommand::CycleStats => hud.cycle(),
+            RingCommand::CyclePadMouse => toggle_pad_mouse(client),
+            // Touch is the screen's one model so far: nothing to step to.
+            RingCommand::CycleTouchMode => {}
             other => tracing::info!("dial: {other:?} does nothing on this console"),
         }
     }
     None
+}
+
+/// Copies the controller-mouse facts the dial shows from the session; whether they changed.
+fn follow_pad_mouse(client: &NativeClient, facts: &mut RingFacts) -> bool {
+    let target = client.live_pads();
+    let now = (
+        client.access_grants() & punktfunk_core::quic::GRANT_POINTER != 0,
+        target,
+        client.pad_mouse_mode(target),
+    );
+    if (facts.pointer_granted, facts.pad_mouse_target, facts.pad_mouse) == now {
+        return false;
+    }
+    (facts.pointer_granted, facts.pad_mouse_target, facts.pad_mouse) = now;
+    true
+}
+
+/// Controller mouse on every pad, or off. The dial's touchpad step is skipped: no Switch pad
+/// has a touchpad to drive the pointer with.
+fn toggle_pad_mouse(client: &NativeClient) {
+    let pads = client.live_pads();
+    let on = client.pad_mouse_mode(pads) != PadMouseMode::Full;
+    match client.set_pad_mouse(if on { pads } else { 0 }) {
+        Ok(()) => tracing::info!("dial: controller mouse {}", if on { "on" } else { "off" }),
+        Err(e) => tracing::warn!("dial: controller mouse: {e}"),
+    }
 }
 
 /// What the presenter reported over the session, for a test run's `perf.json`, and over the
