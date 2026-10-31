@@ -1,5 +1,6 @@
 //! The stats overlay: core's own lines (`hud::format`) on a dark plate, top left, refreshed once
-//! a second while it shows.
+//! a second. Core samples for the whole session, so every tenth second's window also goes to the
+//! log, whether the overlay shows or not.
 
 use std::time::{Duration, Instant};
 
@@ -10,12 +11,14 @@ use skia_safe::{Canvas, Color4f, Paint, RRect, Rect};
 use crate::session::Connected;
 
 const REFRESH: Duration = Duration::from_secs(1);
+const LOG_EVERY: Duration = Duration::from_secs(10);
 
 pub(super) struct StatsOverlay {
     pub tier: StatsVerbosity,
     advanced: bool,
     lines: Vec<HudLine>,
     taken: Option<Instant>,
+    logged: Instant,
     /// Lines this client adds: the lane, pacing misses, the audio ring.
     pub local: Vec<String>,
 }
@@ -27,25 +30,32 @@ impl StatsOverlay {
             advanced,
             lines: Vec::new(),
             taken: None,
+            logged: Instant::now(),
             local: Vec::new(),
         }
     }
 
-    /// Steps to the next tier, turning core's sampling on or off with it.
-    pub fn cycle(&mut self, connected: &Connected) {
+    /// Steps to the next tier.
+    pub fn cycle(&mut self) {
         self.tier = self.tier.next();
-        connected.set_hud_enabled(self.tier != StatsVerbosity::Off);
         self.taken = None;
     }
 
-    /// Takes a new window when one is due.
-    pub fn refresh(&mut self, connected: &Connected, decoder: &str) {
-        if self.tier == StatsVerbosity::Off || self.taken.is_some_and(|t| t.elapsed() < REFRESH) {
-            return;
+    /// Takes a new window when one is due. Every [`LOG_EVERY`] it returns that window's lines at
+    /// the detailed tier, joined, for the log.
+    pub fn refresh(&mut self, connected: &Connected, decoder: &str) -> Option<String> {
+        if self.taken.is_some_and(|t| t.elapsed() < REFRESH) {
+            return None;
         }
         self.taken = Some(Instant::now());
         let snap = connected.hud_snapshot(decoder);
         self.lines = hud::format(&snap, self.tier, self.advanced);
+        if self.logged.elapsed() < LOG_EVERY {
+            return None;
+        }
+        self.logged = Instant::now();
+        let lines = hud::format(&snap, StatsVerbosity::Detailed, true);
+        Some(lines.into_iter().map(|l| l.text).collect::<Vec<_>>().join(" | "))
     }
 
     pub fn draw(&self, canvas: &Canvas, fonts: &Fonts, scale: f32) {

@@ -270,7 +270,7 @@ fn stream(
         settings.stats_verbosity()
     };
     let mut hud = StatsOverlay::new(initial_tier, settings.advanced_stats);
-    connected.set_hud_enabled(initial_tier != StatsVerbosity::Off);
+    connected.set_hud_enabled(true);
     let decoder = app.media.video.lane_name(connected.client().codec);
     let mut scale = overlay_scale(height);
     app.display.set_stream(true, Fit::Contain);
@@ -299,7 +299,7 @@ fn stream(
             break n;
         }
         ring.tick();
-        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected) {
+        if let Some(n) = take_ring_commands(&mut ring, &mut hud) {
             break n;
         }
         for cmd in ring.take_cmds() {
@@ -321,7 +321,9 @@ fn stream(
             };
         }
 
-        hud.refresh(connected, decoder);
+        if let Some(core) = hud.refresh(connected, decoder) {
+            tracing::info!("stats: {} | {core}", perf.take_window());
+        }
         hud.local = vec![format!(
             "present: {} frames, {} missed{}",
             perf.frames,
@@ -411,25 +413,36 @@ fn take_routed(input: &InputThread, ring: &mut pf_console_ui::Ring, width: u32, 
     None
 }
 
-fn take_ring_commands(ring: &mut pf_console_ui::Ring, hud: &mut StatsOverlay, connected: &Connected) -> Option<Next> {
+fn take_ring_commands(ring: &mut pf_console_ui::Ring, hud: &mut StatsOverlay) -> Option<Next> {
     while let Some(cmd) = ring.take_command() {
         match cmd {
             RingCommand::EndStream | RingCommand::DisconnectLinger => {
                 return Some(Next::End(StreamOutcome::ReturnToMenu(None)));
             }
-            RingCommand::CycleStats => hud.cycle(connected),
+            RingCommand::CycleStats => hud.cycle(),
             other => tracing::info!("dial: {other:?} does nothing on this console"),
         }
     }
     None
 }
 
-/// What the presenter reported over the session, for a test run's `perf.json`.
+/// What the presenter reported over the session, for a test run's `perf.json`, and over the
+/// current window, for the `stats:` log line.
 #[derive(Default)]
 struct StreamPerf {
     frames: u64,
     missed: u64,
     pictures: u64,
+    decode_to_present_us: Vec<u32>,
+    window: PerfWindow,
+}
+
+#[derive(Default)]
+struct PerfWindow {
+    since: Option<Instant>,
+    frames: u32,
+    missed: u32,
+    pictures: u32,
     decode_to_present_us: Vec<u32>,
 }
 
@@ -438,11 +451,35 @@ impl StreamPerf {
         self.frames += 1;
         self.missed += u64::from(report.missed);
         self.pictures += u64::from(report.new_picture);
+        let w = &mut self.window;
+        w.since.get_or_insert_with(Instant::now);
+        w.frames += 1;
+        w.missed += u32::from(report.missed);
+        w.pictures += u32::from(report.new_picture);
         if let Some(us) = report.decode_to_present_us {
             if self.decode_to_present_us.len() < 1 << 16 {
                 self.decode_to_present_us.push(us);
             }
+            w.decode_to_present_us.push(us);
         }
+    }
+
+    /// The presenter's figures since the last call, and a new window.
+    fn take_window(&mut self) -> String {
+        let mut w = std::mem::take(&mut self.window);
+        let secs = w.since.map_or(0.0, |t| t.elapsed().as_secs_f64());
+        w.decode_to_present_us.sort_unstable();
+        let ms = |us: Option<&u32>| us.map_or("-".to_string(), |&us| format!("{:.1}", f64::from(us) / 1000.0));
+        let d = &w.decode_to_present_us;
+        format!(
+            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, decode to present p50 {} p95 {} max {} ms",
+            w.frames,
+            w.missed,
+            w.pictures,
+            ms(d.get(d.len() / 2)),
+            ms(d.get(d.len() * 95 / 100)),
+            ms(d.last()),
+        )
     }
 
     fn json(&self, connected: &Connected) -> serde_json::Value {

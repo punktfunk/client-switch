@@ -26,6 +26,9 @@ impl NxLifecycle {
             let _ = tx.send(e);
         });
         applet::lock_exit();
+        // No hook event has reached a log yet, the dock change included: this says what the
+        // title runs as and what mode libnx last heard.
+        tracing::info!("lifecycle: {:?}, {:?}", applet::applet_type(), applet::operation_mode());
         Self {
             events,
             _hook: hook,
