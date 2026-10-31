@@ -161,3 +161,17 @@ record their clocks; the numbers below are under that profile unless an item say
   three still there on the next launch, with no failed save. Of 23 ten-second windows in the
   menu, 14 drew 595–601 frames; the other 9 drew 567–593, mostly with a frame of 65–213 ms
   (title at `927533b`, 2026-10-30; bundle `verdict/1793400050`).
+- Docking mid-stream re-sizes without a redial, both ways: message 30 arrives, the window goes
+  to 1920x1080 (`nwindowSetDimensions` takes it once the old swapchain is gone), a 1920x1080
+  swapchain follows, the stream asks for 1920x1080@60, and the host delivers it in 1.2 s with
+  NVDEC reopened; undocking does the same at 1280x720. One loss froze 159 ms at the dock. Docked
+  at 1080p NVDEC decoded in 7.6 ms mean (10.7 ms worst) and the copy out took 3.7 ms, against
+  4.0 ms and 1.7 ms at 720p; 30 s docked so far, not the ten minutes WP3 asks
+  (title at `b8e2986`, 2026-10-31).
+- Under the smoothness intent with one frame and the bitrate pinned at 20 Mb/s (16–17 Mb/s
+  delivered), five minutes handheld presented 59–60 pictures a second, with 0–3 a window dropped
+  unseen and none trimmed outside the two mode changes; decode to present ran 15–23 ms p50 and
+  end to end 32 ms p50, 49 ms in the windows a refresh later. No one-way-delay cut fired. The
+  latency intent on the same Wi-Fi presented 47–58 a second at 5–6 ms decode to present, and in
+  the earlier runs the automatic bitrate's climbs to 22–25 Mb/s preceded every 60–110 ms delay
+  spike (title at `b8e2986` and `517083f`, 2026-10-31).
