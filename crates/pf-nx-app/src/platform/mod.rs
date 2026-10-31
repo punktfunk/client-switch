@@ -42,6 +42,8 @@ pub struct DeviceInfo {
     pub gpu: String,
     /// How the UI layer draws: backend, size, and why it fell back to the CPU.
     pub ui: String,
+    /// Launched as an applet (from the album), with a fraction of the title's memory (plan D13).
+    pub applet_mode: bool,
 }
 
 /// Refresh rate of the scan-out, in millihertz (60 000, 59 940).

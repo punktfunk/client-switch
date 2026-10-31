@@ -18,7 +18,10 @@ impl AudioOut for NxAudio {
             "audout plays 48 kHz stereo, not {channels} channels at {rate} Hz"
         );
         let out = audout::AudioOut::open(BUFFERS, GRAIN_FRAMES)?;
-        tracing::info!("audio: audout 48 kHz stereo S16, {BUFFERS} buffers of {GRAIN_FRAMES} frames");
+        tracing::info!(
+            "audio: audout 48 kHz stereo S16, {BUFFERS} buffers of {GRAIN_FRAMES} frames, volume {:?}",
+            out.volume()
+        );
         Ok(Box::new(Port {
             out,
             pcm: vec![0; GRAIN_FRAMES * 2],

@@ -32,6 +32,34 @@ pub struct AudioStage {
     last: usize,
     /// libopus's output, one frame at the widest layout. A field so it is not zeroed per packet.
     pcm: Box<[f32; SAMPLES_PER_FRAME * MAX_CHANNELS]>,
+    /// The level of the host's packets since [`AudioStage::take_level`].
+    meter: Meter,
+}
+
+/// Peak and RMS of decoded samples, full scale 1.0.
+#[derive(Default)]
+struct Meter {
+    peak: f32,
+    sum_sq: f64,
+    samples: u64,
+}
+
+/// The audio's level over a window, in dBFS: 0 is full scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Level {
+    pub peak_db: f32,
+    pub rms_db: f32,
+}
+
+/// Silence reads as this rather than minus infinity.
+const FLOOR_DB: f32 = -120.0;
+
+fn dbfs(amplitude: f64) -> f32 {
+    if amplitude > 0.0 {
+        ((20.0 * amplitude.log10()) as f32).max(FLOOR_DB)
+    } else {
+        FLOOR_DB
+    }
 }
 
 impl AudioStage {
@@ -60,6 +88,7 @@ impl AudioStage {
             f32: Vec::with_capacity(SAMPLES_PER_FRAME * MAX_CHANNELS * 2),
             last: 0,
             pcm: Box::new([0.0; SAMPLES_PER_FRAME * MAX_CHANNELS]),
+            meter: Meter::default(),
         })
     }
 
@@ -78,6 +107,7 @@ impl AudioStage {
             channels,
             gaps,
             sink,
+            meter,
         } = self;
         let channels = *channels;
         let missing = gaps.missing_before(seq);
@@ -103,6 +133,11 @@ impl AudioStage {
                 f32.extend_from_slice(decoded);
             }
         }
+        for &s in &pcm[..*last] {
+            meter.peak = meter.peak.max(s.abs());
+            meter.sum_sq += f64::from(s) * f64::from(s);
+        }
+        meter.samples += *last as u64;
         if missing == 0 {
             return sink.feed(Samples::F32(&pcm[..*last]), stamp(0));
         }
@@ -119,9 +154,15 @@ impl AudioStage {
         self.sink.underruns()
     }
 
-    /// Peak sample of the last decoded frame: tells "the host sends silence" from "no sound".
-    pub fn peak(&self) -> f32 {
-        self.pcm[..self.last].iter().fold(0f32, |m, &s| m.max(s.abs()))
+    /// The level of the host's packets since the last call, concealment left out: tells "the
+    /// host sends it quiet" from "the console plays it quiet".
+    pub fn take_level(&mut self) -> Level {
+        let m = std::mem::take(&mut self.meter);
+        let mean_sq = if m.samples == 0 { 0.0 } else { m.sum_sq / m.samples as f64 };
+        Level {
+            peak_db: dbfs(f64::from(m.peak)),
+            rms_db: dbfs(mean_sq.sqrt()),
+        }
     }
 }
 
@@ -172,7 +213,15 @@ mod tests {
         let fed = sink.0.lock().unwrap().clone();
         assert_eq!(fed[0], (SAMPLES_PER_FRAME * 2, 100_000_000));
         assert_eq!(fed[1], (SAMPLES_PER_FRAME * 2 * 2, 105_000_000));
-        assert!(stage.peak() > 0.0);
+        assert!(stage.take_level().peak_db > FLOOR_DB);
+        assert_eq!(stage.take_level().peak_db, FLOOR_DB, "the window starts over");
+    }
+
+    #[test]
+    fn levels_read_in_dbfs() {
+        assert_eq!(dbfs(1.0), 0.0);
+        assert!((dbfs(0.5) + 6.02).abs() < 0.01);
+        assert_eq!(dbfs(0.0), FLOOR_DB);
     }
 
     /// A width the sink does not play, or a layout this build does not know, is refused.

@@ -10,12 +10,16 @@ const PLAYERS: u8 = 4;
 
 pub struct NxPads {
     pads: hid::Pads,
+    /// Slots the host has rumbled since the last [`Pads::release_all`]: the log names the first
+    /// rumble of each, so a still pad tells "nothing asked" from "asked and not felt".
+    rumbled: u8,
 }
 
 impl NxPads {
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
             pads: hid::Pads::init(PLAYERS)?,
+            rumbled: 0,
         })
     }
 
@@ -73,10 +77,16 @@ impl Pads for NxPads {
 
     fn feedback(&mut self, slot: u8, feedback: &PadFeedback) {
         let &PadFeedback::Rumble { low, high } = feedback;
+        let bit = 1u8.checked_shl(u32::from(slot)).unwrap_or(0);
+        if (low, high) != (0, 0) && self.rumbled & bit == 0 {
+            self.rumbled |= bit;
+            tracing::info!("pad {slot}: the host rumbles it, low {low} high {high}");
+        }
         self.rumble(slot, low, high);
     }
 
     fn release_all(&mut self) {
+        self.rumbled = 0;
         for slot in 0..PLAYERS {
             self.rumble(slot, 0, 0);
         }

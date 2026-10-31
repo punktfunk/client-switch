@@ -488,15 +488,17 @@ pub(super) fn audio_pump(client: &NativeClient, stage: &mut AudioStage, stop: &A
         packets = packets.wrapping_add(1);
         // ~15s, matching the video heartbeat (packets are 5ms each).
         if packets % 3_000 == 0 {
-            tracing::debug!(
-                "audio: {what}, depth={}, underruns={}, peak={:.4}",
+            let level = stage.take_level();
+            tracing::info!(
+                "audio: {what}, depth={}, underruns={}, level peak={:.1} dBFS rms={:.1} dBFS",
                 stage
                     .depth_ms()
                     .map_or_else(|| "n/a".to_string(), |ms| format!("{ms}ms")),
                 stage
                     .underruns()
                     .map_or_else(|| "n/a".to_string(), |count| count.to_string()),
-                stage.peak(),
+                level.peak_db,
+                level.rms_db,
             );
         }
     });

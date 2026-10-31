@@ -116,6 +116,10 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
         firmware: setsys::firmware_version().unwrap_or_default(),
         gpu,
         ui,
+        applet_mode: !matches!(
+            applet::applet_type(),
+            applet::AppletType::Application | applet::AppletType::SystemApplication
+        ),
     };
     Ok(Platform {
         display,

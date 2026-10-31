@@ -92,13 +92,14 @@ pub fn run(platform: Platform) -> ! {
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();
     install_panic_hook();
     tracing::info!(
-        "punktfunk-switch {} on {} ({} firmware {}), gpu {}, ui {}",
+        "punktfunk-switch {} on {} ({} firmware {}), gpu {}, ui {}{}",
         crate::core::build_id(),
         device.platform,
         device.model,
         device.firmware,
         device.gpu,
         device.ui,
+        if device.applet_mode { ", applet mode" } else { "" },
     );
     punktfunk_core::client::set_client_label(&client_label(&device));
     crate::core::caps::install(video.caps());
@@ -144,9 +145,13 @@ pub fn run(platform: Platform) -> ! {
     lifecycle.exit()
 }
 
+/// What the first menu says when the title runs as an applet (plan D13).
+const APPLET_MODE_NOTICE: &str =
+    "Opened from the Album, punktfunk has little memory and may close — hold R while starting a game to open it with full memory.";
+
 /// The menu and the stream in turn, until one of them quits.
 fn alternate(app: &mut App) -> Option<ExitPlan> {
-    let mut notice = None;
+    let mut notice = app.device.applet_mode.then(|| APPLET_MODE_NOTICE.to_string());
     loop {
         let outcome = match menu::run(app, notice.take()) {
             Ok(outcome) => outcome,
