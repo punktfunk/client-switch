@@ -22,6 +22,7 @@ extern "C" {
     fn __real_fchmod(fd: c_int, mode: u32) -> c_int;
     fn __real_rename(old: *const c_char, new: *const c_char) -> c_int;
     fn __real_rmdir(path: *const c_char) -> c_int;
+    fn __real_setsockopt(fd: c_int, level: c_int, name: c_int, value: *const c_void, len: u32) -> c_int;
     fn __errno() -> *mut c_int;
     fn threadClose(t: *mut c_void) -> u32;
     fn __libnx_free(p: *mut c_void);
@@ -36,18 +37,24 @@ type ThreadFunc = unsafe extern "C" fn(arg: *mut c_void);
 const ENOSYS: c_int = 88;
 const EFAULT: c_int = 14;
 const EEXIST: c_int = 17;
+const ENOBUFS: c_int = 105;
+
+/// newlib's `SOL_SOCKET` and `SO_RCVBUF`.
+const SOL_SOCKET: c_int = 0xffff;
+const SO_RCVBUF: c_int = 0x1002;
 
 /// Keeps this module in the link. A binary's own object references these strongly, so the
 /// linker extracts the member that defines them.
 #[inline(never)]
 pub fn link_guard() {
-    let keep: [*const (); 11] = [
+    let keep: [*const (); 12] = [
         userAppInit as *const (),
         __wrap_threadCreate as *const (),
         __syscall_thread_detach as *const (),
         __wrap_fchmod as *const (),
         __wrap_rename as *const (),
         __wrap_rmdir as *const (),
+        __wrap_setsockopt as *const (),
         _init as *const (),
         _fini as *const (),
         sysconf as *const (),
@@ -334,6 +341,47 @@ unsafe fn replace_file(old: *const c_char, new: *const c_char) -> Result<(), c_i
 pub unsafe extern "C" fn __wrap_rmdir(path: *const c_char) -> c_int {
     // SAFETY: the caller's argument.
     unsafe { __real_rmdir(path) }
+}
+
+/// The largest `SO_RCVBUF` the `bsd` service grants: 2 and 4 MiB fail with ENOBUFS.
+const RCVBUF_MAX: c_int = 1 << 20;
+/// Below this a step down is not worth taking: libnx's default reservation is 42240.
+const RCVBUF_FLOOR: c_int = 64 << 10;
+
+/// Core asks every UDP socket for a 32 MiB `SO_RCVBUF` once and keeps libnx's 41 KiB when the
+/// `bsd` service refuses it, and a 41 KiB buffer drops shards of every burst larger than that
+/// (WP3's first 720p run: 33 freezes in ten minutes, the bitrate held near 3 Mbps). A refused
+/// receive size is asked again at 1 MiB, then halved down to 64 KiB.
+///
+/// # Safety
+/// As `setsockopt`.
+#[no_mangle]
+pub unsafe extern "C" fn __wrap_setsockopt(
+    fd: c_int,
+    level: c_int,
+    name: c_int,
+    value: *const c_void,
+    len: u32,
+) -> c_int {
+    // SAFETY: the caller's arguments; errno is this thread's.
+    unsafe {
+        let rc = __real_setsockopt(fd, level, name, value, len);
+        if rc == 0 || level != SOL_SOCKET || name != SO_RCVBUF || *__errno() != ENOBUFS {
+            return rc;
+        }
+        if value.is_null() || len as usize != core::mem::size_of::<c_int>() {
+            return rc;
+        }
+        let mut ask = value.cast::<c_int>().read_unaligned().min(RCVBUF_MAX * 2) / 2;
+        while ask >= RCVBUF_FLOOR {
+            if __real_setsockopt(fd, level, name, (&raw const ask).cast(), len) == 0 {
+                return 0;
+            }
+            ask /= 2;
+        }
+        *__errno() = ENOBUFS;
+        -1
+    }
 }
 
 /// libnx's crt0 runs `.init_array` through these; rust-lld links no crti/crtn to define them.

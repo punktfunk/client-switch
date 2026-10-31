@@ -18,11 +18,15 @@ use pf_client_video::video_vk::{QueueLock, VulkanDecodeDevice};
 pub const INSTANCE_API_VERSION: u32 = vk::API_VERSION_1_3;
 
 /// What the device presents to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub enum Target {
-    /// `VK_NN_vi_surface` on a libnx `NWindow`. `size` is the swapchain extent asked for where
-    /// the surface leaves it to the caller.
-    Vi { window: *mut c_void, size: (u32, u32) },
+    /// `VK_NN_vi_surface` on a libnx `NWindow`. `size` is the swapchain extent asked for; the
+    /// surface takes the window's size, so `resize` sizes the window before each surface is made.
+    Vi {
+        window: *mut c_void,
+        size: (u32, u32),
+        resize: fn(*mut c_void, u32, u32) -> bool,
+    },
     /// Images this crate owns, read back for tests. A developer box without a window.
     Offscreen { width: u32, height: u32 },
 }

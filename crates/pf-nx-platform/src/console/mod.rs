@@ -85,6 +85,7 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let target = Target::Vi {
                 window,
                 size: mode_size(mode),
+                resize: vi::set_window_size,
             };
             let dev = Arc::new(GpuDevice::new(nvk::entry(), target).context("bring up the GPU")?);
             let slot = Arc::new(VideoSlot::default());

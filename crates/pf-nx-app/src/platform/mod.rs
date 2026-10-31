@@ -116,6 +116,10 @@ pub struct FrameReport {
     pub new_picture: bool,
     /// Decode-complete to present, for the picture shown, when it was new.
     pub decode_to_present_us: Option<u32>,
+    /// Decoded pictures dropped unseen since the last frame, passed over for a newer one.
+    pub replaced: u32,
+    /// Decoded pictures dropped unseen since the last frame, pushed out of a full smoothing queue.
+    pub overflow: u32,
 }
 
 /// A read-back frame.
@@ -149,6 +153,8 @@ pub struct StreamSpec {
     pub chroma444: bool,
     /// Bytes per shard on the wire, which a chunk-aligned AU is cut into.
     pub shard_payload: usize,
+    /// The smoothness budget in frames, `1..=3`; `0` is the latency intent (newest picture wins).
+    pub smoothing: usize,
     /// The session's overlay figures: lanes note decode, the presenter notes display.
     pub hud: Arc<punktfunk_core::hud::Stats>,
 }

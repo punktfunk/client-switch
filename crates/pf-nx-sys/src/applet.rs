@@ -107,6 +107,8 @@ mod ffi {
     extern "C" {
         pub fn appletGetAppletType() -> i32;
         pub fn appletMainLoop() -> bool;
+        pub fn appletGetMessage(msg: *mut u32) -> u32;
+        pub fn appletProcessMessage(msg: u32) -> bool;
         pub fn appletHook(cookie: *mut AppletHookCookie, callback: AppletHookFn, param: *mut c_void);
         pub fn appletUnhook(cookie: *mut AppletHookCookie);
         pub fn appletGetOperationMode() -> u32;
@@ -138,6 +140,37 @@ pub fn applet_type() -> AppletType {
 pub fn main_loop() -> bool {
     // SAFETY: no arguments; the hooks it calls are this module's trampolines (see `Hook`).
     unsafe { ffi::appletMainLoop() }
+}
+
+/// [`main_loop`] in its two halves: the waiting `AppletMessage`, if any.
+#[cfg(target_os = "horizon")]
+pub fn take_message() -> Option<u32> {
+    let mut msg = 0;
+    // SAFETY: `msg` is a writable u32; with no message waiting it fails and writes nothing.
+    (unsafe { ffi::appletGetMessage(&mut msg) } == 0).then_some(msg)
+}
+
+/// Updates libnx's cached state from `msg` and runs the hooks; `false` for an exit request.
+#[cfg(target_os = "horizon")]
+pub fn process_message(msg: u32) -> bool {
+    // SAFETY: any message value; the hooks it calls are this module's trampolines.
+    unsafe { ffi::appletProcessMessage(msg) }
+}
+
+/// `AppletMessage`'s name for the log.
+pub fn message_name(msg: u32) -> &'static str {
+    match msg {
+        4 => "ExitRequest",
+        15 => "FocusStateChanged",
+        16 => "Resume",
+        30 => "OperationModeChanged",
+        31 => "PerformanceModeChanged",
+        51 => "RequestToDisplay",
+        90 => "CaptureButtonShortPressed",
+        92 => "AlbumScreenShotTaken",
+        93 => "AlbumRecordingSaved",
+        _ => "unknown",
+    }
 }
 
 /// The focus state as of the last [`main_loop`].

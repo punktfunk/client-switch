@@ -16,6 +16,8 @@ pub struct NxLifecycle {
     _hook: applet::Hook,
     /// The system asked the title to close; the next poll leaves.
     closing: bool,
+    /// The first poll logs the applet type and mode: the logger starts after `new`.
+    reported: bool,
 }
 
 impl NxLifecycle {
@@ -30,6 +32,7 @@ impl NxLifecycle {
             events,
             _hook: hook,
             closing: false,
+            reported: false,
         }
     }
 }
@@ -42,11 +45,19 @@ impl Lifecycle for NxLifecycle {
         if self.closing {
             self.exit();
         }
-        if !applet::main_loop() {
-            tracing::info!("lifecycle: the system asked the title to close");
-            self.closing = true;
-            out.push(SystemEvent::Suspend);
-            return;
+        if !std::mem::replace(&mut self.reported, true) {
+            tracing::info!("lifecycle: {:?}, {:?}", applet::applet_type(), applet::operation_mode());
+        }
+        // `appletMainLoop` in its halves, so every message is logged: no hook event and no
+        // operation-mode change has reached a log yet, the dock change included.
+        if let Some(msg) = applet::take_message() {
+            tracing::info!("lifecycle: applet message {msg} ({})", applet::message_name(msg));
+            if !applet::process_message(msg) {
+                tracing::info!("lifecycle: the system asked the title to close");
+                self.closing = true;
+                out.push(SystemEvent::Suspend);
+                return;
+            }
         }
         for event in self.events.try_iter() {
             match event {

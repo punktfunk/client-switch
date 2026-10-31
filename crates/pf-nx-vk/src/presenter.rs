@@ -461,9 +461,14 @@ impl Display for Presenter {
         }
 
         self.ui.draw(ui);
+        // The acquire blocks until the panel frees an image, just after a vblank: the picture is
+        // taken after it, so one that lands during the wait still makes this frame.
+        let index = self.acquire(ready)?;
         let mut report = FrameReport::default();
         if self.stream.is_some() {
-            if let Some(picture) = self.slot.take() {
+            // What is presented now latches at the next vblank, a refresh from here.
+            let latch = Instant::now() + Duration::from_nanos(self.refresh().period_ns());
+            if let Some(picture) = self.slot.take(latch) {
                 if let Some(turn) = picture.turn {
                     self.dev.vkd.queue_lock.begin_present_turn(turn);
                 }
@@ -471,9 +476,11 @@ impl Display for Presenter {
                 report.decode_to_present_us = u32::try_from(picture.decoded_at.elapsed().as_micros()).ok();
                 self.current = Some(picture);
             }
+            let drops = self.slot.take_drops();
+            report.replaced = drops.replaced;
+            report.overflow = drops.overflow;
         }
         self.frames[f].in_use = self.current.clone();
-        let index = self.acquire(ready)?;
         let sets = self.frames[f].sets;
 
         // SAFETY: the command buffer is not in flight (fence waited) and its pool allows reset;

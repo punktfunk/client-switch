@@ -47,6 +47,7 @@ impl MediaPipeline {
         let mut opener = Opener {
             decoders: media.video.clone(),
             excluded: 0,
+            smoothing: usize::from(params.present_priority.fifo_capacity()),
         };
         let (sink, first) = opener.open(client, stop)?;
         let port = media
@@ -90,6 +91,8 @@ pub(super) struct Opener {
     decoders: Arc<dyn VideoDecoders>,
     /// `CODEC_*` bits no decoder here opened, so an ask never sends the host back to one.
     excluded: u8,
+    /// [`StreamSpec::smoothing`], from the player's presentation intent.
+    smoothing: usize,
 }
 
 impl Opener {
@@ -102,7 +105,7 @@ impl Opener {
     ) -> Result<(Box<dyn VideoSink>, Option<Frame>)> {
         let mut first = None;
         loop {
-            let spec = spec_of(client);
+            let spec = spec_of(client, self.smoothing);
             let refused = match self.decoders.open(&spec) {
                 Ok(sink) => {
                     tracing::info!(
@@ -127,7 +130,7 @@ impl Opener {
 }
 
 /// The decoder's view of the stream's live format.
-fn spec_of(client: &NativeClient) -> StreamSpec {
+fn spec_of(client: &NativeClient, smoothing: usize) -> StreamSpec {
     let (mode, format) = (client.mode(), client.video_format());
     StreamSpec {
         codec: format.codec,
@@ -138,6 +141,7 @@ fn spec_of(client: &NativeClient) -> StreamSpec {
         bit_depth: format.bit_depth,
         chroma444: format.chroma_format == punktfunk_core::quic::CHROMA_IDC_444,
         shard_payload: client.shard_payload as usize,
+        smoothing,
         hud: client.hud_shared(),
     }
 }
