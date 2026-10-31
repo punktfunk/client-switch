@@ -146,6 +146,8 @@ impl<T> Queue<T> {
     /// Newest wins ignores `due`. Smoothing shows the oldest picture due by `latch` and lets one
     /// more due wait for the next vblank: due times that straddle a vblank then take one refresh
     /// each. A third due is a backlog, and its oldest are dropped so latency stays the budget.
+    /// More waiting than the budget holds means the due times run ahead of the arrivals, and the
+    /// oldest goes out early.
     fn take(&mut self, latch: Instant) -> Option<T> {
         if self.smoothing == 0 {
             return self.items.pop_back().map(|(_, item)| item);
@@ -155,6 +157,10 @@ impl<T> Queue<T> {
             .iter()
             .take_while(|(due, _)| due.is_none_or(|d| d <= latch))
             .count();
+        // After a network stall the pacing can re-anchor late, putting every due time past what
+        // the queue holds: waiting for them trimmed each picture unseen while the screen stood
+        // still for seconds (smoothing log of 2026-10-31, 151 trimmed in one window).
+        let due = due.max(self.items.len().saturating_sub(self.smoothing + 1));
         if due == 0 {
             return None;
         }
@@ -617,6 +623,21 @@ mod tests {
         assert_eq!(q.items.len(), 1 + SMOOTHING_SLACK);
         assert_eq!(q.items.front().map(|(_, i)| *i), Some(7));
         assert_eq!((q.drops.replaced, q.drops.overflow), (0, 7));
+    }
+
+    #[test]
+    fn a_queue_ahead_of_its_due_times_still_moves() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        q.push(Some(ms(t0, 1_000)), 0);
+        q.push(Some(ms(t0, 1_016)), 1);
+        assert_eq!(q.take(t0), None, "two within the budget wait");
+        q.push(Some(ms(t0, 1_033)), 2);
+        assert_eq!(q.take(ms(t0, 16)), Some(0), "a third goes out early, not trimmed");
+        q.push(Some(ms(t0, 1_050)), 3);
+        assert_eq!(q.take(ms(t0, 33)), Some(1));
+        assert_eq!(q.drops, Drops::default());
     }
 
     #[test]
