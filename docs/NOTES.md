@@ -185,3 +185,10 @@ record their clocks; the numbers below are under that profile unless an item say
   PC its display back (title at `b8e2986`, 2026-10-31; Atmosphère report
   `01793482713_05446530aca7e000`). The hook now flushes the message before the walk, and the
   waker leg treats a failed send as a wake that reached no one.
+- Launched from the album (hbloader in applet mode) the title died the same way, a data abort
+  at 0x20 in `_write_r` from the logger thread after `__appExit`, so something panicked first;
+  the title log was lost to the next launch, which truncates it. The console needed a reboot
+  into the CFW afterwards. A second sleep mid-stream on the same build ended as the first
+  (title at `b8e2986`, 2026-10-31; Atmosphère reports `01793488062_010000000000100d` and
+  `01793488512_05446530aca7e000`). Applet mode is left untested until a build that logs its
+  panics runs there.
