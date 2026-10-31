@@ -43,7 +43,13 @@ impl Output {
     /// An output of `want` pixels, where the target lets the caller choose.
     pub fn new(dev: &GpuDevice, want: vk::Extent2D) -> Result<Self> {
         match dev.target {
-            Target::Vi { window, .. } => Self::vi(dev, window, want),
+            Target::Vi { window, resize, .. } => {
+                // libnx changes the size only while no buffers are registered: the old swapchain
+                // is gone by now. A refusal is logged and the size stays.
+                // TODO(verify): that destroying NVK's swapchain unregisters the window's buffers.
+                resize(window, want.width, want.height);
+                Self::vi(dev, window, want)
+            }
             Target::Offscreen { width, height } => Self::offscreen(dev, width, height),
         }
     }
@@ -95,8 +101,8 @@ impl Output {
     )> {
         // SAFETY: live physical device and surface.
         let caps = unsafe { surface_i.get_physical_device_surface_capabilities(dev.pdev, surface) }?;
-        // TODO(verify): whether NVK reports the window's size here or leaves it to us
-        // (u32::MAX); docked 1920x1080 needs the latter or the NWindow resized first.
+        // NVK reports the window's size here: docked, a 1280x720 window gave a 1280x720 swapchain
+        // (log of 2026-10-31), hence the resize before the surface.
         let extent = if caps.current_extent.width == u32::MAX {
             vk::Extent2D {
                 width: want
@@ -109,8 +115,8 @@ impl Output {
         } else {
             caps.current_extent
         };
-        // Two images: one on the panel, one queued. A third let FIFO hold two frames ahead of
-        // the panel, a vblank of latency on every picture.
+        // Two images where the surface allows it: one on the panel, one queued. The vi surface asks
+        // for three at least (NOTES, probe at 73f3ca8), so the console gets three.
         let mut count = 2.max(caps.min_image_count);
         if caps.max_image_count > 0 {
             count = count.min(caps.max_image_count);
