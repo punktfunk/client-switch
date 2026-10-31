@@ -6,9 +6,11 @@
 mod connect;
 mod hud;
 mod menu;
+mod motion;
 pub mod pads;
 mod stream;
 pub mod testrun;
+mod touch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
