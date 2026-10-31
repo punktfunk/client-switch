@@ -158,7 +158,11 @@ impl AudioStage {
     /// host sends it quiet" from "the console plays it quiet".
     pub fn take_level(&mut self) -> Level {
         let m = std::mem::take(&mut self.meter);
-        let mean_sq = if m.samples == 0 { 0.0 } else { m.sum_sq / m.samples as f64 };
+        let mean_sq = if m.samples == 0 {
+            0.0
+        } else {
+            m.sum_sq / m.samples as f64
+        };
         Level {
             peak_db: dbfs(f64::from(m.peak)),
             rms_db: dbfs(mean_sq.sqrt()),

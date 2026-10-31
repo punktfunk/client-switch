@@ -97,7 +97,10 @@ pub const PANEL: (f32, f32) = (1280.0, 720.0);
 
 /// One hid finger's position across the screen, 0.0..=1.0.
 pub fn touch(x: u32, y: u32) -> (f32, f32) {
-    ((x as f32 / PANEL.0).clamp(0.0, 1.0), (y as f32 / PANEL.1).clamp(0.0, 1.0))
+    (
+        (x as f32 / PANEL.0).clamp(0.0, 1.0),
+        (y as f32 / PANEL.1).clamp(0.0, 1.0),
+    )
 }
 
 #[cfg(test)]
@@ -136,7 +139,10 @@ mod tests {
         // Lying still: hid's gravity on +z is the wire's +y.
         assert_eq!(motion([0.0, 0.0, 1.0], [0.0; 3]).1, [0.0, 1.0, 0.0]);
         // Tipping the far edge up turns about +x; a quarter turn a second is π/2 rad/s.
-        assert_eq!(motion([0.0; 3], [0.25, 0.0, 0.0]).0, [std::f32::consts::FRAC_PI_2, 0.0, 0.0]);
+        assert_eq!(
+            motion([0.0; 3], [0.25, 0.0, 0.0]).0,
+            [std::f32::consts::FRAC_PI_2, 0.0, 0.0]
+        );
         // A turn to the left: about hid's +z, the wire's +y.
         assert_eq!(motion([0.0; 3], [0.0, 0.0, 1.0]).0, [0.0, std::f32::consts::TAU, 0.0]);
         // About hid's +y, the axis away from the player: the wire's -z.
