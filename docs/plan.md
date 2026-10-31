@@ -239,6 +239,18 @@ names it.
 **Exit (G3):** first picture on glass; 1080p60 docked and 720p60 handheld for ten minutes each,
 `stats:` clean, decode-to-present under one frame, the dock change re-sizes without a redial.
 
+**Outcome (2026-10-31).** On the tester's Switch 1 the title streams 720p60 HEVC through NVDEC
+handheld with the stats HUD and a `stats:` line every ten seconds, and docking mid-stream
+re-sizes both ways without a redial: 1920x1080 docked, 1280x720 undocked (`docs/NOTES.md`,
+title at `b8e2986`). The tester closed the package there. Departures:
+
+- 1080p60 docked ran 30 s, not ten minutes; NVDEC took 7.6 ms mean a picture and the copy out
+  3.7 ms, so a frame's budget holds. The ten-minute docked run moves to WP4's sessions.
+- Decode to present is under one frame under the latency intent (5–6 ms p50) only. The
+  smoothness intent spends one more by design: 15–23 ms at one frame.
+- The smoothness buffer's Automatic and a ceiling for the automatic bitrate wait for the
+  maintainer (`docs/improvements.md`).
+
 ### WP4 — The first playable client (two weeks)
 
 Audio out with the jitter tuning, pads with rumble and gyro, touch, the overlay menu and the
