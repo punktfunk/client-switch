@@ -149,6 +149,8 @@ pub struct StreamSpec {
     pub chroma444: bool,
     /// Bytes per shard on the wire, which a chunk-aligned AU is cut into.
     pub shard_payload: usize,
+    /// The smoothness budget in frames, `1..=3`; `0` is the latency intent (newest picture wins).
+    pub smoothing: usize,
     /// The session's overlay figures: lanes note decode, the presenter notes display.
     pub hud: Arc<punktfunk_core::hud::Stats>,
 }

@@ -8,6 +8,7 @@
 //! and are dropped, so the emulator still runs the hwaccel. A decoder error fails this feed,
 //! which has the session ask for a keyframe, and the next feed starts from a flushed decoder.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -66,14 +67,17 @@ impl VideoDecoders for NxVideo {
             None => Out::scratch(spec),
         };
         tracing::info!("{DECODER}: {codec:?} {}x{}", spec.width, spec.height);
+        let started = Instant::now();
         Ok(Box::new(NxSink {
             lane: Mutex::new(Lane {
                 decoder,
                 out,
                 needs_flush: false,
                 timing: Timing::new(),
+                started,
+                dues: VecDeque::with_capacity(DUES_KEPT + 1),
             }),
-            started: Instant::now(),
+            started,
         }))
     }
 
@@ -117,13 +121,17 @@ impl Out {
     }
 
     /// `false` when the picture was dropped because every plane set is on screen.
-    fn commit(&mut self, meta: av::PictureMeta) -> Result<bool> {
+    fn commit(&mut self, meta: av::PictureMeta, due: Option<Instant>) -> Result<bool> {
         match self {
-            Self::Gpu(upload) => upload.commit(meta.width, meta.height, meta.pts),
+            Self::Gpu(upload) => upload.commit(meta.width, meta.height, meta.pts, due),
             Self::Scratch { .. } => Ok(true),
         }
     }
 }
+
+/// Due times kept for pictures not out of the decoder yet. The stream has no reordering, so one
+/// is the rule; the rest bound a decoder that swallowed access units.
+const DUES_KEPT: usize = 8;
 
 struct Lane {
     decoder: av::Decoder,
@@ -131,12 +139,21 @@ struct Lane {
     /// The last feed failed; flush before the next one.
     needs_flush: bool,
     timing: Timing,
+    /// The sink's clock origin, which the session's due times count from.
+    started: Instant,
+    /// `(host PTS, due ns)` per access unit fed, oldest first, until its picture comes out.
+    dues: VecDeque<(u64, u64)>,
 }
 
 impl Lane {
-    fn feed(&mut self, au: &[u8], pts: u64) -> Result<()> {
+    fn feed(&mut self, au: &[u8], pts: u64, due_ns: u64) -> Result<()> {
         if std::mem::take(&mut self.needs_flush) {
             self.decoder.flush();
+            self.dues.clear();
+        }
+        self.dues.push_back((pts, due_ns));
+        if self.dues.len() > DUES_KEPT {
+            self.dues.pop_front();
         }
         let fed = self.decode(au, pts);
         self.needs_flush = fed.is_err();
@@ -162,10 +179,22 @@ impl Lane {
             .decoder
             .receive_into(planes.y, planes.y_stride, planes.uv, planes.uv_stride)?;
         let Some(meta) = got else { return Ok(false) };
+        let due = self.due_of(meta.pts);
         let started = Instant::now();
-        let shown = self.out.commit(meta)?;
+        let shown = self.out.commit(meta, due)?;
         self.timing.note(&self.decoder.stats(), wait, started.elapsed(), shown);
         Ok(true)
+    }
+
+    /// The due time fed with the access unit at host PTS `pts`, dropping any older ones: their
+    /// pictures never came out. `None` (shown at once) when it is not kept.
+    fn due_of(&mut self, pts: u64) -> Option<Instant> {
+        while let Some((fed, due_ns)) = self.dues.pop_front() {
+            if fed == pts {
+                return Some(self.started + Duration::from_nanos(due_ns));
+            }
+        }
+        None
     }
 }
 
@@ -263,8 +292,10 @@ impl VideoSink for NxSink {
         }
     }
 
-    fn feed(&self, au: &[u8], _pts_ns: u64, flags: FeedFlags) -> Result<()> {
-        self.lane().feed(au, flags.host_pts_ns)
+    /// `due_ns` is the session's pacing on this sink's clock: when the picture should reach the
+    /// glass, which a smoothing slot holds it for.
+    fn feed(&self, au: &[u8], due_ns: u64, flags: FeedFlags) -> Result<()> {
+        self.lane().feed(au, flags.host_pts_ns, due_ns)
     }
 
     fn clock(&self) -> Option<&dyn MediaClock> {

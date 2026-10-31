@@ -229,7 +229,9 @@ bundle to `sdmc:/switch/punktfunk/verdict/` (`docs/NOTES.md`, title at `927533b`
 ### WP3 — The video plane (three weeks)
 
 The decode lane (`pf-nx-platform::video` over `pf-nx-sys::av`), the stream image path in
-`pf-nx-vk` (staging copy, the CSC pass, `Fit`), present pacing to vblank, the stats HUD,
+`pf-nx-vk` (staging copy, the CSC pass, `Fit`), present pacing to vblank under the player's
+presentation intent (latency: the newest picture wins at each vblank; smoothness: pictures wait
+for the pacing's due time and go out in order, the desktop presenter's FIFO), the stats HUD,
 recovery (decoder error or stall → `request_keyframe`, the session's `recovery_on_*` pattern),
 the dock change mid-stream (D11), `set_client_label("Switch")` so the console's device list
 names it.

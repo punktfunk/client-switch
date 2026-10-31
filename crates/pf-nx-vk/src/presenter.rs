@@ -466,7 +466,9 @@ impl Display for Presenter {
         let index = self.acquire(ready)?;
         let mut report = FrameReport::default();
         if self.stream.is_some() {
-            if let Some(picture) = self.slot.take() {
+            // What is presented now latches at the next vblank, a refresh from here.
+            let latch = Instant::now() + Duration::from_nanos(self.refresh().period_ns());
+            if let Some(picture) = self.slot.take(latch) {
                 if let Some(turn) = picture.turn {
                     self.dev.vkd.queue_lock.begin_present_turn(turn);
                 }

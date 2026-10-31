@@ -63,6 +63,9 @@ impl PyroLane {
             if spec.chroma444 { "4:4:4" } else { "4:2:0" },
             spec.shard_payload
         );
+        // The decoder's plane ring retires on a newest-wins hand-off, and all-intra frames leave
+        // nothing for a queue to smooth: the desktop presenter makes the same call.
+        self.slot.set_smoothing(0);
         Ok(Box::new(PyroSink {
             decoder: Mutex::new(decoder),
             slot: self.slot.clone(),
@@ -110,6 +113,7 @@ impl VideoSink for PyroSink {
             msb_packed: frame.ten_bit,
             uv_scale: [1.0, 1.0],
             decoded_at: Instant::now(),
+            due: None,
             pts_ns: flags.host_pts_ns,
             decoded_ns: u64::try_from(punktfunk_core::client::now_realtime_ns()).unwrap_or(0),
             turn: Some(frame.turn),

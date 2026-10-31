@@ -1,10 +1,13 @@
 //! A decoded picture on its way from a decode lane to the presenter, the slot between them, and
 //! the NV12 upload that turns a CPU picture into one.
 //!
-//! The slot holds one picture, newest wins: a lane that outruns the display overwrites, and the
-//! presenter takes whatever is newest at its vblank. A picture keeps its planes alive through
-//! `hold` until the last frame that sampled it has finished on the GPU.
+//! Under the latency intent the slot holds one picture, newest wins: a lane that outruns the
+//! display overwrites, and the presenter takes whatever is newest at its vblank. Under smoothness
+//! it is a short queue: each picture waits for its due time and they go out in order, so two that
+//! land in one refresh are shown on two instead of one replacing the other. A picture keeps its
+//! planes alive through `hold` until the last frame that sampled it has finished on the GPU.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -37,6 +40,9 @@ pub struct Picture {
     /// Visible fraction of the plane images (a picture smaller than its pool); `[1.0, 1.0]` when exact.
     pub uv_scale: [f32; 2],
     pub decoded_at: Instant,
+    /// When the session's pacing wants it on glass. Only a smoothing slot reads it; `None` is due
+    /// at once.
+    pub due: Option<Instant>,
     /// Host capture PTS and the realtime decode stamp, for the overlay's display stage.
     pub pts_ns: u64,
     pub decoded_ns: u64,
@@ -48,29 +54,109 @@ pub struct Picture {
     pub hold: Box<dyn std::any::Any + Send + Sync>,
 }
 
-/// One picture between a lane and the presenter.
+/// The pictures between a lane and the presenter.
 #[derive(Default)]
 pub struct VideoSlot {
-    newest: Mutex<Option<Arc<Picture>>>,
+    queue: Mutex<Queue<Arc<Picture>>>,
 }
 
 impl VideoSlot {
-    /// Replaces whatever the presenter has not taken yet.
+    /// `0` is the latency intent, newest wins; `1..=3` is the smoothness budget in frames.
+    pub fn set_smoothing(&self, frames: usize) {
+        self.lock().set_smoothing(frames);
+    }
+
+    /// Queues `picture`; under the latency intent it replaces whatever was not taken yet.
     pub fn publish(&self, picture: Picture) {
-        *self.newest.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(picture));
+        let due = picture.due;
+        self.lock().push(due, Arc::new(picture));
     }
 
-    /// The newest picture, if one arrived since the last take.
-    pub fn take(&self) -> Option<Arc<Picture>> {
-        self.newest
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+    /// The picture for the vblank at `latch`, if a new one is due by then.
+    pub fn take(&self, latch: Instant) -> Option<Arc<Picture>> {
+        self.lock().take(latch)
     }
 
-    /// Drops a waiting picture: the stream ended.
+    /// Drops the waiting pictures: the stream ended.
     pub fn clear(&self) {
-        self.take();
+        self.lock().clear();
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Queue<Arc<Picture>>> {
+        self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The largest smoothness budget, `PresentPriority`'s clamp.
+const MAX_SMOOTHING: usize = 3;
+/// Pictures a smoothing queue holds past its budget: the pacing's own cushion, up to a period,
+/// and one picture of slack before the oldest is dropped.
+const SMOOTHING_SLACK: usize = 2;
+/// The most pictures the slot ever holds.
+const MAX_QUEUED: usize = MAX_SMOOTHING + SMOOTHING_SLACK;
+
+/// The slot's rule, apart from the pictures, so the tests drive it with plain values.
+struct Queue<T> {
+    items: VecDeque<(Option<Instant>, T)>,
+    /// `0`: newest wins.
+    smoothing: usize,
+}
+
+impl<T> Default for Queue<T> {
+    fn default() -> Self {
+        Self {
+            items: VecDeque::with_capacity(MAX_QUEUED + 1),
+            smoothing: 0,
+        }
+    }
+}
+
+impl<T> Queue<T> {
+    fn set_smoothing(&mut self, frames: usize) {
+        self.smoothing = frames.min(MAX_SMOOTHING);
+        self.trim();
+    }
+
+    fn push(&mut self, due: Option<Instant>, item: T) {
+        if self.smoothing == 0 {
+            self.items.clear();
+        }
+        self.items.push_back((due, item));
+        self.trim();
+    }
+
+    /// Newest wins ignores `due`. Smoothing shows the oldest picture due by `latch` and lets one
+    /// more due wait for the next vblank: due times that straddle a vblank then take one refresh
+    /// each. A third due is a backlog, and its oldest are dropped so latency stays the budget.
+    fn take(&mut self, latch: Instant) -> Option<T> {
+        if self.smoothing == 0 {
+            return self.items.pop_back().map(|(_, item)| item);
+        }
+        let due = self
+            .items
+            .iter()
+            .take_while(|(due, _)| due.is_none_or(|d| d <= latch))
+            .count();
+        if due == 0 {
+            return None;
+        }
+        self.items.drain(..due.saturating_sub(2));
+        self.items.pop_front().map(|(_, item)| item)
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+    }
+
+    fn trim(&mut self) {
+        let cap = if self.smoothing == 0 {
+            1
+        } else {
+            self.smoothing + SMOOTHING_SLACK
+        };
+        while self.items.len() > cap {
+            self.items.pop_front();
+        }
     }
 }
 
@@ -78,8 +164,9 @@ impl VideoSlot {
 const ROW_ALIGN: usize = 256;
 /// Staging buffers: the decoder fills one while the GPU copies out of the other.
 const COPIES: usize = 2;
-/// Device-local plane sets: one per frame in flight, one waiting in the slot, one being written.
-const PLANE_SETS: usize = crate::ui::FRAMES + 2;
+/// Device-local plane sets: one per frame in flight, the most the slot queues, one being written.
+/// Made as needed, so the latency intent never makes more than it did with one waiting.
+const PLANE_SETS: usize = crate::ui::FRAMES + MAX_QUEUED + 1;
 
 /// Where the decoder writes the next picture: NV12, `y_stride` and `uv_stride` bytes a row.
 pub struct StagingPlanes<'a> {
@@ -216,6 +303,15 @@ impl Nv12Upload {
             extent.width,
             extent.height
         );
+        upload.slot.set_smoothing(spec.smoothing);
+        if spec.smoothing == 0 {
+            tracing::info!("presenter: newest picture wins at each vblank");
+        } else {
+            tracing::info!(
+                "presenter: pictures in order at their due time, smoothing {} frames",
+                spec.smoothing.min(MAX_SMOOTHING)
+            );
+        }
         Ok(upload)
     }
 
@@ -238,9 +334,9 @@ impl Nv12Upload {
         })
     }
 
-    /// Copies the staged `width`×`height` picture into a free plane set and publishes it.
-    /// `false` when every set is still on screen and the picture was dropped.
-    pub fn commit(&mut self, width: u32, height: u32, pts_ns: u64) -> Result<bool> {
+    /// Copies the staged `width`×`height` picture into a free plane set and publishes it, due on
+    /// glass at `due`. `false` when every set is still on screen and the picture was dropped.
+    pub fn commit(&mut self, width: u32, height: u32, pts_ns: u64, due: Option<Instant>) -> Result<bool> {
         ensure!(
             width <= self.extent.width && height <= self.extent.height,
             "a {width}x{height} picture outgrows the {}x{} upload",
@@ -348,6 +444,7 @@ impl Nv12Upload {
                 height as f32 / self.extent.height as f32,
             ],
             decoded_at: Instant::now(),
+            due,
             pts_ns,
             decoded_ns: u64::try_from(punktfunk_core::client::now_realtime_ns()).unwrap_or(0),
             turn: None,
@@ -427,5 +524,82 @@ impl Drop for Nv12Upload {
             }
             self.dev.device.destroy_command_pool(self.pool, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn ms(t0: Instant, ms: u64) -> Instant {
+        t0 + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn newest_wins_under_the_latency_intent() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.push(Some(ms(t0, 500)), 1);
+        q.push(Some(ms(t0, 500)), 2);
+        assert_eq!(q.take(t0), Some(2), "the due time is not read");
+        assert_eq!(q.take(t0), None);
+    }
+
+    #[test]
+    fn two_in_one_refresh_take_one_each() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        q.push(Some(ms(t0, 10)), 1);
+        q.push(Some(ms(t0, 15)), 2);
+        assert_eq!(q.take(ms(t0, 16)), Some(1));
+        assert_eq!(q.take(ms(t0, 33)), Some(2), "the second waits for the next vblank");
+        assert_eq!(q.take(ms(t0, 50)), None);
+    }
+
+    #[test]
+    fn a_picture_waits_for_its_due_time() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(2);
+        q.push(Some(ms(t0, 40)), 1);
+        assert_eq!(q.take(ms(t0, 16)), None);
+        assert_eq!(q.take(ms(t0, 33)), None);
+        assert_eq!(q.take(ms(t0, 50)), Some(1));
+    }
+
+    #[test]
+    fn a_backlog_drops_its_oldest_to_keep_the_budget() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        for i in 0..3 {
+            q.push(Some(ms(t0, i * 16)), i);
+        }
+        assert_eq!(q.take(ms(t0, 100)), Some(1), "three due: the oldest goes, one waits");
+        assert_eq!(q.take(ms(t0, 116)), Some(2));
+    }
+
+    #[test]
+    fn the_queue_is_bounded_past_its_budget() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        for i in 0..10 {
+            q.push(Some(ms(t0, 1_000)), i);
+        }
+        assert_eq!(q.items.len(), 1 + SMOOTHING_SLACK);
+        assert_eq!(q.items.front().map(|(_, i)| *i), Some(7));
+    }
+
+    #[test]
+    fn no_due_time_is_due_at_once() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(3);
+        q.push(None, 1);
+        assert_eq!(q.take(t0), Some(1));
     }
 }
