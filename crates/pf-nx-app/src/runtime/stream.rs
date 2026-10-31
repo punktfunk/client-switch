@@ -252,6 +252,8 @@ fn stream(
     let mut ring = pf_console_ui::Ring::new();
     let mode = connected.client().mode();
     let (output_w, output_h) = app.display.size();
+    // The output size the overlay and the stream mode were last fitted to.
+    let mut fitted = (output_w, output_h);
     let (mut width, mut height) = app.display.ui_size();
     ring.set_facts(&RingFacts {
         overlay_actions: settings.overlay_actions.clone(),
@@ -290,7 +292,11 @@ fn stream(
             tracing::info!("sleep: ending the stream");
             break Next::End(StreamOutcome::ReturnToMenu(None));
         }
-        if events.iter().any(|e| matches!(e, SystemEvent::OperationMode(_))) {
+        // The display resizes inside the frame after a dock change, so the event itself comes a
+        // frame early: the size is followed instead (the 2026-10-31 dock log asked for the
+        // previous mode at each change).
+        if app.display.size() != fitted {
+            fitted = app.display.size();
             (width, height) = app.display.ui_size();
             scale = overlay_scale(height);
             follow_output(app, connected, settings);

@@ -16,7 +16,7 @@ use super::{testrun, App, UiOutcome, SUSPENDED};
 use crate::core::model::GamepadType;
 use crate::core::perf::{ArtSnapshot, Perf};
 use crate::core::settings::NxSettings;
-use crate::platform::{PadKind, PadSample, SystemEvent};
+use crate::platform::{PadKind, PadSample};
 use crate::services::store::console::ConsoleStore;
 use crate::services::store::{self, StateWriter};
 use crate::ui::Service;
@@ -109,11 +109,9 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
 
     let outcome = 'ui: loop {
         let frame_start = Instant::now();
-        if app
-            .system_events()
-            .iter()
-            .any(|e| matches!(e, SystemEvent::OperationMode(_)))
-        {
+        app.system_events();
+        // Read after the frame that resized the display, not at the dock event a frame earlier.
+        if native_mode(app) != native {
             viewport = ui_viewport(app);
             native = native_mode(app);
         }
