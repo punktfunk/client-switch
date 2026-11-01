@@ -1,7 +1,7 @@
 // NVDEC through libavcodec's nvtegra hwaccel, as six calls the Rust side binds (src/av.rs).
 // One thread uses a decoder at a time; pictures leave as pitch-linear NV12 via the VIC,
-// straight into the caller's planes where the hwcontext can map them, else through
-// libavutil's own frame and a copy.
+// through libavutil's own frame and a copy, or, when the caller opens with `direct`, straight
+// into the caller's planes where the hwcontext can map them.
 // Built for a Linux dev box (no __SWITCH__), the same calls decode in software against the
 // system's libavcodec and interleave its 4:2:0 chroma into the same NV12 planes.
 #include <errno.h>
@@ -65,8 +65,10 @@ void pf_av_close(PfAvDecoder *d) {
 }
 
 // codec: 0 H.264, 1 HEVC. The hwaccel is found by name, so no header needs its enum.
+// `direct` non-zero tries the transfer straight into the caller's planes first; zero always
+// goes through libavutil's frame and a copy.
 // TODO(verify): the device type's name is "nvtegra" in the pinned tree (WP0.6).
-int pf_av_open(int codec, int width, int height, PfAvDecoder **out) {
+int pf_av_open(int codec, int width, int height, int direct, PfAvDecoder **out) {
     *out = NULL;
     const AVCodec *c = avcodec_find_decoder(codec == 1 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264);
     if (!c) return AVERROR_DECODER_NOT_FOUND;
@@ -89,8 +91,10 @@ int pf_av_open(int codec, int width, int height, PfAvDecoder **out) {
     if (!d->ctx || !d->pkt || !d->hw || !d->sw)
         goto fail;
 #ifdef __SWITCH__
-    if (!(d->ctx->hw_device_ctx = av_buffer_ref(d->device)) || !(d->direct = av_frame_alloc()))
+    if (!(d->ctx->hw_device_ctx = av_buffer_ref(d->device)) || (direct && !(d->direct = av_frame_alloc())))
         goto fail;
+#else
+    (void)direct;
 #endif
     // The default get_format picks the device's hw format when hw_device_ctx is set.
     d->ctx->width = width;

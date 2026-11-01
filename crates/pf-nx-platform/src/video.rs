@@ -4,9 +4,10 @@
 //!
 //! `feed` decodes on the session's video thread: send the access unit, then receive every
 //! picture straight into the presenter's next staging buffer, which `commit` copies into a
-//! plane set and publishes (D7). On the console the VIC writes into that staging buffer
-//! itself where it can map it (WP5); else the picture goes through libavutil's own frame and
-//! the shim copies it, and the `nvdec[10s]` line names which route ran. On the framebuffer display the pictures land in scratch planes
+//! plane set and publishes (D7). On the console the picture goes through libavutil's own frame
+//! and the shim copies it; with [`NxVideo::straight`] the VIC writes into that staging buffer
+//! itself where it can map it (WP5). The `nvdec[10s]` line names which route ran. On the
+//! framebuffer display the pictures land in scratch planes
 //! and are dropped, so the emulator still runs the hwaccel. A decoder error fails this feed,
 //! which has the session ask for a keyframe, and the next feed starts from a flushed decoder.
 
@@ -34,15 +35,30 @@ const DECODER: &str = "libavcodec (software)";
 pub struct NxVideo {
     /// The presenter's device and slot; `None` on the framebuffer display.
     gpu: Option<(Arc<GpuDevice>, Arc<VideoSlot>)>,
+    /// The VIC writes into the staging buffer itself. Off by default: on the console it neither
+    /// lowered the transfer plus copy nor the end-to-end time (WP5, 2026-11-01).
+    straight: bool,
 }
 
 impl NxVideo {
     pub fn gpu(dev: Arc<GpuDevice>, slot: Arc<VideoSlot>) -> Self {
-        Self { gpu: Some((dev, slot)) }
+        Self {
+            gpu: Some((dev, slot)),
+            straight: false,
+        }
     }
 
     pub fn cpu() -> Self {
-        Self { gpu: None }
+        Self {
+            gpu: None,
+            straight: false,
+        }
+    }
+
+    /// Has the VIC write straight into the staging buffer where it can.
+    pub fn straight(mut self, on: bool) -> Self {
+        self.straight = on;
+        self
     }
 }
 
@@ -63,12 +79,21 @@ impl VideoDecoders for NxVideo {
             spec.bit_depth,
             if spec.chroma444 { " 4:4:4" } else { "" }
         );
-        let decoder = av::Decoder::open(codec, spec.width, spec.height)?;
+        let decoder = av::Decoder::open(codec, spec.width, spec.height, self.straight)?;
         let out = match &self.gpu {
             Some((dev, slot)) => Out::Gpu(Nv12Upload::new(dev.clone(), slot.clone(), spec)?),
             None => Out::scratch(spec),
         };
-        tracing::info!("{DECODER}: {codec:?} {}x{}", spec.width, spec.height);
+        tracing::info!(
+            "{DECODER}: {codec:?} {}x{}, {}",
+            spec.width,
+            spec.height,
+            if self.straight {
+                "straight VIC route asked for"
+            } else {
+                "VIC then copy"
+            }
+        );
         let started = Instant::now();
         Ok(Box::new(NxSink {
             lane: Mutex::new(Lane {

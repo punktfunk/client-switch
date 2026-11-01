@@ -115,7 +115,13 @@ mod ffi {
     }
 
     extern "C" {
-        pub fn pf_av_open(codec: c_int, width: c_int, height: c_int, out: *mut *mut PfAvDecoder) -> c_int;
+        pub fn pf_av_open(
+            codec: c_int,
+            width: c_int,
+            height: c_int,
+            direct: c_int,
+            out: *mut *mut PfAvDecoder,
+        ) -> c_int;
         pub fn pf_av_send(d: *mut PfAvDecoder, data: *const u8, len: c_int, pts: u64) -> c_int;
         pub fn pf_av_receive(
             d: *mut PfAvDecoder,
@@ -164,12 +170,14 @@ unsafe impl Send for Decoder {}
 
 #[cfg(pf_av)]
 impl Decoder {
-    /// Opens `codec` for a `width`×`height` stream.
-    pub fn open(codec: Codec, width: u32, height: u32) -> anyhow::Result<Self> {
+    /// Opens `codec` for a `width`×`height` stream. `straight` has the VIC write into the
+    /// caller's planes ([`Route::Vic`]) where it can; otherwise every picture goes through
+    /// libavutil's frame and a copy ([`Route::VicThenCopy`]).
+    pub fn open(codec: Codec, width: u32, height: u32, straight: bool) -> anyhow::Result<Self> {
         let (w, h) = (i32::try_from(width)?, i32::try_from(height)?);
         let mut raw = core::ptr::null_mut();
         // SAFETY: `raw` is a valid out-pointer; the shim sets it only on success.
-        let rc = unsafe { ffi::pf_av_open(codec as i32, w, h, &mut raw) };
+        let rc = unsafe { ffi::pf_av_open(codec as i32, w, h, i32::from(straight), &mut raw) };
         if rc < 0 {
             return Err(av_error(&format!("open the {codec:?} decoder"), rc));
         }
@@ -261,7 +269,7 @@ impl Drop for Decoder {
 
 #[cfg(not(pf_av))]
 impl Decoder {
-    pub fn open(codec: Codec, _width: u32, _height: u32) -> anyhow::Result<Self> {
+    pub fn open(codec: Codec, _width: u32, _height: u32, _straight: bool) -> anyhow::Result<Self> {
         anyhow::bail!("open the {codec:?} decoder: no decoder on this box (NVDEC on the console, libavcodec on Linux)")
     }
 
@@ -295,7 +303,7 @@ mod tests {
     #[cfg(not(pf_av))]
     #[test]
     fn open_fails_off_the_console() {
-        let err = Decoder::open(Codec::Hevc, 1920, 1080).err().unwrap();
+        let err = Decoder::open(Codec::Hevc, 1920, 1080, false).err().unwrap();
         assert_eq!(
             err.to_string(),
             "open the Hevc decoder: no decoder on this box (NVDEC on the console, libavcodec on Linux)"
@@ -306,7 +314,7 @@ mod tests {
     #[test]
     fn a_dev_box_opens_both_codecs_in_software() {
         for codec in [Codec::H264, Codec::Hevc] {
-            let mut d = Decoder::open(codec, 1920, 1080).unwrap();
+            let mut d = Decoder::open(codec, 1920, 1080, false).unwrap();
             assert_eq!(d.stats(), Stats::default());
             d.flush();
         }
