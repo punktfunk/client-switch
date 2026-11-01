@@ -307,6 +307,7 @@ fn stream(
     };
     // The dial's Controller type steps it for this stream; the next connect reads the setting.
     let mut pad_type = settings.gamepad_type();
+    let mut plugged = pad_type;
     let input = InputThread::start(pads, connected.input(), pad_type, app.display.size());
     let fonts = match pf_console_ui::theme::build_fonts() {
         Ok(f) => Some(f),
@@ -390,7 +391,7 @@ fn stream(
             ring.set_facts(&facts);
         }
         ring.tick();
-        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client(), &mut pad_type, &input.to) {
+        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client(), &mut pad_type) {
             break n;
         }
         for cmd in ring.take_cmds() {
@@ -399,6 +400,12 @@ fn stream(
         let open = ring.open();
         if open != dial_was_open {
             dial_was_open = open;
+            // The host re-plugs the pad once, for the type the dial closed on, not at every step.
+            if !open && pad_type != plugged {
+                plugged = pad_type;
+                tracing::info!("dial: controller type {:?} for this stream", pad_type);
+                let _ = input.to.send(ToInput::PadType(pad_type));
+            }
             let _ = input
                 .to
                 .send(if open { ToInput::DialOpened } else { ToInput::DialClosed });
@@ -509,7 +516,6 @@ fn take_ring_commands(
     hud: &mut StatsOverlay,
     client: &NativeClient,
     pad_type: &mut GamepadType,
-    to_input: &Sender<ToInput>,
 ) -> Option<Next> {
     while let Some(cmd) = ring.take_command() {
         match cmd {
@@ -518,11 +524,8 @@ fn take_ring_commands(
             }
             RingCommand::CycleStats => hud.cycle(),
             RingCommand::CyclePadMouse => toggle_pad_mouse(client),
-            RingCommand::CyclePadType => {
-                *pad_type = pad_type.next_on_dial();
-                tracing::info!("dial: controller type {:?} for this stream", pad_type);
-                let _ = to_input.send(ToInput::PadType(*pad_type));
-            }
+            // Only the slot steps here; the pad is re-plugged when the dial closes.
+            RingCommand::CyclePadType => *pad_type = pad_type.next_on_dial(),
             // Touch is the screen's one model so far: nothing to step to.
             RingCommand::CycleTouchMode => {}
             other => tracing::info!("dial: {other:?} does nothing on this console"),
