@@ -328,6 +328,12 @@ pub trait Lifecycle {
     fn clocks(&self) -> Option<Clocks> {
         None
     }
+
+    /// Shows the system's keyboard over the title and blocks until the player closes it: the
+    /// text they confirmed, or `None` when they cancelled or there is no such keyboard.
+    fn keyboard(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// The CPU, GPU and memory clocks, in Hz.

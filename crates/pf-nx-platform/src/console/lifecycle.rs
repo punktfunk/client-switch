@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use pf_nx_app::platform::{Clocks, Lifecycle, SystemEvent};
 use pf_nx_sys::applet::{self, FocusState, HookEvent};
-use pf_nx_sys::{clk, mem, rt, socket};
+use pf_nx_sys::{clk, mem, rt, socket, swkbd};
 
 pub struct NxLifecycle {
     events: mpsc::Receiver<HookEvent>,
@@ -91,6 +91,16 @@ impl Lifecycle for NxLifecycle {
             gpu_hz: c.gpu_hz,
             emc_hz: c.emc_hz,
         })
+    }
+
+    fn keyboard(&mut self) -> Option<String> {
+        match swkbd::ask("Text to type on the PC", "Send") {
+            Ok(text) => Some(text),
+            Err(rc) => {
+                tracing::info!("keyboard: closed without text ({})", pf_nx_sys::result_code(rc));
+                None
+            }
+        }
     }
 
     /// Returns the socket driver's lent heap, closes the detached threads' stacks, and leaves
