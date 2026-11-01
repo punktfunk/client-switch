@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use super::{
-    AudioOut, AudioPort, Display, Fit, FrameReport, Lifecycle, PadFeedback, PadSample, Pads, Refresh, Rgba, Storage,
-    StreamSpec, SystemEvent, VideoDecoders,
+    AudioOut, AudioPort, Display, Fit, FrameReport, Lifecycle, Motion, PadFeedback, PadSample, Pads, Refresh, Rgba,
+    Storage, StreamSpec, SystemEvent, TouchPoint, VideoDecoders,
 };
 use crate::core::caps::VideoCaps;
 use crate::core::media::{VideoSink, VideoSinkCaps};
@@ -179,6 +179,10 @@ pub struct FakePads {
     pub script: Arc<Mutex<VecDeque<Vec<PadSample>>>>,
     pub feedback: Arc<Mutex<Vec<(u8, PadFeedback)>>>,
     pub released: Arc<Mutex<u32>>,
+    /// Every pad's motion, held until changed.
+    pub motion: Arc<Mutex<Option<Motion>>>,
+    /// The fingers down, held until changed.
+    pub touches: Arc<Mutex<Vec<TouchPoint>>>,
     /// The last batch, repeated while the script is empty: a held pad stays held.
     last: Vec<PadSample>,
 }
@@ -200,6 +204,14 @@ impl Pads for FakePads {
 
     fn release_all(&mut self) {
         *self.released.lock().expect("fake pads poisoned") += 1;
+    }
+
+    fn motion(&mut self, _slot: u8) -> Option<Motion> {
+        *self.motion.lock().expect("fake pads poisoned")
+    }
+
+    fn touches(&mut self, out: &mut Vec<TouchPoint>) {
+        out.clone_from(&self.touches.lock().expect("fake pads poisoned"));
     }
 }
 

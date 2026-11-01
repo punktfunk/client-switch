@@ -46,6 +46,7 @@ mod ffi {
         pub fn audoutGetSampleRate() -> u32;
         pub fn audoutGetChannelCount() -> u32;
         pub fn audoutGetPcmFormat() -> u32;
+        pub fn audoutGetAudioOutVolume(volume: *mut f32) -> u32;
     }
 }
 
@@ -157,6 +158,14 @@ impl AudioOut {
             self.queued_frames += chunk.len() / 2;
         }
         Ok(())
+    }
+
+    /// The gain audout applies to this title's output; `None` before firmware 6.0.0.
+    pub fn volume(&self) -> Option<f32> {
+        let mut volume = 0f32;
+        // SAFETY: audout is open while `self` lives; the out-pointer is a valid local.
+        let rc = unsafe { ffi::audoutGetAudioOutVolume(&mut volume) };
+        (rc == 0).then_some(volume)
     }
 
     /// Frames appended and not yet reclaimed. A buffer audout has played counts until the next

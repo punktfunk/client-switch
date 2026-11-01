@@ -1,7 +1,7 @@
 # Improvements
 
 Changes the console's runs point to, for later. Each needs the maintainer's yes before it lands:
-the first changes what a player sees by default, the second lives in punktfunk's core.
+the first changes what a player sees by default, the others live in punktfunk's shared crates.
 
 ## The smoothness buffer's Automatic on the Switch
 
@@ -28,3 +28,25 @@ on congestion but never probes past what a handheld's Wi-Fi carries. The control
 (`punktfunk-core::abr`), so this is a change upstream, not here.
 
 Open: what the ceiling should be docked at 1080p, which needs more than 720p.
+
+## The Nintendo controller types in the shared lists
+
+On the Switch a player holding Joy-Cons can ask the host for a Pro Controller only through the
+dial: the Switch's own step (`GamepadType::next_on_dial`) goes Automatic, Joy-Con pair, Switch
+Pro, then the shared order. Everything else about the two kinds lives in the shared crates and
+leaves them out:
+
+- Settings' Controller type offers Automatic, Xbox 360, Xbox One, DualSense, DualShock 4, Steam
+  Deck and Steam Controller 2 (`pf-console-ui`, `screens/settings/rows.rs`, `PAD_TYPES`), so the
+  console cannot save either Nintendo kind.
+- The dial names a kind through `pf-client-core::overlay_actions::pad_type_label`, which has no
+  name for either, so the slot reads `joyconpair` and `switchpro`.
+- The dial's shared order (`overlay_actions::PAD_TYPE_CYCLE`) has neither, which is why the
+  Switch steps its own.
+
+The proposal is a monorepo PR that adds "Joy-Con pair" and "Switch Pro" to the labels, to the
+Settings list on the platforms that present them, and to the shared order there, after which
+the Switch's own step goes. The Windows host built a Joy-Con pair in every console session
+(NOTES, 2026-10-31); a Switch Pro there is untested.
+
+Open: whether every host can build a Switch Pro, or the lists should offer it per host.

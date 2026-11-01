@@ -6,9 +6,11 @@
 mod connect;
 mod hud;
 mod menu;
+mod motion;
 pub mod pads;
 mod stream;
 pub mod testrun;
+mod touch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -92,13 +94,14 @@ pub fn run(platform: Platform) -> ! {
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();
     install_panic_hook();
     tracing::info!(
-        "punktfunk-switch {} on {} ({} firmware {}), gpu {}, ui {}",
+        "punktfunk-switch {} on {} ({} firmware {}), gpu {}, ui {}{}",
         crate::core::build_id(),
         device.platform,
         device.model,
         device.firmware,
         device.gpu,
         device.ui,
+        if device.applet_mode { ", applet mode" } else { "" },
     );
     punktfunk_core::client::set_client_label(&client_label(&device));
     crate::core::caps::install(video.caps());
@@ -144,9 +147,13 @@ pub fn run(platform: Platform) -> ! {
     lifecycle.exit()
 }
 
+/// What the first menu says when the title runs as an applet (plan D13).
+const APPLET_MODE_NOTICE: &str =
+    "Opened from the Album, punktfunk has little memory and may close — hold R while starting a game to open it with full memory.";
+
 /// The menu and the stream in turn, until one of them quits.
 fn alternate(app: &mut App) -> Option<ExitPlan> {
-    let mut notice = None;
+    let mut notice = app.device.applet_mode.then(|| APPLET_MODE_NOTICE.to_string());
     loop {
         let outcome = match menu::run(app, notice.take()) {
             Ok(outcome) => outcome,
@@ -170,14 +177,17 @@ fn client_label(device: &crate::platform::DeviceInfo) -> String {
     format!("Switch {}", device.firmware).trim_end().to_string()
 }
 
-/// A panic on any thread goes to the log with its frames, then the process aborts.
+/// A panic on any thread goes to the log, then its frames where the target can walk them, then
+/// the process aborts. The message is flushed before the walk: on the console, which builds
+/// without unwind tables, the walk itself aborts.
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("unnamed");
+        tracing::error!("PANIC on thread {name:?}: {info}");
+        crate::logger::flush();
         let backtrace = std::backtrace::Backtrace::force_capture();
-        tracing::error!(
-            "PANIC on thread {:?}: {info}\n{backtrace}",
-            std::thread::current().name().unwrap_or("unnamed"),
-        );
+        tracing::error!("PANIC on thread {name:?}, frames:\n{backtrace}");
         crate::logger::flush();
     }));
 }

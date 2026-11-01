@@ -1,9 +1,10 @@
 //! The stream: the picture on the display's stream layer, the dial and the stats over it, and
 //! the pads on an input thread of their own.
 //!
-//! The main thread presents at the display's rate. The input thread polls the pads at 250 Hz,
-//! sends their input straight to the host, applies the host's rumble, and hands the main
-//! thread only what it must act on (the dial, the escape chord).
+//! The main thread presents at the display's rate. The input thread polls the pads, their
+//! motion and the touch screen at 250 Hz, sends their input straight to the host, applies the
+//! host's rumble, and hands the main thread only what it must act on (the dial, the escape
+//! chord).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -12,17 +13,20 @@ use std::time::{Duration, Instant};
 
 use pf_client_core::ring::{RingCommand, RingFacts, RingInput};
 use pf_console_ui::theme;
-use punktfunk_core::client::PunktfunkEndReason;
+use punktfunk_core::client::{NativeClient, PunktfunkEndReason};
 use punktfunk_core::hud::StatsVerbosity;
+use punktfunk_core::input::PadMouseMode;
 
 use super::connect::{self, ConnectOutcome};
 use super::hud::StatsOverlay;
-use super::pads::{PadRouter, Routed};
+use super::motion::MotionRouter;
+use super::pads::{resolve_kind, PadRouter, Routed, SLOTS};
 use super::testrun::Scenario;
+use super::touch::{Screen, TouchRouter};
 use super::{App, StreamOutcome};
 use crate::core::model::GamepadType;
 use crate::core::settings::NxSettings;
-use crate::platform::{Fit, PadFeedback, PadSample, Pads, SystemEvent};
+use crate::platform::{Fit, PadFeedback, PadSample, Pads, SystemEvent, TouchPoint};
 use crate::session::{Connected, InputSender};
 
 /// Input thread cadence: 250 Hz, under the pad's own report rate.
@@ -37,6 +41,10 @@ enum ToInput {
     DialOpened,
     DialClosed,
     ReleaseAll,
+    /// The output's new size, after a dock change.
+    Output((u32, u32)),
+    /// The dial's Controller type: every pad plugs in again as this kind.
+    PadType(GamepadType),
 }
 
 /// The input thread and its channels. Dropping it without [`Self::stop`] leaks the pads.
@@ -48,14 +56,14 @@ struct InputThread {
 }
 
 impl InputThread {
-    fn start(pads: Box<dyn Pads>, input: InputSender, kind: GamepadType) -> Self {
+    fn start(pads: Box<dyn Pads>, input: InputSender, kind: GamepadType, output: (u32, u32)) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let (to, rx) = mpsc::channel();
         let (tx, from) = mpsc::channel();
         let thread_stop = stop.clone();
         let handle = std::thread::Builder::new()
             .name("pf-input".into())
-            .spawn(move || input_loop(pads, &input, kind, &thread_stop, &rx, &tx))
+            .spawn(move || input_loop(pads, &input, kind, output, &thread_stop, &rx, &tx))
             .expect("spawn the input thread");
         Self { stop, to, from, handle }
     }
@@ -70,38 +78,84 @@ impl InputThread {
 fn input_loop(
     mut pads: Box<dyn Pads>,
     input: &InputSender,
-    kind: GamepadType,
+    mut kind: GamepadType,
+    mut output: (u32, u32),
     stop: &AtomicBool,
     rx: &Receiver<ToInput>,
     tx: &Sender<Routed>,
 ) -> Box<dyn Pads> {
     let mut router = PadRouter::default();
+    let mut motion = MotionRouter::default();
+    let mut touch = TouchRouter::default();
     let mut batch: Vec<PadSample> = Vec::new();
+    let mut fingers: Vec<TouchPoint> = Vec::new();
     let mut wire = Vec::new();
+    let mut rich = Vec::new();
     let mut routed = Vec::new();
     let mut dial_open = false;
+    // Pads whose motion the host's pad cannot take, logged once each.
+    let mut no_motion = [false; SLOTS];
     let mut next = Instant::now();
     while !stop.load(Ordering::Relaxed) {
         wire.clear();
+        rich.clear();
         routed.clear();
         for msg in rx.try_iter() {
             match msg {
                 ToInput::DialOpened => {
                     dial_open = true;
                     router.dial_opened(&mut wire);
+                    touch.release_all(&mut wire);
+                    motion.still_all(&mut rich);
                 }
                 ToInput::DialClosed => {
                     dial_open = false;
                     router.dial_closed();
                 }
-                ToInput::ReleaseAll => router.release_all(&mut wire),
+                ToInput::ReleaseAll => {
+                    router.release_all(&mut wire);
+                    touch.release_all(&mut wire);
+                    motion.still_all(&mut rich);
+                }
+                ToInput::Output(size) => output = size,
+                ToInput::PadType(next) => {
+                    kind = next;
+                    router.replug_all(kind, &mut wire);
+                    motion.still_all(&mut rich);
+                }
             }
         }
         batch.clear();
         pads.poll(&mut batch);
         router.step(&batch, Instant::now(), dial_open, kind, &mut wire, &mut routed);
+        if !dial_open {
+            let client = input.client();
+            for pad in 0..SLOTS as u8 {
+                let Some(sample) = batch.iter().find(|s| s.slot == pad) else {
+                    motion.step(pad, None);
+                    continue;
+                };
+                if !motion_reaches(kind, sample, client) {
+                    if !std::mem::replace(&mut no_motion[usize::from(pad)], true) {
+                        tracing::info!("pad {pad}: the host's pad takes no motion; the gyro stays home");
+                    }
+                    continue;
+                }
+                rich.extend(motion.step(pad, pads.motion(pad)));
+            }
+            pads.touches(&mut fingers);
+            let mode = client.mode();
+            let screen = Screen {
+                output,
+                frame: (mode.width, mode.height),
+            };
+            touch.step(&fingers, screen, &mut wire);
+        }
         for ev in &wire {
             input.send(ev);
+        }
+        for r in rich.drain(..) {
+            let _ = input.client().send_rich_input(r);
         }
         for r in routed.drain(..) {
             let _ = tx.send(r);
@@ -117,12 +171,28 @@ fn input_loop(
     }
     wire.clear();
     router.release_all(&mut wire);
+    touch.release_all(&mut wire);
     for ev in &wire {
         input.send(ev);
+    }
+    motion.still_all(&mut rich);
+    for r in rich.drain(..) {
+        let _ = input.client().send_rich_input(r);
     }
     input.release();
     pads.release_all();
     pads
+}
+
+/// Whether the host's pad for `sample` takes motion. A pad that declared no kind of its own
+/// (`Auto`) is the session's pad.
+fn motion_reaches(kind: GamepadType, sample: &PadSample, client: &punktfunk_core::client::NativeClient) -> bool {
+    use punktfunk_core::config::{pad_motion_reaches, GamepadPref};
+    let declared = match resolve_kind(kind, sample.kind).to_core() {
+        GamepadPref::Auto => client.requested_gamepad,
+        pref => pref,
+    };
+    pad_motion_reaches(declared, client.requested_gamepad, client.resolved_gamepad)
 }
 
 /// The host's rumble, onto the pads. The plane drains every tick: a bounded plane left unread
@@ -235,7 +305,10 @@ fn stream(
         tracing::error!("stream: the pads are still held by another loop");
         return Next::End(StreamOutcome::ReturnToMenu(None));
     };
-    let input = InputThread::start(pads, connected.input(), settings.gamepad_type());
+    // The dial's Controller type steps it for this stream; the next connect reads the setting.
+    let mut pad_type = settings.gamepad_type();
+    let mut plugged = pad_type;
+    let input = InputThread::start(pads, connected.input(), pad_type, app.display.size());
     let fonts = match pf_console_ui::theme::build_fonts() {
         Ok(f) => Some(f),
         Err(e) => {
@@ -255,8 +328,11 @@ fn stream(
     // The output size the overlay and the stream mode were last fitted to.
     let mut fitted = (output_w, output_h);
     let (mut width, mut height) = app.display.ui_size();
-    ring.set_facts(&RingFacts {
+    let mut facts = RingFacts {
         overlay_actions: settings.overlay_actions.clone(),
+        // The screen passes touches straight through; the trackpad model is not here yet.
+        touch_mode: "touch".into(),
+        host_accepts_touch: true,
         stats_tier: settings.stats_verbosity().label().into(),
         mode: (mode.width, mode.height, mode.refresh_hz),
         native_mode: (output_w, output_h, app.display.refresh().hz()),
@@ -264,7 +340,8 @@ fn stream(
         fp_hex: fp_hex(&target.fingerprint),
         pad_type: settings.gamepad_type().to_core(),
         ..RingFacts::default()
-    });
+    };
+    ring.set_facts(&facts);
     // A test run records everything; otherwise the player's stats setting.
     let initial_tier = if app.test_run.is_some() {
         StatsVerbosity::Detailed
@@ -299,13 +376,22 @@ fn stream(
             fitted = app.display.size();
             (width, height) = app.display.ui_size();
             scale = overlay_scale(height);
+            let _ = input.to.send(ToInput::Output(fitted));
             follow_output(app, connected, settings);
         }
         if let Some(n) = take_routed(&input, &mut ring, width, height) {
             break n;
         }
+        // What the dial shows follows what its slots changed.
+        let tier = hud.tier.label();
+        let kind = pad_type.to_core();
+        if follow_pad_mouse(connected.client(), &mut facts) || facts.stats_tier != tier || facts.pad_type != kind {
+            facts.stats_tier = tier.into();
+            facts.pad_type = kind;
+            ring.set_facts(&facts);
+        }
         ring.tick();
-        if let Some(n) = take_ring_commands(&mut ring, &mut hud) {
+        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client(), &mut pad_type) {
             break n;
         }
         for cmd in ring.take_cmds() {
@@ -314,6 +400,12 @@ fn stream(
         let open = ring.open();
         if open != dial_was_open {
             dial_was_open = open;
+            // The host re-plugs the pad once, for the type the dial closed on, not at every step.
+            if !open && pad_type != plugged {
+                plugged = pad_type;
+                tracing::info!("dial: controller type {:?} for this stream", pad_type);
+                let _ = input.to.send(ToInput::PadType(pad_type));
+            }
             let _ = input
                 .to
                 .send(if open { ToInput::DialOpened } else { ToInput::DialClosed });
@@ -419,17 +511,53 @@ fn take_routed(input: &InputThread, ring: &mut pf_console_ui::Ring, width: u32, 
     None
 }
 
-fn take_ring_commands(ring: &mut pf_console_ui::Ring, hud: &mut StatsOverlay) -> Option<Next> {
+fn take_ring_commands(
+    ring: &mut pf_console_ui::Ring,
+    hud: &mut StatsOverlay,
+    client: &NativeClient,
+    pad_type: &mut GamepadType,
+) -> Option<Next> {
     while let Some(cmd) = ring.take_command() {
         match cmd {
             RingCommand::EndStream | RingCommand::DisconnectLinger => {
                 return Some(Next::End(StreamOutcome::ReturnToMenu(None)));
             }
             RingCommand::CycleStats => hud.cycle(),
+            RingCommand::CyclePadMouse => toggle_pad_mouse(client),
+            // Only the slot steps here; the pad is re-plugged when the dial closes.
+            RingCommand::CyclePadType => *pad_type = pad_type.next_on_dial(),
+            // Touch is the screen's one model so far: nothing to step to.
+            RingCommand::CycleTouchMode => {}
             other => tracing::info!("dial: {other:?} does nothing on this console"),
         }
     }
     None
+}
+
+/// Copies the controller-mouse facts the dial shows from the session; whether they changed.
+fn follow_pad_mouse(client: &NativeClient, facts: &mut RingFacts) -> bool {
+    let target = client.live_pads();
+    let now = (
+        client.access_grants() & punktfunk_core::quic::GRANT_POINTER != 0,
+        target,
+        client.pad_mouse_mode(target),
+    );
+    if (facts.pointer_granted, facts.pad_mouse_target, facts.pad_mouse) == now {
+        return false;
+    }
+    (facts.pointer_granted, facts.pad_mouse_target, facts.pad_mouse) = now;
+    true
+}
+
+/// Controller mouse on every pad, or off. The dial's touchpad step is skipped: no Switch pad
+/// has a touchpad to drive the pointer with.
+fn toggle_pad_mouse(client: &NativeClient) {
+    let pads = client.live_pads();
+    let on = client.pad_mouse_mode(pads) != PadMouseMode::Full;
+    match client.set_pad_mouse(if on { pads } else { 0 }) {
+        Ok(()) => tracing::info!("dial: controller mouse {}", if on { "on" } else { "off" }),
+        Err(e) => tracing::warn!("dial: controller mouse: {e}"),
+    }
 }
 
 /// What the presenter reported over the session, for a test run's `perf.json`, and over the

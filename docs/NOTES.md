@@ -175,3 +175,33 @@ record their clocks; the numbers below are under that profile unless an item say
   latency intent on the same Wi-Fi presented 47–58 a second at 5–6 ms decode to present, and in
   the earlier runs the automatic bitrate's climbs to 22–25 Mb/s preceded every 60–110 ms delay
   spike (title at `b8e2986` and `517083f`, 2026-10-31).
+- Sleep mid-stream crashes the title on wake. Nothing reached the log between the last stats
+  line and the wake 40 s later, so the title went to sleep without a word from the applet. On
+  wake the stream ended on a present error, and the teardown's first wake of tokio's I/O
+  driver failed: the loopback waker's send errs after sleep, tokio's `expect` panicked, the
+  panic hook's backtrace aborted (the title builds without unwind tables, so it never logged
+  the panic), and the logger thread wrote to `sdmc:` after `__appExit` had unmounted it: a data
+  abort at 0x20, `_write_r` through a null devoptab. The host saw the session drop and gave the
+  PC its display back (title at `b8e2986`, 2026-10-31; Atmosphère report
+  `01793482713_05446530aca7e000`). The hook now flushes the message before the walk, and the
+  waker leg treats a failed send as a wake that reached no one.
+- Launched from the album (hbloader in applet mode) the title died the same way, a data abort
+  at 0x20 in `_write_r` from the logger thread after `__appExit`, so something panicked first;
+  the title log was lost to the next launch, which truncates it. The console needed a reboot
+  into the CFW afterwards. A second sleep mid-stream on the same build ended as the first
+  (title at `b8e2986`, 2026-10-31; Atmosphère reports `01793488062_010000000000100d` and
+  `01793488512_05446530aca7e000`). Applet mode is left untested until a build that logs its
+  panics runs there.
+- On the WP4 build two sleeps mid-stream (37 s and 28 s) no longer crash the title. Again no
+  applet message or hook arrived before sleep; on wake the session's socket read failed with
+  "Network interface is not configured" (os error 115), the session ended as lost, and the
+  stream redialled the host and was back in 0.3 s, so the player lands in the game, not on
+  Hosts (plan D12 expected Hosts). The touch screen drives the host's desktop as touch, the
+  host's rumble reaches the Joy-Cons, and the gyro turns a game's camera the right way on the
+  pitch and yaw axes. hid's accelerometer reads gravity's pull, [0, 0, -1] g lying still,
+  which the first build sent upside down as [0, -1, 0]. audout reports volume 1.0; the host's
+  audio peaked at -4 to -12 dBFS in play, so the level arrives near full scale. Audio
+  underruns reached 47 in the first session's three minutes and 38 in the last one's twenty
+  (title at `be98e16`, 2026-10-31).
+- With the accelerometer's sign flipped, a pad lying still reads [0, 1, 0] g on the wire, as
+  SDL's frame has it (title at `8a18316`, 2026-10-31).

@@ -42,6 +42,8 @@ pub struct DeviceInfo {
     pub gpu: String,
     /// How the UI layer draws: backend, size, and why it fell back to the CPU.
     pub ui: String,
+    /// Launched as an applet (from the album), with a fraction of the title's memory (plan D13).
+    pub applet_mode: bool,
 }
 
 /// Refresh rate of the scan-out, in millihertz (60 000, 59 940).
@@ -202,6 +204,25 @@ pub enum PadKind {
     SwitchPro,
 }
 
+/// One motion sample in the wire's frame, SDL's: +x right, +y up, +z toward the player.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Motion {
+    /// Rotation about each axis, rad/s.
+    pub gyro: [f32; 3],
+    /// In g; a pad lying still reads +1 on y.
+    pub accel: [f32; 3],
+}
+
+/// One finger on the console's own screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TouchPoint {
+    /// Stable while the finger stays down.
+    pub id: u32,
+    /// 0.0..=1.0 across the screen from its top-left corner.
+    pub x: f32,
+    pub y: f32,
+}
+
 /// What the host asked a pad to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PadFeedback {
@@ -218,6 +239,18 @@ pub trait Pads: Send {
 
     /// Stops every pad's motors.
     fn release_all(&mut self);
+
+    /// The latest motion sample of the pad in `slot`, after a [`Self::poll`]; `None` without
+    /// a sensor.
+    fn motion(&mut self, _slot: u8) -> Option<Motion> {
+        None
+    }
+
+    /// The fingers on the screen now, replacing `out`'s contents. Nothing without a touch
+    /// screen, or while the screen is off in the dock.
+    fn touches(&mut self, out: &mut Vec<TouchPoint>) {
+        out.clear();
+    }
 }
 
 /// Where identity, settings, logs and bundles live.

@@ -254,10 +254,16 @@ impl GamepadType {
         })
     }
 
-    /// The dial's Controller type step: the shared order (`overlay_actions::next_pad_type`),
-    /// skipping the kinds this client offers no row for.
+    /// The dial's Controller type step: Automatic, the two Nintendo kinds this console's pads
+    /// are, then the shared order (`overlay_actions::next_pad_type`) over the kinds this client
+    /// offers. The shared order names no Nintendo kind yet (`docs/improvements.md`).
     pub fn next_on_dial(self) -> Self {
-        let mut pref = self.to_core();
+        let mut pref = match self {
+            Self::Auto => return Self::JoyConPair,
+            Self::JoyConPair => return Self::SwitchPro,
+            Self::SwitchPro => punktfunk_core::config::GamepadPref::Auto,
+            other => other.to_core(),
+        };
         loop {
             pref = pf_client_core::overlay_actions::next_pad_type(pref);
             if let Some(next) = Self::from_core(pref) {
@@ -356,7 +362,7 @@ pub struct GameEntry {
 mod tests {
     use super::*;
 
-    /// The dial steps the shared order over this client's rows; a Settings-only kind steps back.
+    /// The dial steps the Nintendo kinds, then the shared order over this client's rows.
     #[test]
     fn the_dial_steps_the_types_this_client_offers() {
         let mut seen = vec![GamepadType::Auto];
@@ -369,12 +375,13 @@ mod tests {
             seen,
             [
                 GamepadType::Auto,
+                GamepadType::JoyConPair,
+                GamepadType::SwitchPro,
                 GamepadType::XboxOne,
                 GamepadType::DualSense,
                 GamepadType::DualShock4
             ]
         );
-        assert_eq!(GamepadType::SwitchPro.next_on_dial(), GamepadType::Auto);
     }
 
     /// The saved record is the shared one plus this console's fields, in one flat object (plan D8):

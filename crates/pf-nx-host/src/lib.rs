@@ -347,6 +347,7 @@ pub fn platform(opts: &Options) -> Result<Platform> {
             firmware: String::new(),
             gpu,
             ui,
+            applet_mode: false,
         },
     })
 }
