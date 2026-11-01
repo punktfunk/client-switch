@@ -536,10 +536,36 @@ fn take_ring_commands(
             RingCommand::CycleTouchMode => {}
             // Shown once the dial's close has gone out to the input thread.
             RingCommand::Keyboard => *keyboard = true,
+            RingCommand::Shortcut(keys) => send_chord(client, &keys),
             other => tracing::info!("dial: {other:?} does nothing on this console"),
         }
     }
     None
+}
+
+/// A dial shortcut, typed on the host: every key down in order, then up in reverse, as the
+/// desktop client does. A name this build does not know fires nothing.
+fn send_chord(client: &NativeClient, keys: &[String]) {
+    use punktfunk_core::input::{key_vk, InputEvent, InputKind};
+    let Some(vks) = keys.iter().map(|k| key_vk(k)).collect::<Option<Vec<u8>>>() else {
+        tracing::info!("dial: shortcut {keys:?} names a key this build does not know");
+        return;
+    };
+    let key = |kind, vk: u8| InputEvent {
+        kind,
+        _pad: [0; 3],
+        code: u32::from(vk),
+        x: 0,
+        y: 0,
+        flags: 0,
+    };
+    for &vk in &vks {
+        let _ = client.send_input(&key(InputKind::KeyDown, vk));
+    }
+    for &vk in vks.iter().rev() {
+        let _ = client.send_input(&key(InputKind::KeyUp, vk));
+    }
+    tracing::info!("dial: shortcut {} sent", keys.join("+"));
 }
 
 /// The dial's Keyboard: the system keyboard over the stream, then its text typed on the host as
