@@ -13,7 +13,9 @@ What builds, and how; nothing here has run on a console.
 - Check 3 (`quic`) needs punktfunk-core's Horizon arm for `if-addrs` (monorepo #2180, in the pin).
 - aws-lc builds with its CC builder: no BIO sockets, CPU features from `-march`, getentropy for
   entropy and no CPU jitter entropy (`scripts/cargo-nx.sh`). rustls's provider is aws-lc-rs; ring is not linked.
-- quinn-udp runs its fallback (no ECN, one datagram per call) until the console shows `sendmsg`.
+- quinn-udp runs its fallback (no ECN) until the console shows `sendmsg`. Its receive takes up
+  to 32 datagrams per bsd call through libnx's `recvmmsg`, and drops to one per call if the first
+  batch is refused: unproven on the console.
 - tokio's I/O driver wakes through a loopback UDP socket (the mio leg): unproven on the console.
 - devkitPro's `switch-ffmpeg` in the image carries the `nvtegra` hwaccel (`libavutil/
   hwcontext_nvtegra.h`; the symbols are in `libavcodec.a`), so plan D6 needs no FFmpeg fork.
