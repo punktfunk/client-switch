@@ -136,6 +136,18 @@ impl PadRouter {
         }
     }
 
+    /// Unplugs every pad from the host, so the next step plugs it in again as the kind it is
+    /// given: the dial's Controller type, for this stream only.
+    pub fn replug_all(&mut self, wire: &mut Vec<InputEvent>) {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if let Some(gone) = slot.take() {
+                release_into(index as u8, &gone.last, wire);
+                wire.push(remove_event(index as u8));
+            }
+        }
+        self.chord_since = None;
+    }
+
     /// Lets go of everything the host holds and forgets the pads, so the next step re-declares
     /// them. For focus loss and every way out of a stream.
     pub fn release_all(&mut self, wire: &mut Vec<InputEvent>) {
@@ -381,6 +393,29 @@ mod tests {
         assert_eq!(routed, [Routed::Chord]);
         let (_, routed) = step(&mut r, &[pad(CHORD)], t + CHORD_HOLD * 2, false);
         assert!(routed.is_empty(), "re-arms only after a release");
+    }
+
+    #[test]
+    fn replug_unplugs_and_the_next_step_plugs_in_as_the_new_kind() {
+        let mut r = PadRouter::default();
+        let (mut wire, mut routed) = (Vec::new(), Vec::new());
+        let now = Instant::now();
+        r.step(
+            &[pad(gamepad::BTN_A)],
+            now,
+            false,
+            GamepadType::Auto,
+            &mut wire,
+            &mut routed,
+        );
+        wire.clear();
+        r.replug_all(&mut wire);
+        let kinds: Vec<InputKind> = wire.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [InputKind::GamepadButton, InputKind::GamepadRemove]);
+        wire.clear();
+        r.step(&[pad(0)], now, false, GamepadType::DualSense, &mut wire, &mut routed);
+        assert_eq!(wire[0].kind, InputKind::GamepadArrival);
+        assert_eq!(wire[0].code, u32::from(GamepadType::DualSense.to_core().to_u8()));
     }
 
     #[test]

@@ -43,6 +43,8 @@ enum ToInput {
     ReleaseAll,
     /// The output's new size, after a dock change.
     Output((u32, u32)),
+    /// The dial's Controller type: every pad plugs in again as this kind.
+    PadType(GamepadType),
 }
 
 /// The input thread and its channels. Dropping it without [`Self::stop`] leaks the pads.
@@ -76,7 +78,7 @@ impl InputThread {
 fn input_loop(
     mut pads: Box<dyn Pads>,
     input: &InputSender,
-    kind: GamepadType,
+    mut kind: GamepadType,
     mut output: (u32, u32),
     stop: &AtomicBool,
     rx: &Receiver<ToInput>,
@@ -116,6 +118,11 @@ fn input_loop(
                     motion.still_all(&mut rich);
                 }
                 ToInput::Output(size) => output = size,
+                ToInput::PadType(next) => {
+                    kind = next;
+                    router.replug_all(&mut wire);
+                    motion.still_all(&mut rich);
+                }
             }
         }
         batch.clear();
@@ -298,7 +305,9 @@ fn stream(
         tracing::error!("stream: the pads are still held by another loop");
         return Next::End(StreamOutcome::ReturnToMenu(None));
     };
-    let input = InputThread::start(pads, connected.input(), settings.gamepad_type(), app.display.size());
+    // The dial's Controller type steps it for this stream; the next connect reads the setting.
+    let mut pad_type = settings.gamepad_type();
+    let input = InputThread::start(pads, connected.input(), pad_type, app.display.size());
     let fonts = match pf_console_ui::theme::build_fonts() {
         Ok(f) => Some(f),
         Err(e) => {
@@ -372,11 +381,16 @@ fn stream(
         if let Some(n) = take_routed(&input, &mut ring, width, height) {
             break n;
         }
-        if follow_pad_mouse(connected.client(), &mut facts) {
+        // What the dial shows follows what its slots changed.
+        let tier = hud.tier.label();
+        let kind = pad_type.to_core();
+        if follow_pad_mouse(connected.client(), &mut facts) || facts.stats_tier != tier || facts.pad_type != kind {
+            facts.stats_tier = tier.into();
+            facts.pad_type = kind;
             ring.set_facts(&facts);
         }
         ring.tick();
-        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client()) {
+        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client(), &mut pad_type, &input.to) {
             break n;
         }
         for cmd in ring.take_cmds() {
@@ -490,7 +504,13 @@ fn take_routed(input: &InputThread, ring: &mut pf_console_ui::Ring, width: u32, 
     None
 }
 
-fn take_ring_commands(ring: &mut pf_console_ui::Ring, hud: &mut StatsOverlay, client: &NativeClient) -> Option<Next> {
+fn take_ring_commands(
+    ring: &mut pf_console_ui::Ring,
+    hud: &mut StatsOverlay,
+    client: &NativeClient,
+    pad_type: &mut GamepadType,
+    to_input: &Sender<ToInput>,
+) -> Option<Next> {
     while let Some(cmd) = ring.take_command() {
         match cmd {
             RingCommand::EndStream | RingCommand::DisconnectLinger => {
@@ -498,6 +518,11 @@ fn take_ring_commands(ring: &mut pf_console_ui::Ring, hud: &mut StatsOverlay, cl
             }
             RingCommand::CycleStats => hud.cycle(),
             RingCommand::CyclePadMouse => toggle_pad_mouse(client),
+            RingCommand::CyclePadType => {
+                *pad_type = pad_type.next_on_dial();
+                tracing::info!("dial: controller type {:?} for this stream", pad_type);
+                let _ = to_input.send(ToInput::PadType(*pad_type));
+            }
             // Touch is the screen's one model so far: nothing to step to.
             RingCommand::CycleTouchMode => {}
             other => tracing::info!("dial: {other:?} does nothing on this console"),
