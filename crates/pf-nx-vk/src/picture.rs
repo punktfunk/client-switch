@@ -17,6 +17,7 @@ use pf_client_video::video_color::ColorDesc;
 use pf_nx_app::platform::StreamSpec;
 
 use crate::device::GpuDevice;
+use crate::timer::GpuTimer;
 
 /// Plane views in the layout the lane leaves them (`layout`).
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +51,8 @@ pub struct Picture {
     pub turn: Option<u64>,
     /// The session's overlay figures, where the display stage is noted.
     pub hud: Option<Arc<punktfunk_core::hud::Stats>>,
+    /// Where the presenter leaves the capture-to-glass time for the audio's A/V sync.
+    pub e2e: Option<pf_nx_app::platform::VideoE2e>,
     /// Keeps the planes' images and memory alive.
     pub hold: Box<dyn std::any::Any + Send + Sync>,
 }
@@ -250,10 +253,15 @@ pub struct Nv12Upload {
     stride: usize,
     color: ColorDesc,
     hud: Arc<punktfunk_core::hud::Stats>,
+    e2e: pf_nx_app::platform::VideoE2e,
     planes: Vec<Arc<PlaneSet>>,
     pool: vk::CommandPool,
     staging: Vec<Staging>,
     next: usize,
+    /// Each staging buffer's copy on the GPU; `None` where the queue has no timestamps.
+    timer: Option<GpuTimer>,
+    /// The last copy's GPU time that [`Self::stage`] read back.
+    copy_gpu_us: Option<u32>,
 }
 
 // SAFETY: the mapped pointers address memory this upload owns for its whole life and only
@@ -290,10 +298,13 @@ impl Nv12Upload {
                 full_range: spec.color.full_range != 0,
             },
             hud: spec.hud.clone(),
+            e2e: spec.video_e2e.clone(),
             planes: Vec::new(),
             pool,
             staging: Vec::with_capacity(COPIES),
             next: 0,
+            timer: None,
+            copy_gpu_us: None,
         };
         let dev = &upload.dev;
         // SAFETY: the pool is live; the buffers are freed with it.
@@ -325,10 +336,12 @@ impl Nv12Upload {
                 in_flight: false,
             });
         }
+        upload.timer = GpuTimer::new(&upload.dev, COPIES);
         tracing::info!(
-            "upload: NV12 {}x{} through {COPIES} staging buffers of {bytes} bytes, row {stride}",
+            "upload: NV12 {}x{} through {COPIES} staging buffers of {bytes} bytes, row {stride}, at {:p}",
             extent.width,
-            extent.height
+            extent.height,
+            upload.staging[0].ptr,
         );
         upload.slot.set_smoothing(spec.smoothing);
         if spec.smoothing == 0 {
@@ -409,6 +422,9 @@ impl Nv12Upload {
                 s.cmd,
                 &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
+            if let Some(t) = &mut self.timer {
+                t.begin(dev, s.cmd, i);
+            }
             for image in planes.images {
                 // After the presenter's last read and any earlier copy into this set, which a
                 // replaced picture can leave in flight.
@@ -450,6 +466,9 @@ impl Nv12Upload {
                     (vk::PipelineStageFlags2::FRAGMENT_SHADER, vk::AccessFlags2::SHADER_READ),
                 );
             }
+            if let Some(t) = &self.timer {
+                t.end(dev, s.cmd, i);
+            }
             dev.device.end_command_buffer(s.cmd)?;
             let cmds = [s.cmd];
             dev.vkd.queue_lock.yield_to_present();
@@ -476,6 +495,7 @@ impl Nv12Upload {
             decoded_ns: u64::try_from(punktfunk_core::client::now_realtime_ns()).unwrap_or(0),
             turn: None,
             hud: Some(self.hud.clone()),
+            e2e: Some(self.e2e.clone()),
             hold: Box::new(planes),
         });
         Ok(true)
@@ -493,8 +513,14 @@ impl Nv12Upload {
                     .context("staging copy")?;
                 self.dev.device.reset_fences(&[s.fence])?;
             }
+            self.copy_gpu_us = self.timer.as_ref().and_then(|t| t.read(&self.dev, i));
         }
         Ok(())
+    }
+
+    /// The GPU time of the last staging copy that has finished, where the GPU can time it.
+    pub fn copy_gpu_us(&self) -> Option<u32> {
+        self.copy_gpu_us
     }
 
     /// A plane set nothing else holds, or a new one while there are fewer than [`PLANE_SETS`].
@@ -544,6 +570,9 @@ impl Drop for Nv12Upload {
         }
         // SAFETY: the device is idle and every handle below is this upload's.
         unsafe {
+            if let Some(t) = &self.timer {
+                t.destroy(&self.dev);
+            }
             for s in self.staging.drain(..) {
                 self.dev.device.destroy_fence(s.fence, None);
                 self.dev.device.destroy_buffer(s.buffer, None);

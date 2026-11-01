@@ -36,8 +36,54 @@ pub struct Stats {
     pub in_flight: u32,
     /// Microseconds from the last send to the last picture out.
     pub last_decode_us: u32,
-    /// Microseconds of the last VIC transfer to NV12.
+    /// Microseconds of the last transfer to NV12 (the VIC's, or the CPU's detiling).
     pub last_transfer_us: u32,
+    /// Microseconds of the last copy out of libavutil's frame; 0 when there was none.
+    pub last_copy_us: u32,
+    pub route: Route,
+    /// Why transfers stopped going straight into the caller's planes, an `AVERROR`; 0 while
+    /// they do.
+    pub direct_err: i32,
+}
+
+/// How the last picture reached the caller's planes (`PF_AV_ROUTE_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Route {
+    /// A software decoder's picture, copied (the dev box).
+    #[default]
+    Software,
+    /// The VIC into libavutil's frame, then copied.
+    VicThenCopy,
+    /// libavutil's frame was not 256-byte aligned, so the hwcontext detiled on the CPU, then
+    /// copied.
+    CpuThenCopy,
+    /// The VIC straight into the caller's planes.
+    Vic,
+    /// Detiled on the CPU straight into the caller's planes.
+    Cpu,
+}
+
+impl Route {
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            1 => Self::VicThenCopy,
+            2 => Self::CpuThenCopy,
+            3 => Self::Vic,
+            4 => Self::Cpu,
+            _ => Self::Software,
+        }
+    }
+
+    /// For the log.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Software => "software, copied",
+            Self::VicThenCopy => "VIC, copied",
+            Self::CpuThenCopy => "CPU detile, copied",
+            Self::Vic => "VIC straight",
+            Self::Cpu => "CPU detile straight",
+        }
+    }
 }
 
 /// `PfAvStats`.
@@ -48,7 +94,9 @@ pub struct RawStats {
     pub in_flight: u32,
     pub last_decode_us: u32,
     pub last_transfer_us: u32,
-    pub reserved: u32,
+    pub last_copy_us: u32,
+    pub route: u32,
+    pub direct_err: i32,
 }
 
 /// The shim's own codes, outside libavcodec's `AVERROR` space (`csrc/pf_av.c`).
@@ -196,6 +244,9 @@ impl Decoder {
             in_flight: s.in_flight,
             last_decode_us: s.last_decode_us,
             last_transfer_us: s.last_transfer_us,
+            last_copy_us: s.last_copy_us,
+            route: Route::from_raw(s.route),
+            direct_err: s.direct_err,
         }
     }
 }
@@ -266,10 +317,14 @@ mod tests {
         use core::mem::{offset_of, size_of};
         // PfAvPictureMeta: u32 width, u32 height, u64 pts → 16.
         assert_eq!((size_of::<PictureMeta>(), offset_of!(PictureMeta, pts)), (16, 8));
-        // PfAvStats: u64 decoded, four u32 → 24.
+        // PfAvStats: u64 decoded, five u32 and an i32 → 32.
         assert_eq!(
-            (size_of::<RawStats>(), offset_of!(RawStats, last_transfer_us)),
-            (24, 16)
+            (
+                size_of::<RawStats>(),
+                offset_of!(RawStats, last_transfer_us),
+                offset_of!(RawStats, direct_err)
+            ),
+            (32, 16, 28)
         );
         assert_eq!(Codec::Hevc as i32, 1);
     }

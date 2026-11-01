@@ -420,7 +420,7 @@ fn stream(
         }
 
         if let Some(core) = hud.refresh(connected, decoder) {
-            tracing::info!("stats: {} | {core}", perf.take_window());
+            tracing::info!("stats: {} | {core}{}", perf.take_window(), app.clocks_suffix());
         }
         hud.local = vec![format!(
             "present: {} frames, {} missed{}",
@@ -582,6 +582,8 @@ struct PerfWindow {
     replaced: u32,
     overflow: u32,
     decode_to_present_us: Vec<u32>,
+    /// The composition's GPU time per frame, where the presenter can time it.
+    gpu_us: Vec<u32>,
 }
 
 impl StreamPerf {
@@ -604,6 +606,9 @@ impl StreamPerf {
             }
             w.decode_to_present_us.push(us);
         }
+        if let Some(us) = report.gpu_us {
+            w.gpu_us.push(us);
+        }
     }
 
     /// The presenter's figures since the last call, and a new window.
@@ -611,10 +616,13 @@ impl StreamPerf {
         let mut w = std::mem::take(&mut self.window);
         let secs = w.since.map_or(0.0, |t| t.elapsed().as_secs_f64());
         w.decode_to_present_us.sort_unstable();
+        w.gpu_us.sort_unstable();
         let ms = |us: Option<&u32>| us.map_or("-".to_string(), |&us| format!("{:.1}", f64::from(us) / 1000.0));
+        let fine = |us: Option<&u32>| us.map_or("-".to_string(), |&us| format!("{:.2}", f64::from(us) / 1000.0));
         let d = &w.decode_to_present_us;
+        let g = &w.gpu_us;
         format!(
-            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, {} unseen ({} replaced, {} queue full), decode to present p50 {} p95 {} max {} ms",
+            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, {} unseen ({} replaced, {} queue full), decode to present p50 {} p95 {} max {} ms, compose on the gpu p50 {} p95 {} max {} ms",
             w.frames,
             w.missed,
             w.pictures,
@@ -624,6 +632,9 @@ impl StreamPerf {
             ms(d.get(d.len() / 2)),
             ms(d.get(d.len() * 95 / 100)),
             ms(d.last()),
+            fine(g.get(g.len() / 2)),
+            fine(g.get(g.len() * 95 / 100)),
+            fine(g.last()),
         )
     }
 

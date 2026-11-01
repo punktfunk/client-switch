@@ -48,6 +48,13 @@ impl App {
         }
         events
     }
+
+    /// `" | clocks gpu … MHz"` for a 10 s summary line, empty where the clocks cannot be read.
+    fn clocks_suffix(&self) -> String {
+        self.lifecycle
+            .clocks()
+            .map_or_else(String::new, |c| format!(" | clocks {c}"))
+    }
 }
 
 /// Sleep is on its way: no new session may start.

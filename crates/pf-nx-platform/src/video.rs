@@ -4,7 +4,9 @@
 //!
 //! `feed` decodes on the session's video thread: send the access unit, then receive every
 //! picture straight into the presenter's next staging buffer, which `commit` copies into a
-//! plane set and publishes (D7). On the framebuffer display the pictures land in scratch planes
+//! plane set and publishes (D7). On the console the VIC writes into that staging buffer
+//! itself where it can map it (WP5); else the picture goes through libavutil's own frame and
+//! the shim copies it, and the `nvdec[10s]` line names which route ran. On the framebuffer display the pictures land in scratch planes
 //! and are dropped, so the emulator still runs the hwaccel. A decoder error fails this feed,
 //! which has the session ask for a keyframe, and the next feed starts from a flushed decoder.
 
@@ -120,6 +122,14 @@ impl Out {
         }
     }
 
+    /// The GPU time of the last staging copy into a plane set, where the GPU can time it.
+    fn copy_gpu_us(&self) -> Option<u32> {
+        match self {
+            Self::Gpu(upload) => upload.copy_gpu_us(),
+            Self::Scratch { .. } => None,
+        }
+    }
+
     /// `false` when the picture was dropped because every plane set is on screen.
     fn commit(&mut self, meta: av::PictureMeta, due: Option<Instant>) -> Result<bool> {
         match self {
@@ -182,7 +192,9 @@ impl Lane {
         let due = self.due_of(meta.pts);
         let started = Instant::now();
         let shown = self.out.commit(meta, due)?;
-        self.timing.note(&self.decoder.stats(), wait, started.elapsed(), shown);
+        let upload = started.elapsed();
+        self.timing
+            .note(&self.decoder.stats(), wait, upload, self.out.copy_gpu_us(), shown);
         Ok(true)
     }
 
@@ -199,7 +211,9 @@ impl Lane {
 }
 
 /// Where the lane's time went over one [`TIMING_WINDOW`]: the wait for a free staging buffer,
-/// the decoder's own time, the VIC transfer into the staging planes, and the upload's submit.
+/// the decoder's own time, the transfer to NV12, the shim's copy out of libavutil's frame (none
+/// when the transfer wrote the staging planes itself), the upload's submit, and the staging
+/// copy's time on the GPU.
 struct Timing {
     since: Instant,
     pictures: u32,
@@ -208,10 +222,16 @@ struct Timing {
     decode_max_us: u32,
     transfer_us: u64,
     transfer_max_us: u32,
+    copy_us: u64,
+    copy_max_us: u32,
     wait: Duration,
     wait_max: Duration,
     upload: Duration,
+    gpu_copy_us: u64,
+    gpu_copies: u32,
     in_flight_max: u32,
+    /// How the last picture reached the staging planes; `None` before the first.
+    route: Option<av::Route>,
 }
 
 impl Timing {
@@ -224,14 +244,40 @@ impl Timing {
             decode_max_us: 0,
             transfer_us: 0,
             transfer_max_us: 0,
+            copy_us: 0,
+            copy_max_us: 0,
             wait: Duration::ZERO,
             wait_max: Duration::ZERO,
             upload: Duration::ZERO,
+            gpu_copy_us: 0,
+            gpu_copies: 0,
             in_flight_max: 0,
+            route: None,
         }
     }
 
-    fn note(&mut self, s: &av::Stats, wait: Duration, upload: Duration, shown: bool) {
+    fn note(&mut self, s: &av::Stats, wait: Duration, upload: Duration, gpu_copy_us: Option<u32>, shown: bool) {
+        // The first route, and any change, at once: a change mid-stream is the straight route
+        // falling back.
+        if self.route != Some(s.route) {
+            tracing::info!(
+                "nvdec: pictures reach the staging planes by {}{}{}",
+                s.route.name(),
+                self.route.map_or_else(String::new, |r| format!(" (was {})", r.name())),
+                if s.direct_err == 0 {
+                    String::new()
+                } else {
+                    format!("; the straight route failed with {}", s.direct_err)
+                }
+            );
+        }
+        self.route = Some(s.route);
+        self.copy_us += u64::from(s.last_copy_us);
+        self.copy_max_us = self.copy_max_us.max(s.last_copy_us);
+        if let Some(us) = gpu_copy_us {
+            self.gpu_copy_us += u64::from(us);
+            self.gpu_copies += 1;
+        }
         self.pictures += 1;
         self.dropped += u32::from(!shown);
         self.decode_us += u64::from(s.last_decode_us);
@@ -248,8 +294,12 @@ impl Timing {
         let n = u64::from(self.pictures);
         let ms = |us: u64| us as f64 / 1000.0;
         let per = |d: Duration| d.as_secs_f64() * 1000.0 / n as f64;
+        let gpu_copy = self
+            .gpu_copy_us
+            .checked_div(u64::from(self.gpu_copies))
+            .map_or_else(|| "-".to_string(), |us| format!("{:.2}", us as f64 / 1000.0));
         tracing::info!(
-            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms; transfer mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; in flight max {}",
+            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms; transfer mean {:.1}ms max {:.1}ms; copy mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; gpu copy mean {gpu_copy}ms; in flight max {}; route {}",
             TIMING_WINDOW.as_secs(),
             self.pictures,
             self.dropped,
@@ -260,10 +310,15 @@ impl Timing {
             ms(u64::from(self.decode_max_us)),
             ms(self.transfer_us / n),
             ms(u64::from(self.transfer_max_us)),
+            ms(self.copy_us / n),
+            ms(u64::from(self.copy_max_us)),
             per(self.upload),
             self.in_flight_max,
+            self.route.map_or("-", av::Route::name),
         );
+        let route = self.route;
         *self = Self::new();
+        self.route = route;
     }
 }
 

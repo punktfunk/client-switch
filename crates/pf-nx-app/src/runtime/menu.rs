@@ -222,7 +222,7 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         })?;
         frames += 1;
         if let Some(report) = perf.frame(before_draw + drew, art_snapshot()) {
-            tracing::info!("{}", report.line());
+            tracing::info!("{}{}", report.line(), app.clocks_suffix());
         }
         if let Some(done) = testrun::menu_step(app, frames) {
             break 'ui done;

@@ -7,9 +7,9 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use pf_nx_app::platform::{Lifecycle, SystemEvent};
+use pf_nx_app::platform::{Clocks, Lifecycle, SystemEvent};
 use pf_nx_sys::applet::{self, FocusState, HookEvent};
-use pf_nx_sys::{mem, rt, socket};
+use pf_nx_sys::{clk, mem, rt, socket};
 
 pub struct NxLifecycle {
     events: mpsc::Receiver<HookEvent>,
@@ -46,7 +46,13 @@ impl Lifecycle for NxLifecycle {
             self.exit();
         }
         if !std::mem::replace(&mut self.reported, true) {
-            tracing::info!("lifecycle: {:?}, {:?}", applet::applet_type(), applet::operation_mode());
+            tracing::info!(
+                "lifecycle: {:?}, {:?}, clocks {}",
+                applet::applet_type(),
+                applet::operation_mode(),
+                self.clocks()
+                    .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
+            );
         }
         // `appletMainLoop` in its halves, so every message is logged: no hook event and no
         // operation-mode change has reached a log yet, the dock change included.
@@ -68,9 +74,23 @@ impl Lifecycle for NxLifecycle {
                 }),
                 HookEvent::Resume => out.push(SystemEvent::Resume),
                 HookEvent::OperationMode => out.push(SystemEvent::OperationMode(super::operation_mode())),
-                HookEvent::Exit | HookEvent::PerformanceMode => {}
+                // The system moved the title to another clock configuration (WP5's question).
+                HookEvent::PerformanceMode => tracing::info!(
+                    "lifecycle: performance mode changed, clocks {}",
+                    self.clocks()
+                        .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
+                ),
+                HookEvent::Exit => {}
             }
         }
+    }
+
+    fn clocks(&self) -> Option<Clocks> {
+        clk::clocks().map(|c| Clocks {
+            cpu_hz: c.cpu_hz,
+            gpu_hz: c.gpu_hz,
+            emc_hz: c.emc_hz,
+        })
     }
 
     /// Returns the socket driver's lent heap, closes the detached threads' stacks, and leaves
