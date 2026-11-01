@@ -203,3 +203,5 @@ record their clocks; the numbers below are under that profile unless an item say
   audio peaked at -4 to -12 dBFS in play, so the level arrives near full scale. Audio
   underruns reached 47 in the first session's three minutes and 38 in the last one's twenty
   (title at `be98e16`, 2026-10-31).
+- With the accelerometer's sign flipped, a pad lying still reads [0, 1, 0] g on the wire, as
+  SDL's frame has it (title at `8a18316`, 2026-10-31).
