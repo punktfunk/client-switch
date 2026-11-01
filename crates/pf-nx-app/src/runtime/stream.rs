@@ -120,7 +120,7 @@ fn input_loop(
                 ToInput::Output(size) => output = size,
                 ToInput::PadType(next) => {
                     kind = next;
-                    router.replug_all(&mut wire);
+                    router.replug_all(kind, &mut wire);
                     motion.still_all(&mut rich);
                 }
             }

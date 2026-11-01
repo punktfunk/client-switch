@@ -136,16 +136,18 @@ impl PadRouter {
         }
     }
 
-    /// Unplugs every pad from the host, so the next step plugs it in again as the kind it is
-    /// given: the dial's Controller type, for this stream only.
-    pub fn replug_all(&mut self, wire: &mut Vec<InputEvent>) {
+    /// Unplugs every pad from the host and plugs it in again as `kind`: the dial's Controller
+    /// type, for this stream only. The slots stay, so a button held through it is not pressed
+    /// again: the A that picked the type would pick the next one, a frame later, until let go.
+    pub fn replug_all(&mut self, kind: GamepadType, wire: &mut Vec<InputEvent>) {
         for (index, slot) in self.slots.iter_mut().enumerate() {
-            if let Some(gone) = slot.take() {
-                release_into(index as u8, &gone.last, wire);
-                wire.push(remove_event(index as u8));
+            if let Some(slot) = slot {
+                let pad = index as u8;
+                release_into(pad, &slot.last, wire);
+                wire.push(remove_event(pad));
+                wire.extend(arrival_event(resolve_kind(kind, slot.last.kind), pad));
             }
         }
-        self.chord_since = None;
     }
 
     /// Lets go of everything the host holds and forgets the pads, so the next step re-declares
@@ -396,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn replug_unplugs_and_the_next_step_plugs_in_as_the_new_kind() {
+    fn replug_plugs_in_as_the_new_kind_and_a_held_button_stays_held() {
         let mut r = PadRouter::default();
         let (mut wire, mut routed) = (Vec::new(), Vec::new());
         let now = Instant::now();
@@ -409,13 +411,30 @@ mod tests {
             &mut routed,
         );
         wire.clear();
-        r.replug_all(&mut wire);
+        r.replug_all(GamepadType::DualSense, &mut wire);
         let kinds: Vec<InputKind> = wire.iter().map(|e| e.kind).collect();
-        assert_eq!(kinds, [InputKind::GamepadButton, InputKind::GamepadRemove]);
+        assert_eq!(
+            kinds,
+            [
+                InputKind::GamepadButton,
+                InputKind::GamepadRemove,
+                InputKind::GamepadArrival
+            ]
+        );
+        assert_eq!(wire[2].code, u32::from(GamepadType::DualSense.to_core().to_u8()));
         wire.clear();
-        r.step(&[pad(0)], now, false, GamepadType::DualSense, &mut wire, &mut routed);
-        assert_eq!(wire[0].kind, InputKind::GamepadArrival);
-        assert_eq!(wire[0].code, u32::from(GamepadType::DualSense.to_core().to_u8()));
+        r.step(
+            &[pad(gamepad::BTN_A)],
+            now,
+            false,
+            GamepadType::DualSense,
+            &mut wire,
+            &mut routed,
+        );
+        assert!(
+            wire.is_empty() && routed.is_empty(),
+            "the held button is not a new press"
+        );
     }
 
     #[test]
