@@ -1,7 +1,7 @@
 # Nintendo Switch client — a Rust homebrew title on NVDEC
 
 > **Status: designed 2026-10-28; WP0's probe passed on the console and WP1 closed on 2026-10-29
-> (`docs/NOTES.md`, §4). WP2 is next.** Target: the Switch 1 (Erista and Mariko, Tegra
+> (`docs/NOTES.md`, §4); WP2–WP4 closed by 2026-11-01. WP5 is next.** Target: the Switch 1 (Erista and Mariko, Tegra
 > X1), on Atmosphère, as an `.nro`. The Switch 2 is a later leg behind the same seams (§9); no
 > modded one exists to test on. The maintainer's fellow developer holds the only test device, so
 > every work package is written for a developer who never holds the console — the PS5 client's
@@ -259,6 +259,21 @@ developer gets as "the initial version".
 
 **Exit (G4):** an hour of a game on glass with pad, rumble and audio in sync; a second pad joins;
 sleep and wake return to Hosts; the tester's report answered.
+
+**Outcome (2026-11-01).** On the tester's Switch 1 a game plays handheld with audio, the pad's
+buttons and sticks, HD rumble, gyro and the touch screen as the host's touch; the dial steps the
+statistics tier, the controller mouse and the controller type, which re-plugs the pad once when
+the dial closes (`docs/NOTES.md`, title at `be98e16` and `8a18316`). The tester closed the
+package there. Departures:
+
+- Sleep and wake redial into the stream (0.3 s) rather than return to Hosts; the tester kept it.
+  A wake no longer crashes the title (the waker patch in `toolchain/patches/mio`).
+- The applet-mode warning is in, but a launch from the Album crashed the console before the
+  first menu. Players are told to hold R over a game (WP6's docs); no investigation now.
+- The hour of play, the second pad and the ten-minute docked 1080p run move to the very end,
+  after the last package.
+- The Nintendo controller types in the shared Settings list and labels wait for a monorepo PR
+  (`docs/improvements.md`). Audio underruns climb in silence with nothing audible; left for WP5.
 
 ### WP5 — Reliability and latency (two weeks)
 
