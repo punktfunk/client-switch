@@ -28,7 +28,11 @@ jobs:
   console:
     runs-on: ubuntu-24.04
     steps:
+      # The branch's own commit, not the PR's merge commit, so the NRO's version names a commit
+      # that exists (scripts/docker.sh).
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       # The runner's preinstalled SDKs the console build never uses: about 25 GB back.
       - name: Disk space
         run: |

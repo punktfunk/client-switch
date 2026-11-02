@@ -15,7 +15,7 @@ pub const VERSION: &str = match option_env!("PKG_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
-/// The build id the About screen and the first log line carry: version plus the pins.
+/// The build id the first log line and the test-run bundle carry: version plus the pins.
 pub fn build_id() -> String {
     format!(
         "{VERSION} core={} mesa={}",
