@@ -1,49 +1,86 @@
 <div align="center">
 
-<img src="packaging/icon_large.png" alt="Punktfunk" width="130">
+<img src="packaging/icon_large.png" alt="punktfunk" width="130">
 
-<br>
-<br>
+# punktfunk for Nintendo Switch
 
+**Play your PC games on your Switch, streamed over your home network.**
+
+[![Latest release](https://img.shields.io/github/v/release/punktfunk/client-switch?label=download)](https://github.com/punktfunk/client-switch/releases/latest)
 [![CI](https://github.com/punktfunk/client-switch/actions/workflows/ci.yml/badge.svg)](https://github.com/punktfunk/client-switch/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-d2c9fb)](#licence)
-
-**Native Nintendo Switch client for [Punktfunk](https://git.unom.io/unom/punktfunk) — low-latency desktop & game streaming.**
 
 </div>
 
 ---
 
-A homebrew title for the Switch 1 on Atmosphère, built on the upstream `punktfunk-core` crate (a
-pinned git dependency — see `Cargo.toml`) and the shared console UI. This repo is only the
-Switch-specific client: the libnx platform, NVDEC through libavcodec's `nvtegra` hwaccel, a Vulkan
-presenter on Mesa NVK, and the `.nro` packaging.
+punktfunk runs your games on your PC and sends the picture and sound to your Switch. It is a native homebrew app: it opens from the Homebrew
+Menu (no applet mode), uses the Switch's own video decoder, and works handheld or docked. Handheld has been more tested and it's the recommended mode to play.
 
-**Install it:** download `punktfunk.nro` from the [latest release](https://github.com/punktfunk/client-switch/releases/latest)
-and follow the [manual](docs/tester.md). `docs/plan.md` is the plan of record, `docs/NOTES.md` what is
-proven on the console and how.
+## What you need
 
-## Features
+- A **Nintendo Switch 1** (original, Lite or OLED) running homebrew on **Atmosphère**.
+- A PC with the **[punktfunk host](https://docs.punktfunk.unom.io/docs/install)** installed, on
+  the same network.
+- A good connection: 5 GHz Wi-Fi near the router, or a wired dock. A wired PC helps too.
 
-- **Video** — 1280×720 handheld and 1920×1080 docked at 60 Hz, H.264 or HEVC on the console's
-  NVDEC; the stream follows the dock. No AV1: the Tegra X1 has none.
-- **The Punktfunk console UI** — hosts, pairing, game libraries and settings, on Vulkan (Mesa NVK).
-  A confirms, B backs, as everywhere on the console.
-- **Controllers** — Joy-Cons (attached or paired) and the Pro Controller, up to four players, HD
-  rumble, gyro and the touch screen.
-- **Audio** — stereo through `audout`.
+## Install
 
-Not yet: USB keyboard and mouse, PyroWave, and launching from the Album. Docked play is tested
-less than handheld.
+1. Download **`punktfunk.nro`** from the [latest release](https://github.com/punktfunk/client-switch/releases/latest).
+2. Copy it to **`/switch/punktfunk/`** on your SD card.
+3. **Hold R while opening any game**, then pick punktfunk in the Homebrew Menu. Run from Sphaira is recommended. Applet mode does not work. 
 
-## Test builds and the probe
+> **Don't open it from the Album.** The Album gives homebrew too little memory, and punktfunk
+> crashes there.
 
-Players use the release and [the manual](docs/tester.md). Every PR's CI uploads `punktfunk.nro`
-and the WP0 probe (`pf-nx-probe.nro`). The probe prints one line per check,
-`probe N <name> ok|fail …`, on `nxlink -s dist/pf-nx-probe.nro`'s terminal or on screen, and
-writes the same lines to `/switch/punktfunk/probe.log`.
+Then pick your PC on the **Hosts** screen, enter the PIN the host shows, and choose a game. 
+You can check more in punktfunk [quickstart](https://docs.punktfunk.unom.io/docs/quickstart) documentation.
 
-## Build it
+## What it does
+
+- **720p at 60 fps handheld, 1080p at 60 fps docked.** Docking mid-game switches without
+  reconnecting is still being working. 
+- **Your controllers, as they are.** Joy-Cons and the Pro Controller, with HD rumble, gyro and
+  the touch screen.
+- **Low latency.** About 30–45 ms from the PC's screen to yours, on a good network.
+- **Two presentation modes.** *Smoothness* gives a very smooth picture at an acceptable
+  latency. *Low latency* cuts the delay further, at the cost of some smoothness.
+- **Easy to set up, easy to use.** You pair once, and from then on it is one
+  click to connect. The menus are built for a controller and a touch screen, so you never
+  need a keyboard.
+- **A modern, encrypted protocol.** The stream runs on punktfunk's own protocol, built on
+  QUIC and encrypted end to end. It is designed for low latency and recovers from lost
+  packets without freezing the picture.
+
+| In a stream | Does |
+| --- | --- |
+| **Minus + A** | Quick actions: statistics, controller mouse, controller type |
+| Hold **L + R + Plus + Minus** for one second | End the stream |
+
+## Known limits
+
+- Docked play has been tested less than handheld.
+- Overlocking is necessary to better performance and latency. At stock clocks it works, but raising the CPU clock makes menus smoother and lowers the stream's latency.
+- No launching from the Album.
+- No USB keyboard or mouse yet.
+- Switch 2 is not supported yet.
+
+## Found a problem?
+
+Open an [issue](https://github.com/punktfunk/client-switch/issues) and attach the log from
+`/switch/punktfunk/logs/` on your SD card. The [manual](docs/tester.md#reporting-a-problem)
+says which file to send.
+
+---
+
+## For developers
+
+A Rust title on libnx, with NVDEC through libavcodec's `nvtegra` hwaccel and a Vulkan presenter
+on Mesa NVK, built on the shared [punktfunk](https://git.unom.io/unom/punktfunk) crates.
+[`docs/plan.md`](docs/plan.md) is the plan of record and [`docs/NOTES.md`](docs/NOTES.md) what is
+proven on the console. Every PR's CI uploads `punktfunk.nro` and the WP0 probe
+(`pf-nx-probe.nro`).
+
+### Build it
 
 Everything for the host runs on a Mac or Linux box; the console build runs in a Docker image.
 You need [rustup](https://rustup.rs) (`rust-toolchain.toml` installs the pinned nightly),
@@ -60,7 +97,7 @@ You need [rustup](https://rustup.rs) (`rust-toolchain.toml` installs the pinned 
 
 The archives live in the `pf-nx-toolchains` Docker volume.
 
-## Repository
+### Repository
 
 | Path | What |
 | --- | --- |
@@ -75,14 +112,14 @@ The archives live in the `pf-nx-toolchains` Docker volume.
 
 Read [`AGENTS.md`](AGENTS.md) before changing code: layering, commands and invariants.
 
-## Docs
+### Docs
 
 - [`docs/plan.md`](docs/plan.md): the plan of record.
 - [`docs/NOTES.md`](docs/NOTES.md): what is proven, what still needs a console, and the console
   facts the code relies on.
 - [`docs/pins.md`](docs/pins.md): every pinned dependency and how it moves.
 
-## Use of AI
+### Use of AI
 
 This project uses AI for writing code. The rules the agents follow are in [AGENTS.md](AGENTS.md).
 

@@ -1,113 +1,117 @@
 # Improvements
 
-Changes the console's runs point to, for later. Each needs the maintainer's yes before it lands:
-the first changes what a player sees by default, the others live in punktfunk's shared crates.
+What is left after v1.0.0, sorted by who can do it:
 
-## The smoothness buffer's Automatic on the Switch
+1. [**Needs a change in the punktfunk monorepo**](#1-needs-a-change-in-the-punktfunk-monorepo):
+   a maintainer of the main repository has to write it. This client cannot do it alone.
+2. [**Client only, not done yet**](#2-client-only-not-done-yet): this repository can do it, but
+   each item needs a console test first, or the maintainer's yes because it changes what a
+   player sees.
+3. [**Already done in this client**](#3-already-done-in-this-client): kept here so the monorepo
+   side knows what exists.
+
+Facts about the console cite `docs/NOTES.md` by date.
+
+## How this client uses the monorepo
+
+The monorepo is `unom/punktfunk` (<https://git.unom.io/unom/punktfunk>). This client takes four
+of its crates, `punktfunk-core`, `pf-client-core`, `pf-console-ui` and `pf-client-video`, at **one
+git rev**, set in `Cargo.toml` and `scripts/pins.env` (`PUNKTFUNK_REV`).
+
+The usual round trip for section 1:
+
+1. A monorepo PR lands the change. The monorepo's `docs/writing.md` has the rules for commits,
+   comments and error text; read the monorepo from `origin/main`, never from a local checkout.
+2. This client bumps the rev (`docs/pins.md`, row "punktfunk": one bump moves all four crates)
+   and deletes the workaround named in each item below.
+3. A console round checks it, and the release notes say so.
+
+## 1. Needs a change in the punktfunk monorepo
+
+- **A Switch platform in the shared shell.** The shell has no Switch, so this client presents
+  itself as the PS5. The Stream controls page then tells players to press DualSense buttons, and
+  this client patches A and B (confirm and back) on its own. The shell should know the Switch,
+  its two chords (Minus + A, and L + R + Plus + Minus) and A as confirm.
+- **The Nintendo controller types in the shared lists.** Settings cannot save "Joy-Con pair" or
+  "Switch Pro", and the dial shows their internal ids. The shared lists and labels should include
+  them. Open: can every host build a Switch Pro?
+- **A dead connection leaves a thread spinning.** Unplugging the dock mid-stream leaves the old
+  receive thread running until the app exits, wasting CPU (`punktfunk-core` transport). A fatal
+  socket error should end it.
+- **A download page row,** once the repository is public.
+
+## 2. Client only, not done yet
+
+None of these need the monorepo. Each needs a console test or the maintainer's yes first.
+
+### Performance mode: raise the CPU clock
+
+**Why.** At stock clocks the CPU, not the GPU, is the limit. A handheld sweep with sys-clk
+(NOTES, 2026-11-02): CPU 1785 MHz took the round trip from 19 ms to 7 ms and end to end from
+about 49 ms to 43 ms, and the menu's long frames went away. GPU and memory alone changed little.
+A 27-minute session at CPU 1785 MHz reached 30 ms end to end.
+
+**The idea.** An opt-in setting, off by default: a small CPU raise in the menu, and CPU 1785 MHz
+(maybe memory 1600) while streaming. Only after it can Automatic's 20 Mb/s ceiling go up to about
+25 Mb/s.
+
+**Test first** (AGENTS.md: no workaround without a probe line):
+
+- whether `clkrstSetClockRate` works from an NRO under hbloader;
+- whether sys-clk overrides it;
+- whether the clocks come back on exit, on sleep (`FocusState::Background`) and on a dock change.
+
+**Constraints.** Do not use `appletSetCpuBoostMode`: it drops the GPU to 76.8 MHz, which would
+hurt composition and the UI. Stay within the official top clocks (CPU 1785, memory 1600). Restore
+before `Lifecycle::exit`. The cost is battery and heat. **Needs the maintainer's yes**, because it
+adds a player-facing setting (`docs/settings.md`).
+
+### Spread the threads over cores 0 to 2
+
+**Why.** libnx creates every thread, so every Rust std thread, on "the process's default core"
+(`threadCreate(..., -2)`), and nothing in this client sets a core. It is likely that the main,
+tokio, decode, audio and receive threads all share one core while two sit idle. That would fit
+the clock sweep above. **Unconfirmed.**
+
+**Test first.** A probe build logs each thread's core, core mask and per-core load after every
+10-second summary (commit `16a1260`, branch `thread-cores`, not merged). If it confirms one core,
+place threads explicitly from `pf-nx-sys` (main and UI on core 0, decode on 1, network on 2) and
+measure as in WP5. Core 3 stays the system's: the forwarder option "4 CPU cores" would let the
+title use it, and it should stay off.
+
+### The smoothness buffer's Automatic on the Switch
 
 The shared setting resolves Automatic to two frames on every client
-(`pf-client-core::trust::PresentPriority::resolve`). This client counts core's adaptive cushion
-as the first frame and adds a stream period for each further one (`session/timeline.rs`). Until
-2f4002a it added every frame on top of the cushion, so one frame held up to about two
-refreshes. On the console, one frame presented 59–60 pictures a second at 15–23 ms decode to
-present; two frames presented the same at 31–40 ms (NOTES, 2026-10-31). Both runs predate
-2f4002a. The proposal is that Automatic picks one frame on the Switch, through a per-platform
-default in the shared crate or an override in this client.
+(`pf-client-core::trust::PresentPriority::resolve`). This client counts core's adaptive cushion as
+the first frame and adds a stream period for each further one (`session/timeline.rs`). On the
+console, one frame presented 59 to 60 pictures a second at 15 to 23 ms decode to present; two
+frames presented the same at 31 to 40 ms (NOTES, 2026-10-31).
 
-Open: one tester's Wi-Fi so far. A busier network may want the second frame back.
+**The proposal.** Automatic picks one frame on the Switch, either through a per-platform default
+in the shared crate (section 1 would carry it) or an override here. **Needs the maintainer's
+yes**: it changes what a player sees by default. **Open:** one tester's Wi-Fi so far; a busier
+network may want the second frame back.
 
-## A ceiling for the automatic bitrate
+### Other later work
 
-Automatic bitrate climbs to the link's wall and asks it again every re-probe interval. On the
-tester's Wi-Fi each climb to 22–25 Mb/s at 720p60 preceded a one-way delay spike of 60–110 ms
-with no loss, a queue upstream of the console. Pinning the bitrate at 20 Mb/s (16–17 Mb/s
-delivered) removed the spikes for a whole session, but a pinned rate does not come down when the
-link gets worse (NOTES, 2026-10-31).
+- **PyroWave on NVK.** The lane is lifted but off. A 256-core Maxwell GPU at 307 to 460 MHz has
+  to be measured against the wavelet decode before it is advertised (plan D14).
+- **USB keyboard and mouse on the dock** (`hidKeyboard*` and `hidMouse*` into the keymap
+  contract).
+- **The console's `hwopus` service** as an audio lane.
+- **Longer tests:** a second pad, ten minutes docked at 1080p, an hour of play.
+- **Applet mode.** A launch from the Album crashes before the first menu. Not investigated; the
+  manual says to hold R over a game.
+- **Audio** plays 20 to 55 ms behind the picture, steady.
+- **The Homebrew App Store listing** and the **Switch 2** (plan §9).
 
-The middle ground is automatic under a ceiling the player or the platform sets, so it still cuts
-on congestion but never probes past what a handheld's Wi-Fi carries. The controller is core's
-(`punktfunk-core::abr`), so this is a change upstream, not here.
+## 3. Already done in this client
 
-Open: what the ceiling should be docked at 1080p, which needs more than 720p.
-
-## The Nintendo controller types in the shared lists
-
-On the Switch a player holding Joy-Cons can ask the host for a Pro Controller only through the
-dial: the Switch's own step (`GamepadType::next_on_dial`) goes Automatic, Joy-Con pair, Switch
-Pro, then the shared order. Everything else about the two kinds lives in the shared crates and
-leaves them out:
-
-- Settings' Controller type offers Automatic, Xbox 360, Xbox One, DualSense, DualShock 4, Steam
-  Deck and Steam Controller 2 (`pf-console-ui`, `screens/settings/rows.rs`, `PAD_TYPES`), so the
-  console cannot save either Nintendo kind.
-- The dial names a kind through `pf-client-core::overlay_actions::pad_type_label`, which has no
-  name for either, so the slot reads `joyconpair` and `switchpro`.
-- The dial's shared order (`overlay_actions::PAD_TYPE_CYCLE`) has neither, which is why the
-  Switch steps its own.
-
-The proposal is a monorepo PR that adds "Joy-Con pair" and "Switch Pro" to the labels, to the
-Settings list on the platforms that present them, and to the shared order there, after which
-the Switch's own step goes. The Windows host built a Joy-Con pair in every console session
-(NOTES, 2026-10-31); a Switch Pro there is untested.
-
-Open: whether every host can build a Switch Pro, or the lists should offer it per host.
-
-## A Switch platform in the shared shell
-
-The shell has no Switch, so this client fronts it as `Platform::Ps5` (`runtime/menu.rs`), the
-nearest: a console title that quits, with no window. That borrows what is the PS5's alone. The
-tester found the first on 2026-11-02:
-
-- **Stream controls.** About > Stream controls draws a DualSense card that lists "Touchpad +
-  Cross" and "L1 + R1 + Options + Touchpad". On the Switch the dial is Minus + A
-  (`core/dial.rs`), and holding L + R + Plus + Minus for a second ends the stream
-  (`runtime/pads.rs`, `CHORD_HOLD`). The page tells a player to press buttons that do nothing.
-- **Confirm side.** The shell confirms on south. Here A, on east, confirms, so `legend_pref`
-  (`runtime/menu.rs`) swaps the Nintendo legend for the letters one. Without that, the hints
-  read "B Select" over the button that selects.
-
-The contract this client builds against, in the monorepo:
-
-1. `pf-console-ui::platform::Platform::Switch`, in `Platform::ALL`, with `can_quit` true.
-2. `pf-client-core::shortcuts::Client::Switch`, mapped from it in `screens/controls.rs`. Its pad
-   group is titled "Joy-Con" and holds:
-   - `item("Minus + A", "Open the quick actions dial")`;
-   - `item("L + R + Plus + Minus", "Hold to disconnect")`.
-
-   The group's icon and badges come from the first pad's pref, as now. The pad art for
-   `joyconpair` and `switchpro` already exists (`pad_art.rs`).
-3. On `Platform::Switch`, the Nintendo glyph style confirms on east and backs on south. Every
-   hint that says Select or Back follows that.
-4. The rest of the PS5's branches, decided for the Switch:
-
-   | Where | PS5 now | Switch |
-   | --- | --- | --- |
-   | `codecs` | `CODECS_PS5`: no AV1, PyroWave behind `pyrowave_ok` | the same. NVDEC has no AV1, and PyroWave runs on NVK's Vulkan 1.3, untested on the console (`pyrowave: false` until then) |
-   | `pad_types` | drops Xbox 360, Steam Deck, Steam Controller 2 | the same, plus the Nintendo kinds from the section above |
-   | `own_stats_corner` | top left | top left |
-   | `has_window` | false | false |
-   | `bitrate_ceiling_kbps` | the custom maximum | the custom maximum |
-   | `ring_editor` platform | Desktop | Desktop |
-   | `GlyphStyle::keys` | Remote | Remote |
-   | help-text branches (mouse mode, stats verbosity, gamepad UI) | the no-chord wording | the same |
-
-   `players.rs` opens a pad's menu (Test controller, Rumble) on Android and Apple only
-   (`can_test`, `can_rumble`). On every other platform, OK on a Controllers card does nothing, so
-   the Switch's Joy-Con card is display-only. The Switch can do both: its pads rumble in every
-   stream. The contract lets `Platform::Switch` offer the two rows. This client then answers
-   `ConsoleCmd::PadTest` and the `rumble` `PadAction`, which `ui/service.rs` logs and drops
-   today.
-
-   The handheld screen is a touchscreen, and this client sends its touches to the host as a
-   direct pointer. That is a later row, not part of this contract.
-
-On this side, once the client builds on a release that has it:
-
-- `runtime/menu.rs` sets `platform: Platform::Switch`;
-- `legend_pref` goes, and the pads report their own pref;
-- both `TODO(core)` lines go.
-
-Until then, the guide names the two chords, because the Stream controls page does not.
-
-Open: whether the shell should take the dial and escape chords from the client, not from a
-table, so a client that rebinds them cannot drift from the page.
+- **A 20 Mb/s ceiling for Automatic bitrate.** Where only NVDEC decodes, this client sets the
+  environment variable `PUNKTFUNK_ABR_MAX_MBPS` that `punktfunk-core::abr` reads
+  (`core/model.rs`, `runtime/mod.rs`). On the tester's Wi-Fi each climb to 22 to 25 Mb/s at 720p60
+  preceded a delay spike of 60 to 110 ms with no loss, and a pinned 20 Mb/s ran clean (NOTES,
+  2026-10-31). Automatic still cuts below the ceiling on congestion.
+- **A recvmmsg batch** of up to 32 datagrams per receive call, which moved the console's UDP
+  ceiling from about 25 to 33 Mb/s to about 47 to 49 Mb/s.
+- **The smoothing slot** skips a standing one-picture backlog.
