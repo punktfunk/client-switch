@@ -6,12 +6,13 @@ the first changes what a player sees by default, the others live in punktfunk's 
 ## The smoothness buffer's Automatic on the Switch
 
 The shared setting resolves Automatic to two frames on every client
-(`pf-client-core::trust::PresentPriority::resolve`). This client adds the frames on top of
-core's adaptive cushion (`session/timeline.rs`), so one frame here already holds up to about
-two refreshes. On the console, one frame presented 59–60 pictures a second at 15–23 ms decode to
-present; two frames presented the same at 31–40 ms (NOTES, 2026-10-31). The proposal is that
-Automatic picks one frame on the Switch, through a per-platform default in the shared crate or
-an override in this client.
+(`pf-client-core::trust::PresentPriority::resolve`). This client counts core's adaptive cushion
+as the first frame and adds a stream period for each further one (`session/timeline.rs`). Until
+2f4002a it added every frame on top of the cushion, so one frame held up to about two
+refreshes. On the console, one frame presented 59–60 pictures a second at 15–23 ms decode to
+present; two frames presented the same at 31–40 ms (NOTES, 2026-10-31). Both runs predate
+2f4002a. The proposal is that Automatic picks one frame on the Switch, through a per-platform
+default in the shared crate or an override in this client.
 
 Open: one tester's Wi-Fi so far. A busier network may want the second frame back.
 
@@ -50,3 +51,59 @@ the Switch's own step goes. The Windows host built a Joy-Con pair in every conso
 (NOTES, 2026-10-31); a Switch Pro there is untested.
 
 Open: whether every host can build a Switch Pro, or the lists should offer it per host.
+
+## A Switch platform in the shared shell
+
+The shell has no Switch, so this client fronts it as `Platform::Ps5` (`runtime/menu.rs`), the
+nearest: a console title that quits, with no window. That borrows what is the PS5's alone. The
+tester found the first on 2026-11-02:
+
+- **Stream controls.** About > Stream controls draws a DualSense card that lists "Touchpad +
+  Cross" and "L1 + R1 + Options + Touchpad". On the Switch the dial is Minus + A
+  (`core/dial.rs`), and holding L + R + Plus + Minus for a second ends the stream
+  (`runtime/pads.rs`, `CHORD_HOLD`). The page tells a player to press buttons that do nothing.
+- **Confirm side.** The shell confirms on south. Here A, on east, confirms, so `legend_pref`
+  (`runtime/menu.rs`) swaps the Nintendo legend for the letters one. Without that, the hints
+  read "B Select" over the button that selects.
+- **Codecs.** Settings takes the PS5's list, which includes PyroWave; only `pyrowave_ok: false`
+  keeps it off. The Switch decodes H.264 and HEVC through NVDEC, has no PyroWave lane on the
+  console (`video caps` logs `pyrowave: false`) and no AV1.
+
+The contract this client builds against, in the monorepo:
+
+1. `pf-console-ui::platform::Platform::Switch`, in `Platform::ALL`, with `can_quit` true.
+2. `pf-client-core::shortcuts::Client::Switch`, mapped from it in `screens/controls.rs`. Its pad
+   group is titled "Joy-Con" and holds:
+   - `item("Minus + A", "Open the quick actions dial")`;
+   - `item("L + R + Plus + Minus", "Hold to disconnect")`.
+
+   The group's icon and badges come from the first pad's pref, as now. The pad art for
+   `joyconpair` and `switchpro` already exists (`pad_art.rs`).
+3. On `Platform::Switch`, the Nintendo glyph style confirms on east and backs on south. Every
+   hint that says Select or Back follows that.
+4. The rest of the PS5's branches, decided for the Switch:
+
+   | Where | PS5 now | Switch |
+   | --- | --- | --- |
+   | `codecs` | `CODECS_PS5`, with PyroWave | H.264 and HEVC only: `CODECS[..3]` |
+   | `pad_types` | drops Xbox 360, Steam Deck, Steam Controller 2 | the same, plus the Nintendo kinds from the section above |
+   | `own_stats_corner` | top left | top left |
+   | `has_window` | false | false |
+   | `bitrate_ceiling_kbps` | the custom maximum | the custom maximum |
+   | `ring_editor` platform | Desktop | Desktop |
+   | `GlyphStyle::keys` | Remote | Remote |
+   | help-text branches (mouse mode, stats verbosity, gamepad UI) | the no-chord wording | the same |
+
+   The handheld screen is a touchscreen, and this client sends its touches to the host as a
+   direct pointer. That is a later row, not part of this contract.
+
+On this side, once the client builds on a release that has it:
+
+- `runtime/menu.rs` sets `platform: Platform::Switch`;
+- `legend_pref` goes, and the pads report their own pref;
+- both `TODO(core)` lines go.
+
+Until then, the guide names the two chords, because the Stream controls page does not.
+
+Open: whether the shell should take the dial and escape chords from the client, not from a
+table, so a client that rebinds them cannot drift from the page.
