@@ -36,8 +36,54 @@ pub struct Stats {
     pub in_flight: u32,
     /// Microseconds from the last send to the last picture out.
     pub last_decode_us: u32,
-    /// Microseconds of the last VIC transfer to NV12.
+    /// Microseconds of the last transfer to NV12 (the VIC's, or the CPU's detiling).
     pub last_transfer_us: u32,
+    /// Microseconds of the last copy out of libavutil's frame; 0 when there was none.
+    pub last_copy_us: u32,
+    pub route: Route,
+    /// Why transfers stopped going straight into the caller's planes, an `AVERROR`; 0 while
+    /// they do.
+    pub direct_err: i32,
+}
+
+/// How the last picture reached the caller's planes (`PF_AV_ROUTE_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Route {
+    /// A software decoder's picture, copied (the dev box).
+    #[default]
+    Software,
+    /// The VIC into libavutil's frame, then copied.
+    VicThenCopy,
+    /// libavutil's frame was not 256-byte aligned, so the hwcontext detiled on the CPU, then
+    /// copied.
+    CpuThenCopy,
+    /// The VIC straight into the caller's planes.
+    Vic,
+    /// Detiled on the CPU straight into the caller's planes.
+    Cpu,
+}
+
+impl Route {
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            1 => Self::VicThenCopy,
+            2 => Self::CpuThenCopy,
+            3 => Self::Vic,
+            4 => Self::Cpu,
+            _ => Self::Software,
+        }
+    }
+
+    /// For the log.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Software => "software, copied",
+            Self::VicThenCopy => "VIC, copied",
+            Self::CpuThenCopy => "CPU detile, copied",
+            Self::Vic => "VIC straight",
+            Self::Cpu => "CPU detile straight",
+        }
+    }
 }
 
 /// `PfAvStats`.
@@ -48,7 +94,9 @@ pub struct RawStats {
     pub in_flight: u32,
     pub last_decode_us: u32,
     pub last_transfer_us: u32,
-    pub reserved: u32,
+    pub last_copy_us: u32,
+    pub route: u32,
+    pub direct_err: i32,
 }
 
 /// The shim's own codes, outside libavcodec's `AVERROR` space (`csrc/pf_av.c`).
@@ -67,7 +115,13 @@ mod ffi {
     }
 
     extern "C" {
-        pub fn pf_av_open(codec: c_int, width: c_int, height: c_int, out: *mut *mut PfAvDecoder) -> c_int;
+        pub fn pf_av_open(
+            codec: c_int,
+            width: c_int,
+            height: c_int,
+            direct: c_int,
+            out: *mut *mut PfAvDecoder,
+        ) -> c_int;
         pub fn pf_av_send(d: *mut PfAvDecoder, data: *const u8, len: c_int, pts: u64) -> c_int;
         pub fn pf_av_receive(
             d: *mut PfAvDecoder,
@@ -116,12 +170,14 @@ unsafe impl Send for Decoder {}
 
 #[cfg(pf_av)]
 impl Decoder {
-    /// Opens `codec` for a `width`×`height` stream.
-    pub fn open(codec: Codec, width: u32, height: u32) -> anyhow::Result<Self> {
+    /// Opens `codec` for a `width`×`height` stream. `straight` has the VIC write into the
+    /// caller's planes ([`Route::Vic`]) where it can; otherwise every picture goes through
+    /// libavutil's frame and a copy ([`Route::VicThenCopy`]).
+    pub fn open(codec: Codec, width: u32, height: u32, straight: bool) -> anyhow::Result<Self> {
         let (w, h) = (i32::try_from(width)?, i32::try_from(height)?);
         let mut raw = core::ptr::null_mut();
         // SAFETY: `raw` is a valid out-pointer; the shim sets it only on success.
-        let rc = unsafe { ffi::pf_av_open(codec as i32, w, h, &mut raw) };
+        let rc = unsafe { ffi::pf_av_open(codec as i32, w, h, i32::from(straight), &mut raw) };
         if rc < 0 {
             return Err(av_error(&format!("open the {codec:?} decoder"), rc));
         }
@@ -196,6 +252,9 @@ impl Decoder {
             in_flight: s.in_flight,
             last_decode_us: s.last_decode_us,
             last_transfer_us: s.last_transfer_us,
+            last_copy_us: s.last_copy_us,
+            route: Route::from_raw(s.route),
+            direct_err: s.direct_err,
         }
     }
 }
@@ -210,7 +269,7 @@ impl Drop for Decoder {
 
 #[cfg(not(pf_av))]
 impl Decoder {
-    pub fn open(codec: Codec, _width: u32, _height: u32) -> anyhow::Result<Self> {
+    pub fn open(codec: Codec, _width: u32, _height: u32, _straight: bool) -> anyhow::Result<Self> {
         anyhow::bail!("open the {codec:?} decoder: no decoder on this box (NVDEC on the console, libavcodec on Linux)")
     }
 
@@ -244,7 +303,7 @@ mod tests {
     #[cfg(not(pf_av))]
     #[test]
     fn open_fails_off_the_console() {
-        let err = Decoder::open(Codec::Hevc, 1920, 1080).err().unwrap();
+        let err = Decoder::open(Codec::Hevc, 1920, 1080, false).err().unwrap();
         assert_eq!(
             err.to_string(),
             "open the Hevc decoder: no decoder on this box (NVDEC on the console, libavcodec on Linux)"
@@ -255,7 +314,7 @@ mod tests {
     #[test]
     fn a_dev_box_opens_both_codecs_in_software() {
         for codec in [Codec::H264, Codec::Hevc] {
-            let mut d = Decoder::open(codec, 1920, 1080).unwrap();
+            let mut d = Decoder::open(codec, 1920, 1080, false).unwrap();
             assert_eq!(d.stats(), Stats::default());
             d.flush();
         }
@@ -266,10 +325,14 @@ mod tests {
         use core::mem::{offset_of, size_of};
         // PfAvPictureMeta: u32 width, u32 height, u64 pts → 16.
         assert_eq!((size_of::<PictureMeta>(), offset_of!(PictureMeta, pts)), (16, 8));
-        // PfAvStats: u64 decoded, four u32 → 24.
+        // PfAvStats: u64 decoded, five u32 and an i32 → 32.
         assert_eq!(
-            (size_of::<RawStats>(), offset_of!(RawStats, last_transfer_us)),
-            (24, 16)
+            (
+                size_of::<RawStats>(),
+                offset_of!(RawStats, last_transfer_us),
+                offset_of!(RawStats, direct_err)
+            ),
+            (32, 16, 28)
         );
         assert_eq!(Codec::Hevc as i32, 1);
     }

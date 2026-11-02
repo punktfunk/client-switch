@@ -70,6 +70,7 @@ impl PyroLane {
             decoder: Mutex::new(decoder),
             slot: self.slot.clone(),
             hud: spec.hud.clone(),
+            e2e: spec.video_e2e.clone(),
             started: Instant::now(),
         }))
     }
@@ -79,6 +80,7 @@ struct PyroSink {
     decoder: Mutex<PyroWaveDecoder>,
     slot: Arc<VideoSlot>,
     hud: Arc<punktfunk_core::hud::Stats>,
+    e2e: pf_nx_app::platform::VideoE2e,
     started: Instant,
 }
 
@@ -118,6 +120,7 @@ impl VideoSink for PyroSink {
             decoded_ns: u64::try_from(punktfunk_core::client::now_realtime_ns()).unwrap_or(0),
             turn: Some(frame.turn),
             hud: Some(self.hud.clone()),
+            e2e: Some(self.e2e.clone()),
             hold: Box::new(frame.hold),
         });
         Ok(())

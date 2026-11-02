@@ -18,6 +18,10 @@ use pf_nx_vk::{GpuDevice, Presenter, Target, VideoSlot};
 /// Identity, settings, logs and bundles; the NRO itself lives here too (plan D18).
 const DATA_DIR: &str = "sdmc:/switch/punktfunk";
 
+/// A file of this name in [`DATA_DIR`], read at start, turns the straight VIC route on, so one
+/// build A/Bs both routes.
+const STRAIGHT_MARKER: &str = "vic-direto";
+
 /// The Mesa pin NVK was built from, for the log and the About screen.
 const MESA_PIN: &str = match option_env!("PF_MESA_PIN") {
     Some(p) => p,
@@ -94,7 +98,9 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let ui = presenter.ui();
             (
                 Box::new(display_nvk::NvkDisplay::new(presenter, mode)),
-                Arc::new(crate::video::NxVideo::gpu(dev, slot)),
+                Arc::new(
+                    crate::video::NxVideo::gpu(dev, slot).straight(Path::new(DATA_DIR).join(STRAIGHT_MARKER).exists()),
+                ),
                 gpu,
                 ui,
             )

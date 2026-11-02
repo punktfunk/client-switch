@@ -1,7 +1,7 @@
 # Nintendo Switch client — a Rust homebrew title on NVDEC
 
 > **Status: designed 2026-10-28; WP0's probe passed on the console and WP1 closed on 2026-10-29
-> (`docs/NOTES.md`, §4); WP2–WP4 closed by 2026-11-01. WP5 is next.** Target: the Switch 1 (Erista and Mariko, Tegra
+> (`docs/NOTES.md`, §4); WP2–WP4 closed by 2026-11-01, WP5 on 2026-11-02. WP6 is next.** Target: the Switch 1 (Erista and Mariko, Tegra
 > X1), on Atmosphère, as an `.nro`. The Switch 2 is a later leg behind the same seams (§9); no
 > modded one exists to test on. The maintainer's fellow developer holds the only test device, so
 > every work package is written for a developer who never holds the console — the PS5 client's
@@ -28,7 +28,8 @@ answer for anyone who will not install a CFW.
   settings are the console UI's shared catalogue (`clients/shared/settings-catalog.json`).
 - **Contract twins are pinned with the shared vectors**, not FFI: `gamepad-kind-vectors.json`,
   `touch-vectors.json`, `device-gyro-vectors.json`, `jitter-vectors.json`.
-- **Automatic means automatic**: no bitrate limit, no decoder pick, no clock boost in v1.
+- **Automatic picks the bitrate under a ceiling**: 20 Mb/s where only NVDEC decodes, the rate
+  the console receives clean at stock clocks. No decoder pick. Clock control is its own task (§10).
 - **Prior art is pinned, not forked loosely**: every vendored crate leg names its upstream
   version and the project it came from (§3.1) in its README.
 
@@ -48,7 +49,7 @@ answer for anyone who will not install a CFW.
 | D10 | **Face buttons follow the OS: A confirms, B backs**, in the console UI on this platform. Every Switch app does; a client that swaps them is a bug to the player. (The Android Nintendo-menu question stays the maintainer's; this is the native case of it.) |
 | D11 | **Stream mode follows the operation mode**: 1280×720@60 handheld, 1920×1080@60 docked, read at connect and on `AppletHookType_OnOperationMode`; a dock change mid-stream asks the host for the new size (host owns the delivered mode). Refresh is 60. |
 | D12 | **Sleep ends the stream** (`OnFocusState`/sleep hook → clean close); wake shows the host list. Reconnect is the player's press. No session survives suspend. |
-| D13 | **Full-memory mode first.** The title is validated launched by title override (hold R over an installed title); applet mode (album) is detected (`appletGetAppletType`) and warned about on the start screen, and WP5 measures whether the client fits in it. |
+| D13 | **Full-memory mode first.** The title is validated launched by title override (hold R over an installed title); applet mode (album) is detected (`appletGetAppletType`) and warned about on the start screen. A launch from the Album crashed before the first menu, so applet mode is not supported: the manual says to hold R over a game (WP6). |
 | D14 | **Codecs advertised**: `CODEC_H264 | CODEC_HEVC`, 8-bit, SDR. No AV1 on the X1 (accepted). Main10 only if WP0's probe decodes it through the VIC path. PyroWave is out of v1: the lane lifts with `pf-ps5-vk`, but a 256-core Maxwell at 307–460 MHz has to be measured against the wavelet decode before it is advertised (§10). |
 | D15 | **Dev loop without the console**: `pf-nx-host` runs the app on a Linux box through the real presenter on lavapipe and on the Mac on CPU raster, as `pf-ps5-host` does; **Ryujinx (Ryubing) on the Mac runs the real NRO on the framebuffer `Display`** — libnx, sockets, the nvservices the hwaccel talks to are emulated, so everything but the GPU path is proven here. Stock emulators do not run NVK builds (`bevy-horizon`'s finding). Timing from the emulator is never cited. `nxlink -s` is the deploy and the stdout on the device. |
 | D16 | **CI**: GitHub Actions like `client-ps5`: a host lane (test, clippy, the host client on lavapipe) and a console lane in a Docker image from `devkitpro/devkita64` plus the nightly, rust-src, and three archives built once per pin (`task nvk`, `task ffmpeg`, `task skia`). The NRO is a CI artifact per PR; releases are tags. |
@@ -223,7 +224,8 @@ bundle to `sdmc:/switch/punktfunk/verdict/` (`docs/NOTES.md`, title at `927533b`
   is gone. Ryubing recognised the NRO and then closed itself, untraced; the framebuffer
   fallback waits for a console where NVK fails.
 - The menu holds 60 fps in most ten-second windows, not all: some lose up to 33 frames to
-  single frames of 65–213 ms. WP5 traces them.
+  single frames of 65–213 ms. WP5's clock sweep put them on the CPU clock: at 1785 MHz the menu
+  lagged less. They go with clock control (§10).
 - The bundle is a folder of PNGs and JSON on the SD card, not a zip, fetched by hand.
 
 ### WP3 — The video plane (three weeks)
@@ -275,13 +277,26 @@ package there. Departures:
 - The Nintendo controller types in the shared Settings list and labels wait for a monorepo PR
   (`docs/improvements.md`). Audio underruns climb in silence with nothing audible; left for WP5.
 
-### WP5 — Reliability and latency (two weeks)
+### WP5 — Reliability and latency (closed 2026-11-02)
 
-Measured, not guessed: the picture copy (D7) and nvmap import if it shows; the audio sync cell
-if the presentation clock drifts from it; Wi-Fi loss behaviour against the host's recovery;
-memory in applet mode; the GPU clock the title gets and whether the official handheld
-configuration is reachable without an opt-in; PyroWave on NVK against the GPU budget (D14).
-Ten-hour soak.
+Measured on the console:
+
+- The picture copy (D7) costs what the straight VIC route saves, so the copy stays and nvmap
+  import is not needed.
+- Audio plays 40–90 ms behind the picture, steady, with no drift.
+- The receive path reads 32 datagrams a call. It holds 20 Mb/s handheld with no loss; docked
+  1080p wants 10–12 Mb/s.
+- The smoothness budget adds no whole period, and the slot no longer keeps a picture standing.
+- The stats line carries the CPU, GPU and memory clocks. A handheld sweep found that the CPU
+  clock is the one that cuts latency.
+
+Taken out:
+
+- The ten-hour soak: public use answers it better than one tester can.
+- Memory in applet mode: the title does not launch there (D13).
+- A trace of the menu's long frames: the CPU clock explains them.
+
+Clock control and PyroWave on NVK are their own tasks after the baseline (§10).
 
 ### WP6 — Package and release (one week)
 
@@ -343,7 +358,7 @@ client-switch/
 | Skia archive | §3.3 | raster fallback |
 | `nvtegra` is not in devkitPro's `switch-ffmpeg` at the pinned version | WP0.6 | build the pinned fork; `scripts/build-ffmpeg.sh` exists for it either way |
 | The crate legs drift | every nightly or pin bump | `scripts/pins.env` pins them; a bump is a PR with the probe re-run |
-| Applet mode out of memory | WP0.9, WP5 | title-override documented as required; applet mode best effort |
+| Applet mode out of memory | WP0.9 | title override documented as required; applet mode unsupported (D13) |
 | The emulator hides a device-only fault | every round | the tester's bundle decides; Ryujinx is never cited |
 | One device, one tester | throughput | rounds are batched; the probe lists what to run |
 
@@ -358,10 +373,12 @@ is a second `pf-nx-platform` cfg, not a fork.
 
 ## 10. After the baseline
 
-PyroWave on NVK if WP5's budget allows; nvmap import for the stream image (if WP5 leaves it);
+Clock control from the title (CPU, GPU, memory): a probe first, for whether clkrst sets them
+under hbloader, against sys-clk, and how they come back on exit, sleep and a dock change. Then an
+opt-in performance mode, the menu's long frames, and Automatic's ceiling raised to about 25 Mb/s.
+PyroWave on NVK, measured against the GPU budget (D14), as a task of its own.
 USB keyboard and mouse on the dock (`hidKeyboard*`/`hidMouse*` → the keymap contract);
-`hwopus`; the GPU-clock question if WP5 shows a case; the Homebrew App Store listing; the
-Switch 2.
+`hwopus`; the Homebrew App Store listing; the Switch 2.
 
 ## 11. Open before WP0 starts (the maintainer's)
 

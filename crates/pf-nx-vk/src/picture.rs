@@ -17,6 +17,7 @@ use pf_client_video::video_color::ColorDesc;
 use pf_nx_app::platform::StreamSpec;
 
 use crate::device::GpuDevice;
+use crate::timer::GpuTimer;
 
 /// Plane views in the layout the lane leaves them (`layout`).
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +51,8 @@ pub struct Picture {
     pub turn: Option<u64>,
     /// The session's overlay figures, where the display stage is noted.
     pub hud: Option<Arc<punktfunk_core::hud::Stats>>,
+    /// Where the presenter leaves the capture-to-glass time for the audio's A/V sync.
+    pub e2e: Option<pf_nx_app::platform::VideoE2e>,
     /// Keeps the planes' images and memory alive.
     pub hold: Box<dyn std::any::Any + Send + Sync>,
 }
@@ -74,7 +77,14 @@ impl VideoSlot {
 
     /// The picture for the vblank at `latch`, if a new one is due by then.
     pub fn take(&self, latch: Instant) -> Option<Arc<Picture>> {
-        self.lock().take(latch)
+        let mut q = self.lock();
+        let picture = q.take(latch);
+        if q.smoothing > 0 {
+            if let Some(w) = q.window.close(latch) {
+                tracing::info!("{}", w.line());
+            }
+        }
+        picture
     }
 
     /// Drops the waiting pictures: the stream ended.
@@ -97,6 +107,11 @@ const MAX_SMOOTHING: usize = 3;
 /// Pictures a smoothing queue holds past its budget: the pacing's own cushion, up to a period,
 /// and one picture of slack before the oldest is dropped.
 const SMOOTHING_SLACK: usize = 2;
+/// Takes in a row with a second due picture waiting before the slot skips one. A burst on the
+/// wire leaves that picture standing for the rest of the session, a refresh of latency at every
+/// budget (log of 2026-11-02: one left behind on 571 of 598 takes, no take ever held for a due).
+/// Due times straddling a vblank leave one now and then, never half a second running.
+const STANDING_TAKES: u32 = 30;
 /// The most pictures the slot ever holds.
 const MAX_QUEUED: usize = MAX_SMOOTHING + SMOOTHING_SLACK;
 
@@ -110,12 +125,91 @@ pub struct Drops {
     pub overflow: u32,
 }
 
+/// How often the slot reports how its pictures met their due times.
+const WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One window of the smoothing slot's takes: whether a due time ever held a picture back, how
+/// late the ones taken were against it, and how many waited behind each. A standing picture
+/// behind every take is a refresh of latency the budget did not ask for.
+#[derive(Default)]
+struct Window {
+    since: Option<Instant>,
+    taken: u32,
+    /// Vblanks with a picture waiting that was not due yet.
+    held: u32,
+    /// Taken with no due time.
+    undue: u32,
+    /// Taken before their due time, to keep the queue inside the budget.
+    early: u32,
+    /// Standing backlogs skipped, one picture each.
+    caught_up: u32,
+    /// Latch less due over the pictures taken at or past it, µs.
+    late_us: u64,
+    late_max_us: u64,
+    late_n: u32,
+    /// Pictures left waiting after each take: none, one, two or more.
+    left: [u32; 3],
+}
+
+impl Window {
+    fn note_take(&mut self, latch: Instant, due: Option<Instant>, left: usize) {
+        self.taken += 1;
+        self.left[left.min(2)] += 1;
+        match due {
+            None => self.undue += 1,
+            Some(d) if d > latch => self.early += 1,
+            Some(d) => {
+                let us = u64::try_from((latch - d).as_micros()).unwrap_or(u64::MAX);
+                self.late_us += us;
+                self.late_max_us = self.late_max_us.max(us);
+                self.late_n += 1;
+            }
+        }
+    }
+
+    /// The finished window at `now`, arming the next; `None` until one has run its length.
+    fn close(&mut self, now: Instant) -> Option<Self> {
+        let since = *self.since.get_or_insert(now);
+        (now.duration_since(since) >= WINDOW).then(|| {
+            std::mem::replace(
+                self,
+                Self {
+                    since: Some(now),
+                    ..Self::default()
+                },
+            )
+        })
+    }
+
+    fn line(&self) -> String {
+        let ms = |us: u64| us as f64 / 1000.0;
+        format!(
+            "slot[{}s]: {} taken, {} vblanks held for a due, {} without a due, {} early, {} caught up; late mean {:.1}ms max {:.1}ms; left behind 0:{} 1:{} 2+:{}",
+            WINDOW.as_secs(),
+            self.taken,
+            self.held,
+            self.undue,
+            self.early,
+            self.caught_up,
+            ms(self.late_us.checked_div(u64::from(self.late_n)).unwrap_or(0)),
+            ms(self.late_max_us),
+            self.left[0],
+            self.left[1],
+            self.left[2],
+        )
+    }
+}
+
 /// The slot's rule, apart from the pictures, so the tests drive it with plain values.
 struct Queue<T> {
     items: VecDeque<(Option<Instant>, T)>,
     /// `0`: newest wins.
     smoothing: usize,
     drops: Drops,
+    /// Smoothing only: takes in a row that left a due picture waiting.
+    standing: u32,
+    /// Smoothing only: the takes since the last report.
+    window: Window,
 }
 
 impl<T> Default for Queue<T> {
@@ -124,6 +218,8 @@ impl<T> Default for Queue<T> {
             items: VecDeque::with_capacity(MAX_QUEUED + 1),
             smoothing: 0,
             drops: Drops::default(),
+            standing: 0,
+            window: Window::default(),
         }
     }
 }
@@ -146,6 +242,7 @@ impl<T> Queue<T> {
     /// Newest wins ignores `due`. Smoothing shows the oldest picture due by `latch` and lets one
     /// more due wait for the next vblank: due times that straddle a vblank then take one refresh
     /// each. A third due is a backlog, and its oldest are dropped so latency stays the budget.
+    /// A second due left waiting [`STANDING_TAKES`] takes running is one too, and is skipped.
     /// More waiting than the budget holds means the due times run ahead of the arrivals, and the
     /// oldest goes out early.
     fn take(&mut self, latch: Instant) -> Option<T> {
@@ -162,16 +259,26 @@ impl<T> Queue<T> {
         // still for seconds (smoothing log of 2026-10-31, 151 trimmed in one window).
         let due = due.max(self.items.len().saturating_sub(self.smoothing + 1));
         if due == 0 {
+            self.window.held += u32::from(!self.items.is_empty());
             return None;
         }
-        let behind = due.saturating_sub(2);
+        let mut behind = due.saturating_sub(2);
+        self.standing = if due >= 2 { self.standing + 1 } else { 0 };
+        if self.standing >= STANDING_TAKES {
+            behind = due - 1;
+            self.standing = 0;
+            self.window.caught_up += 1;
+        }
         self.drops.replaced += behind as u32;
         self.items.drain(..behind);
-        self.items.pop_front().map(|(_, item)| item)
+        let (at, item) = self.items.pop_front()?;
+        self.window.note_take(latch, at, self.items.len());
+        Some(item)
     }
 
     fn clear(&mut self) {
         self.items.clear();
+        self.standing = 0;
     }
 
     fn trim(&mut self) {
@@ -250,10 +357,15 @@ pub struct Nv12Upload {
     stride: usize,
     color: ColorDesc,
     hud: Arc<punktfunk_core::hud::Stats>,
+    e2e: pf_nx_app::platform::VideoE2e,
     planes: Vec<Arc<PlaneSet>>,
     pool: vk::CommandPool,
     staging: Vec<Staging>,
     next: usize,
+    /// Each staging buffer's copy on the GPU; `None` where the queue has no timestamps.
+    timer: Option<GpuTimer>,
+    /// The last copy's GPU time that [`Self::stage`] read back.
+    copy_gpu_us: Option<u32>,
 }
 
 // SAFETY: the mapped pointers address memory this upload owns for its whole life and only
@@ -290,10 +402,13 @@ impl Nv12Upload {
                 full_range: spec.color.full_range != 0,
             },
             hud: spec.hud.clone(),
+            e2e: spec.video_e2e.clone(),
             planes: Vec::new(),
             pool,
             staging: Vec::with_capacity(COPIES),
             next: 0,
+            timer: None,
+            copy_gpu_us: None,
         };
         let dev = &upload.dev;
         // SAFETY: the pool is live; the buffers are freed with it.
@@ -325,10 +440,12 @@ impl Nv12Upload {
                 in_flight: false,
             });
         }
+        upload.timer = GpuTimer::new(&upload.dev, COPIES);
         tracing::info!(
-            "upload: NV12 {}x{} through {COPIES} staging buffers of {bytes} bytes, row {stride}",
+            "upload: NV12 {}x{} through {COPIES} staging buffers of {bytes} bytes, row {stride}, at {:p}",
             extent.width,
-            extent.height
+            extent.height,
+            upload.staging[0].ptr,
         );
         upload.slot.set_smoothing(spec.smoothing);
         if spec.smoothing == 0 {
@@ -409,6 +526,9 @@ impl Nv12Upload {
                 s.cmd,
                 &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
+            if let Some(t) = &mut self.timer {
+                t.begin(dev, s.cmd, i);
+            }
             for image in planes.images {
                 // After the presenter's last read and any earlier copy into this set, which a
                 // replaced picture can leave in flight.
@@ -450,6 +570,9 @@ impl Nv12Upload {
                     (vk::PipelineStageFlags2::FRAGMENT_SHADER, vk::AccessFlags2::SHADER_READ),
                 );
             }
+            if let Some(t) = &self.timer {
+                t.end(dev, s.cmd, i);
+            }
             dev.device.end_command_buffer(s.cmd)?;
             let cmds = [s.cmd];
             dev.vkd.queue_lock.yield_to_present();
@@ -476,6 +599,7 @@ impl Nv12Upload {
             decoded_ns: u64::try_from(punktfunk_core::client::now_realtime_ns()).unwrap_or(0),
             turn: None,
             hud: Some(self.hud.clone()),
+            e2e: Some(self.e2e.clone()),
             hold: Box::new(planes),
         });
         Ok(true)
@@ -493,8 +617,14 @@ impl Nv12Upload {
                     .context("staging copy")?;
                 self.dev.device.reset_fences(&[s.fence])?;
             }
+            self.copy_gpu_us = self.timer.as_ref().and_then(|t| t.read(&self.dev, i));
         }
         Ok(())
+    }
+
+    /// The GPU time of the last staging copy that has finished, where the GPU can time it.
+    pub fn copy_gpu_us(&self) -> Option<u32> {
+        self.copy_gpu_us
     }
 
     /// A plane set nothing else holds, or a new one while there are fewer than [`PLANE_SETS`].
@@ -544,6 +674,9 @@ impl Drop for Nv12Upload {
         }
         // SAFETY: the device is idle and every handle below is this upload's.
         unsafe {
+            if let Some(t) = &self.timer {
+                t.destroy(&self.dev);
+            }
             for s in self.staging.drain(..) {
                 self.dev.device.destroy_fence(s.fence, None);
                 self.dev.device.destroy_buffer(s.buffer, None);
@@ -647,5 +780,67 @@ mod tests {
         q.set_smoothing(3);
         q.push(None, 1);
         assert_eq!(q.take(t0), Some(1));
+    }
+
+    #[test]
+    fn a_standing_backlog_is_skipped() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        q.push(Some(t0), 0);
+        let mut shown = Vec::new();
+        for i in 1..=u64::from(STANDING_TAKES) + 2 {
+            q.push(Some(ms(t0, i * 16)), i);
+            shown.extend(q.take(ms(t0, i * 16 + 1)));
+        }
+        let skip = STANDING_TAKES as usize - 1;
+        assert_eq!(shown[skip - 1], skip as u64 - 1);
+        assert_eq!(shown[skip], skip as u64 + 1, "one picture skipped");
+        assert_eq!(q.items.len(), 0, "nothing stands behind the take after it");
+        assert_eq!((q.drops.replaced, q.window.caught_up), (1, 1));
+    }
+
+    #[test]
+    fn a_backlog_that_drains_is_not_skipped() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        for i in 0..200_u64 {
+            match i % 10 {
+                // One picture arrives late with the next; the host later skips one, which drains it.
+                2 | 6 => {}
+                3 => {
+                    q.push(Some(ms(t0, (i - 1) * 16)), i - 1);
+                    q.push(Some(ms(t0, i * 16)), i);
+                }
+                _ => q.push(Some(ms(t0, i * 16)), i),
+            }
+            q.take(ms(t0, i * 16 + 1));
+        }
+        assert_eq!(q.drops, Drops::default());
+        assert_eq!(q.window.caught_up, 0);
+    }
+
+    /// The window says whether a due time held anything, how late the takes ran and what
+    /// stood behind each: the figures that tell a binding budget from a plain queue.
+    #[test]
+    fn the_window_counts_holds_lateness_and_what_waits() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        q.push(Some(ms(t0, 40)), 1);
+        assert_eq!(q.take(ms(t0, 16)), None, "not due: held");
+        q.push(Some(ms(t0, 45)), 2);
+        assert_eq!(q.take(ms(t0, 50)), Some(1), "10 ms late, one behind it");
+        q.push(None, 3);
+        assert_eq!(q.take(ms(t0, 66)), Some(2));
+        assert_eq!(q.take(ms(t0, 83)), Some(3));
+        let w = &q.window;
+        assert_eq!((w.taken, w.held, w.undue, w.early), (3, 1, 1, 0));
+        assert_eq!((w.late_n, w.late_max_us), (2, 21_000));
+        assert_eq!(w.left, [1, 2, 0]);
+        assert!(q.window.close(ms(t0, 0)).is_none(), "the first close arms the window");
+        assert!(q.window.close(ms(t0, 10_000)).is_some());
+        assert_eq!(q.window.taken, 0, "the next window starts empty");
     }
 }

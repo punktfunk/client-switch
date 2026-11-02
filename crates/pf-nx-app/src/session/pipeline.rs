@@ -14,7 +14,7 @@ use crate::core::media::{AudioSink, VideoSink};
 use crate::platform::{AudioOut, StreamSpec, VideoDecoders};
 use crate::services::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
 use crate::session::audio::AudioStage;
-use crate::session::audio_out::AudioOutSink;
+use crate::session::audio_out::{AudioOutSink, SyncCells};
 use crate::session::connect::ConnectParams;
 use crate::session::pump::{spawn_audio_feed, video_pump};
 use crate::session::stage::{SinkConfig, VideoStage};
@@ -54,7 +54,8 @@ impl MediaPipeline {
             .audio
             .open(client.audio_channels, crate::session::audio::SAMPLE_RATE)
             .context("open the audio port")?;
-        let audio_sink: Arc<dyn AudioSink> = Arc::new(AudioOutSink::start(port, client.audio_channels)?);
+        let audio_sink: Arc<dyn AudioSink> =
+            Arc::new(AudioOutSink::start(port, client.audio_channels, SyncCells::of(client))?);
         let stage = AudioStage::new(audio_sink, client.audio_channels, client.audio_layout)?;
         let video_thread = spawn_video_thread(client, sink, first, opener, stop, stats, params.present_priority)?;
         let audio_thread = match spawn_audio_feed(client.clone(), stage, stop.clone()) {
@@ -143,6 +144,7 @@ fn spec_of(client: &NativeClient, smoothing: usize) -> StreamSpec {
         shard_payload: client.shard_payload as usize,
         smoothing,
         hud: client.hud_shared(),
+        video_e2e: crate::platform::VideoE2e::new(client.video_e2e_shared(), client.clock_offset_shared()),
     }
 }
 

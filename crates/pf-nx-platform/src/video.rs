@@ -4,7 +4,10 @@
 //!
 //! `feed` decodes on the session's video thread: send the access unit, then receive every
 //! picture straight into the presenter's next staging buffer, which `commit` copies into a
-//! plane set and publishes (D7). On the framebuffer display the pictures land in scratch planes
+//! plane set and publishes (D7). On the console the picture goes through libavutil's own frame
+//! and the shim copies it; with [`NxVideo::straight`] the VIC writes into that staging buffer
+//! itself where it can map it (WP5). The `nvdec[10s]` line names which route ran. On the
+//! framebuffer display the pictures land in scratch planes
 //! and are dropped, so the emulator still runs the hwaccel. A decoder error fails this feed,
 //! which has the session ask for a keyframe, and the next feed starts from a flushed decoder.
 
@@ -32,15 +35,30 @@ const DECODER: &str = "libavcodec (software)";
 pub struct NxVideo {
     /// The presenter's device and slot; `None` on the framebuffer display.
     gpu: Option<(Arc<GpuDevice>, Arc<VideoSlot>)>,
+    /// The VIC writes into the staging buffer itself. Off by default: on the console it neither
+    /// lowered the transfer plus copy nor the end-to-end time (WP5, 2026-11-01).
+    straight: bool,
 }
 
 impl NxVideo {
     pub fn gpu(dev: Arc<GpuDevice>, slot: Arc<VideoSlot>) -> Self {
-        Self { gpu: Some((dev, slot)) }
+        Self {
+            gpu: Some((dev, slot)),
+            straight: false,
+        }
     }
 
     pub fn cpu() -> Self {
-        Self { gpu: None }
+        Self {
+            gpu: None,
+            straight: false,
+        }
+    }
+
+    /// Has the VIC write straight into the staging buffer where it can.
+    pub fn straight(mut self, on: bool) -> Self {
+        self.straight = on;
+        self
     }
 }
 
@@ -61,12 +79,21 @@ impl VideoDecoders for NxVideo {
             spec.bit_depth,
             if spec.chroma444 { " 4:4:4" } else { "" }
         );
-        let decoder = av::Decoder::open(codec, spec.width, spec.height)?;
+        let decoder = av::Decoder::open(codec, spec.width, spec.height, self.straight)?;
         let out = match &self.gpu {
             Some((dev, slot)) => Out::Gpu(Nv12Upload::new(dev.clone(), slot.clone(), spec)?),
             None => Out::scratch(spec),
         };
-        tracing::info!("{DECODER}: {codec:?} {}x{}", spec.width, spec.height);
+        tracing::info!(
+            "{DECODER}: {codec:?} {}x{}, {}",
+            spec.width,
+            spec.height,
+            if self.straight {
+                "straight VIC route asked for"
+            } else {
+                "VIC then copy"
+            }
+        );
         let started = Instant::now();
         Ok(Box::new(NxSink {
             lane: Mutex::new(Lane {
@@ -117,6 +144,14 @@ impl Out {
                 uv,
                 uv_stride: *stride,
             }),
+        }
+    }
+
+    /// The GPU time of the last staging copy into a plane set, where the GPU can time it.
+    fn copy_gpu_us(&self) -> Option<u32> {
+        match self {
+            Self::Gpu(upload) => upload.copy_gpu_us(),
+            Self::Scratch { .. } => None,
         }
     }
 
@@ -180,9 +215,12 @@ impl Lane {
             .receive_into(planes.y, planes.y_stride, planes.uv, planes.uv_stride)?;
         let Some(meta) = got else { return Ok(false) };
         let due = self.due_of(meta.pts);
+        self.timing.note_due(due);
         let started = Instant::now();
         let shown = self.out.commit(meta, due)?;
-        self.timing.note(&self.decoder.stats(), wait, started.elapsed(), shown);
+        let upload = started.elapsed();
+        self.timing
+            .note(&self.decoder.stats(), wait, upload, self.out.copy_gpu_us(), shown);
         Ok(true)
     }
 
@@ -199,7 +237,9 @@ impl Lane {
 }
 
 /// Where the lane's time went over one [`TIMING_WINDOW`]: the wait for a free staging buffer,
-/// the decoder's own time, the VIC transfer into the staging planes, and the upload's submit.
+/// the decoder's own time, the transfer to NV12, the shim's copy out of libavutil's frame (none
+/// when the transfer wrote the staging planes itself), the upload's submit, and the staging
+/// copy's time on the GPU.
 struct Timing {
     since: Instant,
     pictures: u32,
@@ -208,10 +248,23 @@ struct Timing {
     decode_max_us: u32,
     transfer_us: u64,
     transfer_max_us: u32,
+    copy_us: u64,
+    copy_max_us: u32,
     wait: Duration,
     wait_max: Duration,
     upload: Duration,
+    gpu_copy_us: u64,
+    gpu_copies: u32,
     in_flight_max: u32,
+    /// How the last picture reached the staging planes; `None` before the first.
+    route: Option<av::Route>,
+    /// Pictures whose host PTS found no due time: they are shown at once, whatever the budget.
+    undue: u32,
+    /// The due time less the moment the picture came out of the decoder, µs, over the pictures
+    /// that had one. Negative is already late.
+    slack_us: i64,
+    slack_min_us: i64,
+    slack_max_us: i64,
 }
 
 impl Timing {
@@ -224,14 +277,74 @@ impl Timing {
             decode_max_us: 0,
             transfer_us: 0,
             transfer_max_us: 0,
+            copy_us: 0,
+            copy_max_us: 0,
             wait: Duration::ZERO,
             wait_max: Duration::ZERO,
             upload: Duration::ZERO,
+            gpu_copy_us: 0,
+            gpu_copies: 0,
             in_flight_max: 0,
+            route: None,
+            undue: 0,
+            slack_us: 0,
+            slack_min_us: i64::MAX,
+            slack_max_us: i64::MIN,
         }
     }
 
-    fn note(&mut self, s: &av::Stats, wait: Duration, upload: Duration, shown: bool) {
+    /// Whether the picture out now kept its due time, and how far ahead of it.
+    fn note_due(&mut self, due: Option<Instant>) {
+        let Some(due) = due else {
+            self.undue += 1;
+            return;
+        };
+        let now = Instant::now();
+        let us = |d: Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
+        let slack = if due >= now { us(due - now) } else { -us(now - due) };
+        self.slack_us += slack;
+        self.slack_min_us = self.slack_min_us.min(slack);
+        self.slack_max_us = self.slack_max_us.max(slack);
+    }
+
+    /// `"due slack mean … min … max … ms, N without a due"` over this window's pictures.
+    fn due_summary(&self) -> String {
+        let timed = i64::from(self.pictures.saturating_sub(self.undue));
+        let ms = |us: i64| us as f64 / 1000.0;
+        if timed == 0 {
+            return format!("no due times, {} without", self.undue);
+        }
+        format!(
+            "due slack mean {:.1}ms min {:.1}ms max {:.1}ms, {} without a due",
+            ms(self.slack_us / timed),
+            ms(self.slack_min_us),
+            ms(self.slack_max_us),
+            self.undue
+        )
+    }
+
+    fn note(&mut self, s: &av::Stats, wait: Duration, upload: Duration, gpu_copy_us: Option<u32>, shown: bool) {
+        // The first route, and any change, at once: a change mid-stream is the straight route
+        // falling back.
+        if self.route != Some(s.route) {
+            tracing::info!(
+                "nvdec: pictures reach the staging planes by {}{}{}",
+                s.route.name(),
+                self.route.map_or_else(String::new, |r| format!(" (was {})", r.name())),
+                if s.direct_err == 0 {
+                    String::new()
+                } else {
+                    format!("; the straight route failed with {}", s.direct_err)
+                }
+            );
+        }
+        self.route = Some(s.route);
+        self.copy_us += u64::from(s.last_copy_us);
+        self.copy_max_us = self.copy_max_us.max(s.last_copy_us);
+        if let Some(us) = gpu_copy_us {
+            self.gpu_copy_us += u64::from(us);
+            self.gpu_copies += 1;
+        }
         self.pictures += 1;
         self.dropped += u32::from(!shown);
         self.decode_us += u64::from(s.last_decode_us);
@@ -248,8 +361,12 @@ impl Timing {
         let n = u64::from(self.pictures);
         let ms = |us: u64| us as f64 / 1000.0;
         let per = |d: Duration| d.as_secs_f64() * 1000.0 / n as f64;
+        let gpu_copy = self
+            .gpu_copy_us
+            .checked_div(u64::from(self.gpu_copies))
+            .map_or_else(|| "-".to_string(), |us| format!("{:.2}", us as f64 / 1000.0));
         tracing::info!(
-            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms; transfer mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; in flight max {}",
+            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms; transfer mean {:.1}ms max {:.1}ms; copy mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; gpu copy mean {gpu_copy}ms; in flight max {}; route {}; {}",
             TIMING_WINDOW.as_secs(),
             self.pictures,
             self.dropped,
@@ -260,10 +377,16 @@ impl Timing {
             ms(u64::from(self.decode_max_us)),
             ms(self.transfer_us / n),
             ms(u64::from(self.transfer_max_us)),
+            ms(self.copy_us / n),
+            ms(u64::from(self.copy_max_us)),
             per(self.upload),
             self.in_flight_max,
+            self.route.map_or("-", av::Route::name),
+            self.due_summary(),
         );
+        let route = self.route;
         *self = Self::new();
+        self.route = route;
     }
 }
 

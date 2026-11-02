@@ -51,4 +51,8 @@ impl AudioPort for Port {
         }
         self.out.push(&self.pcm)
     }
+
+    fn queued_frames(&self) -> usize {
+        self.out.queued_frames()
+    }
 }

@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use crate::core::VERSION;
 
 pub use crate::core::model::{
-    seed_new_host_profiles, upsert_known_host, CodecPref, ExitAction, GamepadType, Persisted,
+    follow_moved_host, seed_new_host_profiles, upsert_known_host, CodecPref, ExitAction, GamepadType, Persisted,
 };
 pub use crate::core::settings::NxSettings;
 pub use crate::services::paths::app_dir;

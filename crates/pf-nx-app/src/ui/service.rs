@@ -161,13 +161,13 @@ impl Service {
 
     /// The background's answers, on the service cadence: adverts, sweeps, games, art, pairing.
     fn service(&mut self) {
-        if let Some(discovery) = &mut self.discovery {
-            for host in discovery.poll() {
-                self.rows_dirty = true;
-                self.discovered
-                    .retain(|d| !(d.addr == host.addr && d.port == host.port));
-                self.discovered.push(host);
-            }
+        let arrived = self.discovery.as_mut().map(Discovery::poll).unwrap_or_default();
+        for host in arrived {
+            self.rows_dirty = true;
+            self.discovered
+                .retain(|d| !(d.addr == host.addr && d.port == host.port));
+            self.follow_moved_host(&host);
+            self.discovered.push(host);
         }
         self.drain_sweep();
         self.drain_games();
@@ -772,6 +772,42 @@ impl Service {
                 .with(|s| crate::services::art::reconcile_host_caches(&s.known_hosts));
         } else {
             tracing::warn!("console: edit for an unknown host ({key}) — ignoring");
+        }
+    }
+
+    /// Moves a saved host to the address its advert now comes from, by its pinned fingerprint.
+    fn follow_moved_host(&mut self, advert: &DiscoveredHost) {
+        let discovered = &self.discovered;
+        let advertised = |addr: &str, port: u16| discovered.iter().any(|d| (d.addr.as_str(), d.port) == (addr, port));
+        let moved = self.store.edit(|state| {
+            let moved = store::follow_moved_host(
+                &mut state.known_hosts,
+                &advert.fp_hex,
+                &advert.addr,
+                advert.port,
+                advertised,
+            );
+            // A selection on the old address names a record that is no longer there.
+            if moved
+                && state
+                    .selected_host
+                    .as_ref()
+                    .is_some_and(|(h, p)| !state.known_hosts.iter().any(|k| k.addr == *h && k.port == *p))
+            {
+                state.selected_host = None;
+            }
+            moved
+        });
+        if moved {
+            tracing::info!(
+                "console: {} now answers at {}:{}",
+                advert.name,
+                advert.addr,
+                advert.port
+            );
+            self.last_sweep = None;
+            self.store
+                .with(|s| crate::services::art::reconcile_host_caches(&s.known_hosts));
         }
     }
 

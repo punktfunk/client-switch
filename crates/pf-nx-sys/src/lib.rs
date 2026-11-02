@@ -29,6 +29,7 @@ pub mod random;
 pub mod rt;
 pub mod setsys;
 pub mod socket;
+pub mod swkbd;
 pub mod thread;
 pub mod vi;
 

@@ -9,6 +9,7 @@ pub mod fake;
 
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -122,6 +123,9 @@ pub struct FrameReport {
     pub replaced: u32,
     /// Decoded pictures dropped unseen since the last frame, pushed out of a full smoothing queue.
     pub overflow: u32,
+    /// How long an earlier frame's composition ran on the GPU (the one whose slot this frame
+    /// reused), where the GPU can time it.
+    pub gpu_us: Option<u32>,
 }
 
 /// A read-back frame.
@@ -159,6 +163,42 @@ pub struct StreamSpec {
     pub smoothing: usize,
     /// The session's overlay figures: lanes note decode, the presenter notes display.
     pub hud: Arc<punktfunk_core::hud::Stats>,
+    /// Where the presenter leaves each picture's capture-to-glass time for the audio's A/V
+    /// sync measure.
+    pub video_e2e: VideoE2e,
+}
+
+/// The video's capture-to-glass time in core's cells: the presenter writes it, the audio route
+/// compares its own against it. `0` until a picture reaches the glass.
+#[derive(Clone, Debug, Default)]
+pub struct VideoE2e {
+    e2e_ns: Arc<AtomicU64>,
+    /// Host clock minus this one, kept current by core.
+    clock_offset_ns: Arc<AtomicI64>,
+}
+
+/// A capture-to-glass time past this is a clock step, not a picture.
+const E2E_SANE_NS: u64 = 10_000_000_000;
+
+impl VideoE2e {
+    pub fn new(e2e_ns: Arc<AtomicU64>, clock_offset_ns: Arc<AtomicI64>) -> Self {
+        Self {
+            e2e_ns,
+            clock_offset_ns,
+        }
+    }
+
+    /// A picture captured at host time `pts_ns` reached the glass at `displayed_ns`, this
+    /// clock's realtime.
+    pub fn note(&self, pts_ns: u64, displayed_ns: u64) {
+        let offset = self.clock_offset_ns.load(Ordering::Relaxed);
+        let e2e = i128::from(displayed_ns) + i128::from(offset) - i128::from(pts_ns);
+        if let Ok(ns) = u64::try_from(e2e) {
+            if ns > 0 && ns < E2E_SANE_NS {
+                self.e2e_ns.store(ns, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// The console's audio output. Opening a port is cheap; a session holds one.
@@ -173,6 +213,11 @@ pub trait AudioPort: Send {
 
     /// Plays exactly one grain, blocking until the device takes it.
     fn write(&mut self, pcm: &[f32]) -> Result<()>;
+
+    /// Frames handed to the device and not yet played, which the next grain queues behind.
+    fn queued_frames(&self) -> usize {
+        0
+    }
 }
 
 /// One pad's state at one instant, already in punktfunk's wire vocabulary.
@@ -277,4 +322,37 @@ pub trait Lifecycle {
     fn hide_splash(&self);
     fn poll_events(&mut self, out: &mut Vec<SystemEvent>);
     fn exit(&self) -> !;
+
+    /// The clocks the system runs the title at now, for the logs. `None` where they cannot be
+    /// read: a dev box, or a console before firmware 8.0.0.
+    fn clocks(&self) -> Option<Clocks> {
+        None
+    }
+
+    /// Shows the system's keyboard over the title and blocks until the player closes it: the
+    /// text they confirmed, or `None` when they cancelled or there is no such keyboard.
+    fn keyboard(&mut self) -> Option<String> {
+        None
+    }
+}
+
+/// The CPU, GPU and memory clocks, in Hz.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Clocks {
+    pub cpu_hz: u32,
+    pub gpu_hz: u32,
+    pub emc_hz: u32,
+}
+
+impl std::fmt::Display for Clocks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mhz = |hz: u32| f64::from(hz) / 1e6;
+        write!(
+            f,
+            "gpu {:.1} cpu {:.1} emc {:.1} MHz",
+            mhz(self.gpu_hz),
+            mhz(self.cpu_hz),
+            mhz(self.emc_hz)
+        )
+    }
 }

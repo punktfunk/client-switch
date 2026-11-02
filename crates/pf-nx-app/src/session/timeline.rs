@@ -3,14 +3,14 @@
 use pf_client_core::trust::PresentPriority;
 
 /// Correct clock offset and drift without replacing source cadence with arrival cadence.
-/// Smoothness reserves the selected number of stream periods on TOP of core's adaptive
-/// cushion; the default keeps the adaptive cushion alone. Neither mode delays compressed
-/// input in a Rust queue.
+/// Smoothness counts core's adaptive cushion as its first frame and reserves each further one
+/// as a whole stream period on top. Neither mode delays compressed input in a Rust queue.
 pub struct Pacing {
     clock: punktfunk_core::phase::CadenceClock,
     /// Source period, and the ceiling core clamps its own adaptive cushion to.
     source_interval_ns: i64,
-    /// Extra lead Smoothness adds over the adaptive cushion; `0` under the latency intent.
+    /// Extra lead Smoothness adds over the adaptive cushion; `0` under the latency intent and
+    /// for a one-frame budget.
     smooth_cushion_ns: i64,
     /// Stamps never go backwards, across recovery too.
     last_base_ns: u64,
@@ -32,13 +32,15 @@ pub struct Pacing {
 impl Pacing {
     /// Use source period, not panel period. Priority includes Automatic from settings.
     ///
-    /// ⚠ This client reads frame count as EXTRA (core clamps adaptive to 1 period, making
-    /// one-frame budget unreachable); the honest fix needs additive semantics in core.
+    /// Core clamps its adaptive cushion to one period, so that cushion is the budget's first
+    /// frame. Reading the count as extra periods on top held every picture a whole refresh past
+    /// what the jitter asked for: handheld at one frame the display stage ran 21-30 ms against
+    /// 13 ms under the latency intent (log of 2026-11-02).
     pub fn new(source_interval_ns: u64, priority: PresentPriority) -> Self {
         let interval = i64::try_from(source_interval_ns).unwrap_or(i64::MAX).max(1);
         // `fifo_capacity` is core's own reading of the enum: 0 means the latency intent, and
         // `PresentPriority::resolve` has already clamped the buffer to 1–3.
-        let frames = priority.fifo_capacity();
+        let frames = priority.fifo_capacity().saturating_sub(1);
         let smooth_cushion_ns = interval.saturating_mul(i64::from(frames));
         Self {
             // Default tuning assumes about half a refresh of latch slack; the first pacing record

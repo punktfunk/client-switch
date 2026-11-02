@@ -1,4 +1,4 @@
-//! On the console target: builds `csrc/pf_av.c` and links libnx, newlib, the pinned libavcodec and
+//! On the console target: builds `csrc/pf_swkbd.c`, and `csrc/pf_av.c` with `av`, and links libnx, newlib, the pinned libavcodec and
 //! NVK. On Linux with `av`: the same shim against the system's libavcodec, which decodes in
 //! software for the dev box. Elsewhere: nothing. `cfg(pf_av)` says the shim is linked.
 
@@ -24,9 +24,10 @@ fn main() {
     let nvk_on = env::var_os("CARGO_FEATURE_NVK").is_some();
 
     if av {
-        build_shim(&dkp, &portlibs);
+        build_shim(&dkp, &portlibs, "pf_av");
         println!("cargo:rustc-cfg=pf_av");
     }
+    build_shim(&dkp, &portlibs, "pf_swkbd");
 
     let nvk = PathBuf::from(env::var_os("PF_NX_NVK_LIB").unwrap_or_else(|| "/opt/pf-nx/nvk/lib".into()));
     if nvk_on && !nvk.join("libvulkan_bh.a").is_file() {
@@ -70,9 +71,11 @@ fn main() {
     }
 }
 
-/// devkitA64's GCC with libnx's flags, unless the toolchain's cc variables name a compiler.
-fn build_shim(dkp: &Path, portlibs: &Path) {
-    println!("cargo:rerun-if-changed=csrc/pf_av.c");
+/// `csrc/{name}.c` with devkitA64's GCC and libnx's flags, unless the toolchain's cc variables
+/// name a compiler.
+fn build_shim(dkp: &Path, portlibs: &Path, name: &str) {
+    let file = format!("csrc/{name}.c");
+    println!("cargo:rerun-if-changed={file}");
     let target = env::var("TARGET").unwrap_or_default().replace('-', "_");
     let mut build = cc::Build::new();
     if env::var_os(format!("CC_{target}")).is_none() && env::var_os("TARGET_CC").is_none() {
@@ -85,12 +88,12 @@ fn build_shim(dkp: &Path, portlibs: &Path) {
         }
     }
     build
-        .file("csrc/pf_av.c")
+        .file(&file)
         .include(portlibs.join("include"))
         .include(dkp.join("libnx/include"))
         .define("__SWITCH__", None)
         .warnings(true)
-        .compile("pf_av");
+        .compile(name);
 }
 
 /// The shim against the system's libavcodec (`libavcodec-dev` on Debian and Ubuntu).

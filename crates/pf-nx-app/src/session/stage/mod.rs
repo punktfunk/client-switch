@@ -872,7 +872,22 @@ mod tests {
         };
         let (bare, paced) = (cushion(bare), cushion(paced));
         assert!(paced > bare, "the clocked stage reserved the budget: {paced} vs {bare}");
-        assert!(paced - bare >= 2 * 16_666_666, "two stream periods of extra lead");
+        assert!(
+            paced - bare >= 16_666_666,
+            "the second frame is a stream period of extra lead"
+        );
+    }
+
+    /// A one-frame budget is the adaptive cushion alone: no whole period on top of it.
+    #[test]
+    fn a_one_frame_budget_adds_no_period() {
+        let cushion = |budget| {
+            let mut h = harness_with(FakeSink::default(), budget);
+            h.stage.submit(&frame(1, None, true, false));
+            h.stage.pacing_health().cushion_ns
+        };
+        let latency = cushion(PresentPriority::Latency);
+        assert_eq!(cushion(PresentPriority::Smooth { buffer: 1 }), latency);
     }
 
     /// An intra-only sink never holds for a re-anchor: the frame after a loss decodes alone.

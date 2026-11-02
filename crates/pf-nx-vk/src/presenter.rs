@@ -19,6 +19,7 @@ use crate::device::{GpuDevice, Target};
 use crate::output::Output;
 use crate::picture::{Picture, Planes, VideoSlot};
 use crate::pipelines::Pipelines;
+use crate::timer::GpuTimer;
 use crate::ui::{UiLayer, FRAMES};
 
 /// Tonemap source peak for a PQ stream on this SDR output, in 203-nit units (~1000 nits).
@@ -68,6 +69,8 @@ pub struct Presenter {
     want: vk::Extent2D,
     /// The swapchain no longer matches the window: rebuild before the next acquire.
     stale: bool,
+    /// Each frame's command buffer on the GPU; `None` where the queue has no timestamps.
+    timer: Option<GpuTimer>,
 }
 
 // SAFETY: the read-back pointer maps memory this struct owns; the presenter lives on the main
@@ -143,6 +146,10 @@ impl Presenter {
         }
         let readback_sets = alloc_sets(&dev, desc_pool, &pipes)?;
         let ui = UiLayer::new(&dev, output.extent)?;
+        let timer = GpuTimer::new(&dev, FRAMES);
+        if timer.is_none() {
+            tracing::info!("presenter: the queue has no timestamps, so no GPU time per frame");
+        }
         // The presenter runs on the main thread, decode on the pump: take present turns so a
         // picture handed over is presented ahead of the next decode on the shared queue.
         dev.vkd.queue_lock.take_turns();
@@ -166,6 +173,7 @@ impl Presenter {
             readback_sets,
             want,
             stale: false,
+            timer,
         })
     }
 
@@ -456,6 +464,7 @@ impl Display for Presenter {
         unsafe { self.dev.device.wait_for_fences(&[fence], true, u64::MAX) }
             .map_err(|e| anyhow!("wait_for_fences: {e}"))?;
         self.frames[f].in_use = None;
+        let gpu_us = self.timer.as_ref().and_then(|t| t.read(&self.dev, f));
         if self.stale {
             self.rebuild()?;
         }
@@ -464,7 +473,10 @@ impl Display for Presenter {
         // The acquire blocks until the panel frees an image, just after a vblank: the picture is
         // taken after it, so one that lands during the wait still makes this frame.
         let index = self.acquire(ready)?;
-        let mut report = FrameReport::default();
+        let mut report = FrameReport {
+            gpu_us,
+            ..FrameReport::default()
+        };
         if self.stream.is_some() {
             // What is presented now latches at the next vblank, a refresh from here.
             let latch = Instant::now() + Duration::from_nanos(self.refresh().period_ns());
@@ -493,8 +505,14 @@ impl Display for Presenter {
                 cmd,
                 &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
+            if let Some(t) = &mut self.timer {
+                t.begin(&self.dev, cmd, f);
+            }
             self.ui.finish(&self.dev, cmd, f);
             self.compose(cmd, self.pipes.pass_out, self.framebuffers[index as usize], sets);
+            if let Some(t) = &self.timer {
+                t.end(&self.dev, cmd, f);
+            }
             self.dev.device.end_command_buffer(cmd)?;
         }
         let presents = self.output.presents();
@@ -622,11 +640,15 @@ impl Display for Presenter {
     }
 }
 
-/// The overlay's display stage: decoded → handed to scan-out, on the session's HUD.
+/// The overlay's display stage: decoded → handed to scan-out, on the session's HUD, and the
+/// capture-to-glass time the audio's A/V sync compares against.
 fn note_displayed(picture: &Picture) {
+    let now = u64::try_from(punktfunk_core::client::now_realtime_ns()).unwrap_or(0);
     if let Some(hud) = &picture.hud {
-        let now = u64::try_from(punktfunk_core::client::now_realtime_ns()).unwrap_or(0);
         hud.note_displayed(picture.pts_ns, picture.decoded_ns, now, now);
+    }
+    if let Some(e2e) = &picture.e2e {
+        e2e.note(picture.pts_ns, now);
     }
 }
 
@@ -644,6 +666,9 @@ impl Drop for Presenter {
                 destroy_readback(dev, &rb);
             }
             self.ui.destroy(dev);
+            if let Some(t) = &self.timer {
+                t.destroy(dev);
+            }
             for fr in self.frames.drain(..) {
                 dev.device.destroy_fence(fr.fence, None);
                 dev.device.destroy_semaphore(fr.ready, None);

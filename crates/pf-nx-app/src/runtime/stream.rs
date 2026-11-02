@@ -391,7 +391,8 @@ fn stream(
             ring.set_facts(&facts);
         }
         ring.tick();
-        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client(), &mut pad_type) {
+        let mut keyboard = false;
+        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client(), &mut pad_type, &mut keyboard) {
             break n;
         }
         for cmd in ring.take_cmds() {
@@ -410,6 +411,10 @@ fn stream(
                 .to
                 .send(if open { ToInput::DialOpened } else { ToInput::DialClosed });
         }
+        // The dial closed itself before asking: its own close went out just above.
+        if keyboard {
+            type_text(app, connected.client(), &input);
+        }
         if connected.is_session_ended() {
             tracing::info!("session ended: {:?}", connected.end_reason());
             break if connected.end_reason() == PunktfunkEndReason::Lost {
@@ -420,7 +425,7 @@ fn stream(
         }
 
         if let Some(core) = hud.refresh(connected, decoder) {
-            tracing::info!("stats: {} | {core}", perf.take_window());
+            tracing::info!("stats: {} | {core}{}", perf.take_window(), app.clocks_suffix());
         }
         hud.local = vec![format!(
             "present: {} frames, {} missed{}",
@@ -516,6 +521,7 @@ fn take_ring_commands(
     hud: &mut StatsOverlay,
     client: &NativeClient,
     pad_type: &mut GamepadType,
+    keyboard: &mut bool,
 ) -> Option<Next> {
     while let Some(cmd) = ring.take_command() {
         match cmd {
@@ -528,10 +534,74 @@ fn take_ring_commands(
             RingCommand::CyclePadType => *pad_type = pad_type.next_on_dial(),
             // Touch is the screen's one model so far: nothing to step to.
             RingCommand::CycleTouchMode => {}
+            // Shown once the dial's close has gone out to the input thread.
+            RingCommand::Keyboard => *keyboard = true,
+            RingCommand::Shortcut(keys) => send_chord(client, &keys),
             other => tracing::info!("dial: {other:?} does nothing on this console"),
         }
     }
     None
+}
+
+/// A dial shortcut, typed on the host: every key down in order, then up in reverse, as the
+/// desktop client does. A name this build does not know fires nothing.
+fn send_chord(client: &NativeClient, keys: &[String]) {
+    use punktfunk_core::input::{key_vk, InputEvent, InputKind};
+    let Some(vks) = keys.iter().map(|k| key_vk(k)).collect::<Option<Vec<u8>>>() else {
+        tracing::info!("dial: shortcut {keys:?} names a key this build does not know");
+        return;
+    };
+    let key = |kind, vk: u8| InputEvent {
+        kind,
+        _pad: [0; 3],
+        code: u32::from(vk),
+        x: 0,
+        y: 0,
+        flags: 0,
+    };
+    for &vk in &vks {
+        let _ = client.send_input(&key(InputKind::KeyDown, vk));
+    }
+    for &vk in vks.iter().rev() {
+        let _ = client.send_input(&key(InputKind::KeyUp, vk));
+    }
+    tracing::info!("dial: shortcut {} sent", keys.join("+"));
+}
+
+/// The dial's Keyboard: the system keyboard over the stream, then its text typed on the host as
+/// committed characters. The main thread waits on the keyboard, so no frame is presented
+/// meanwhile; the stream and the audio go on.
+fn type_text(app: &mut App, client: &NativeClient, input: &InputThread) {
+    use punktfunk_core::input::{InputEvent, InputKind};
+    use punktfunk_core::quic::{GRANT_KEYBOARD, HOST_CAP_TEXT_INPUT};
+    if client.host_caps() & HOST_CAP_TEXT_INPUT == 0 {
+        tracing::info!("keyboard: this host cannot type text");
+        return;
+    }
+    if client.access_grants() & GRANT_KEYBOARD == 0 {
+        tracing::info!("keyboard: this host does not grant the keyboard");
+        return;
+    }
+    // The pads stay off the wire while the keyboard has them, as under the dial.
+    let _ = input.to.send(ToInput::DialOpened);
+    let text = app.lifecycle.keyboard();
+    let _ = input.to.send(ToInput::DialClosed);
+    // What the pads did meanwhile was typing, not the dial's.
+    while input.from.try_recv().is_ok() {}
+    let Some(text) = text.filter(|t| !t.is_empty()) else {
+        return;
+    };
+    for c in text.chars() {
+        let _ = client.send_input(&InputEvent {
+            kind: InputKind::TextInput,
+            _pad: [0; 3],
+            code: u32::from(c),
+            x: 0,
+            y: 0,
+            flags: 0,
+        });
+    }
+    tracing::info!("keyboard: typed {} characters on the host", text.chars().count());
 }
 
 /// Copies the controller-mouse facts the dial shows from the session; whether they changed.
@@ -582,6 +652,8 @@ struct PerfWindow {
     replaced: u32,
     overflow: u32,
     decode_to_present_us: Vec<u32>,
+    /// The composition's GPU time per frame, where the presenter can time it.
+    gpu_us: Vec<u32>,
 }
 
 impl StreamPerf {
@@ -604,6 +676,9 @@ impl StreamPerf {
             }
             w.decode_to_present_us.push(us);
         }
+        if let Some(us) = report.gpu_us {
+            w.gpu_us.push(us);
+        }
     }
 
     /// The presenter's figures since the last call, and a new window.
@@ -611,10 +686,13 @@ impl StreamPerf {
         let mut w = std::mem::take(&mut self.window);
         let secs = w.since.map_or(0.0, |t| t.elapsed().as_secs_f64());
         w.decode_to_present_us.sort_unstable();
+        w.gpu_us.sort_unstable();
         let ms = |us: Option<&u32>| us.map_or("-".to_string(), |&us| format!("{:.1}", f64::from(us) / 1000.0));
+        let fine = |us: Option<&u32>| us.map_or("-".to_string(), |&us| format!("{:.2}", f64::from(us) / 1000.0));
         let d = &w.decode_to_present_us;
+        let g = &w.gpu_us;
         format!(
-            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, {} unseen ({} replaced, {} queue full), decode to present p50 {} p95 {} max {} ms",
+            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, {} unseen ({} replaced, {} queue full), decode to present p50 {} p95 {} max {} ms, compose on the gpu p50 {} p95 {} max {} ms",
             w.frames,
             w.missed,
             w.pictures,
@@ -624,6 +702,9 @@ impl StreamPerf {
             ms(d.get(d.len() / 2)),
             ms(d.get(d.len() * 95 / 100)),
             ms(d.last()),
+            fine(g.get(g.len() / 2)),
+            fine(g.get(g.len() * 95 / 100)),
+            fine(g.last()),
         )
     }
 
