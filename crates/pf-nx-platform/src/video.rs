@@ -215,6 +215,7 @@ impl Lane {
             .receive_into(planes.y, planes.y_stride, planes.uv, planes.uv_stride)?;
         let Some(meta) = got else { return Ok(false) };
         let due = self.due_of(meta.pts);
+        self.timing.note_due(due);
         let started = Instant::now();
         let shown = self.out.commit(meta, due)?;
         let upload = started.elapsed();
@@ -257,6 +258,13 @@ struct Timing {
     in_flight_max: u32,
     /// How the last picture reached the staging planes; `None` before the first.
     route: Option<av::Route>,
+    /// Pictures whose host PTS found no due time: they are shown at once, whatever the budget.
+    undue: u32,
+    /// The due time less the moment the picture came out of the decoder, µs, over the pictures
+    /// that had one. Negative is already late.
+    slack_us: i64,
+    slack_min_us: i64,
+    slack_max_us: i64,
 }
 
 impl Timing {
@@ -278,7 +286,41 @@ impl Timing {
             gpu_copies: 0,
             in_flight_max: 0,
             route: None,
+            undue: 0,
+            slack_us: 0,
+            slack_min_us: i64::MAX,
+            slack_max_us: i64::MIN,
         }
+    }
+
+    /// Whether the picture out now kept its due time, and how far ahead of it.
+    fn note_due(&mut self, due: Option<Instant>) {
+        let Some(due) = due else {
+            self.undue += 1;
+            return;
+        };
+        let now = Instant::now();
+        let us = |d: Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
+        let slack = if due >= now { us(due - now) } else { -us(now - due) };
+        self.slack_us += slack;
+        self.slack_min_us = self.slack_min_us.min(slack);
+        self.slack_max_us = self.slack_max_us.max(slack);
+    }
+
+    /// `"due slack mean … min … max … ms, N without a due"` over this window's pictures.
+    fn due_summary(&self) -> String {
+        let timed = i64::from(self.pictures.saturating_sub(self.undue));
+        let ms = |us: i64| us as f64 / 1000.0;
+        if timed == 0 {
+            return format!("no due times, {} without", self.undue);
+        }
+        format!(
+            "due slack mean {:.1}ms min {:.1}ms max {:.1}ms, {} without a due",
+            ms(self.slack_us / timed),
+            ms(self.slack_min_us),
+            ms(self.slack_max_us),
+            self.undue
+        )
     }
 
     fn note(&mut self, s: &av::Stats, wait: Duration, upload: Duration, gpu_copy_us: Option<u32>, shown: bool) {
@@ -324,7 +366,7 @@ impl Timing {
             .checked_div(u64::from(self.gpu_copies))
             .map_or_else(|| "-".to_string(), |us| format!("{:.2}", us as f64 / 1000.0));
         tracing::info!(
-            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms; transfer mean {:.1}ms max {:.1}ms; copy mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; gpu copy mean {gpu_copy}ms; in flight max {}; route {}",
+            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms; transfer mean {:.1}ms max {:.1}ms; copy mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; gpu copy mean {gpu_copy}ms; in flight max {}; route {}; {}",
             TIMING_WINDOW.as_secs(),
             self.pictures,
             self.dropped,
@@ -340,6 +382,7 @@ impl Timing {
             per(self.upload),
             self.in_flight_max,
             self.route.map_or("-", av::Route::name),
+            self.due_summary(),
         );
         let route = self.route;
         *self = Self::new();

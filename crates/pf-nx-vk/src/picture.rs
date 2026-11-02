@@ -77,7 +77,14 @@ impl VideoSlot {
 
     /// The picture for the vblank at `latch`, if a new one is due by then.
     pub fn take(&self, latch: Instant) -> Option<Arc<Picture>> {
-        self.lock().take(latch)
+        let mut q = self.lock();
+        let picture = q.take(latch);
+        if q.smoothing > 0 {
+            if let Some(w) = q.window.close(latch) {
+                tracing::info!("{}", w.line());
+            }
+        }
+        picture
     }
 
     /// Drops the waiting pictures: the stream ended.
@@ -113,12 +120,86 @@ pub struct Drops {
     pub overflow: u32,
 }
 
+/// How often the slot reports how its pictures met their due times.
+const WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One window of the smoothing slot's takes: whether a due time ever held a picture back, how
+/// late the ones taken were against it, and how many waited behind each. A standing picture
+/// behind every take is a refresh of latency the budget did not ask for.
+#[derive(Default)]
+struct Window {
+    since: Option<Instant>,
+    taken: u32,
+    /// Vblanks with a picture waiting that was not due yet.
+    held: u32,
+    /// Taken with no due time.
+    undue: u32,
+    /// Taken before their due time, to keep the queue inside the budget.
+    early: u32,
+    /// Latch less due over the pictures taken at or past it, µs.
+    late_us: u64,
+    late_max_us: u64,
+    late_n: u32,
+    /// Pictures left waiting after each take: none, one, two or more.
+    left: [u32; 3],
+}
+
+impl Window {
+    fn note_take(&mut self, latch: Instant, due: Option<Instant>, left: usize) {
+        self.taken += 1;
+        self.left[left.min(2)] += 1;
+        match due {
+            None => self.undue += 1,
+            Some(d) if d > latch => self.early += 1,
+            Some(d) => {
+                let us = u64::try_from((latch - d).as_micros()).unwrap_or(u64::MAX);
+                self.late_us += us;
+                self.late_max_us = self.late_max_us.max(us);
+                self.late_n += 1;
+            }
+        }
+    }
+
+    /// The finished window at `now`, arming the next; `None` until one has run its length.
+    fn close(&mut self, now: Instant) -> Option<Self> {
+        let since = *self.since.get_or_insert(now);
+        (now.duration_since(since) >= WINDOW).then(|| {
+            std::mem::replace(
+                self,
+                Self {
+                    since: Some(now),
+                    ..Self::default()
+                },
+            )
+        })
+    }
+
+    fn line(&self) -> String {
+        let ms = |us: u64| us as f64 / 1000.0;
+        format!(
+            "slot[{}s]: {} taken, {} vblanks held for a due, {} without a due, {} early; late mean {:.1}ms max {:.1}ms; left behind 0:{} 1:{} 2+:{}",
+            WINDOW.as_secs(),
+            self.taken,
+            self.held,
+            self.undue,
+            self.early,
+            ms(self.late_us.checked_div(u64::from(self.late_n)).unwrap_or(0)),
+            ms(self.late_max_us),
+            self.left[0],
+            self.left[1],
+            self.left[2],
+        )
+    }
+}
+
 /// The slot's rule, apart from the pictures, so the tests drive it with plain values.
 struct Queue<T> {
     items: VecDeque<(Option<Instant>, T)>,
     /// `0`: newest wins.
     smoothing: usize,
     drops: Drops,
+    /// Smoothing only: the takes since the last report.
+    window: Window,
 }
 
 impl<T> Default for Queue<T> {
@@ -127,6 +208,7 @@ impl<T> Default for Queue<T> {
             items: VecDeque::with_capacity(MAX_QUEUED + 1),
             smoothing: 0,
             drops: Drops::default(),
+            window: Window::default(),
         }
     }
 }
@@ -165,12 +247,15 @@ impl<T> Queue<T> {
         // still for seconds (smoothing log of 2026-10-31, 151 trimmed in one window).
         let due = due.max(self.items.len().saturating_sub(self.smoothing + 1));
         if due == 0 {
+            self.window.held += u32::from(!self.items.is_empty());
             return None;
         }
         let behind = due.saturating_sub(2);
         self.drops.replaced += behind as u32;
         self.items.drain(..behind);
-        self.items.pop_front().map(|(_, item)| item)
+        let (at, item) = self.items.pop_front()?;
+        self.window.note_take(latch, at, self.items.len());
+        Some(item)
     }
 
     fn clear(&mut self) {
@@ -676,5 +761,28 @@ mod tests {
         q.set_smoothing(3);
         q.push(None, 1);
         assert_eq!(q.take(t0), Some(1));
+    }
+
+    /// The window says whether a due time held anything, how late the takes ran and what
+    /// stood behind each: the figures that tell a binding budget from a plain queue.
+    #[test]
+    fn the_window_counts_holds_lateness_and_what_waits() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        q.push(Some(ms(t0, 40)), 1);
+        assert_eq!(q.take(ms(t0, 16)), None, "not due: held");
+        q.push(Some(ms(t0, 45)), 2);
+        assert_eq!(q.take(ms(t0, 50)), Some(1), "10 ms late, one behind it");
+        q.push(None, 3);
+        assert_eq!(q.take(ms(t0, 66)), Some(2));
+        assert_eq!(q.take(ms(t0, 83)), Some(3));
+        let w = &q.window;
+        assert_eq!((w.taken, w.held, w.undue, w.early), (3, 1, 1, 0));
+        assert_eq!((w.late_n, w.late_max_us), (2, 21_000));
+        assert_eq!(w.left, [1, 2, 0]);
+        assert!(q.window.close(ms(t0, 0)).is_none(), "the first close arms the window");
+        assert!(q.window.close(ms(t0, 10_000)).is_some());
+        assert_eq!(q.window.taken, 0, "the next window starts empty");
     }
 }
