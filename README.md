@@ -99,5 +99,12 @@ This project uses AI for writing code. The rules the agents follow are in [AGENT
 
 ## Licence
 
-MIT OR Apache-2.0, at your option ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE)).
-`THIRD-PARTY-NOTICES.txt` is generated at build time from the dependency graph.
+The source in this repository is MIT OR Apache-2.0, at your option ([`LICENSE-MIT`](LICENSE-MIT),
+[`LICENSE-APACHE`](LICENSE-APACHE)).
+
+The built `punktfunk.nro` is GPL-3.0-or-later ([`packaging/licenses/GPL-3.0.txt`](packaging/licenses/GPL-3.0.txt)).
+It links devkitPro's `switch-ffmpeg`, whose `nvtegra` hwaccel (the NVDEC driver) is
+GPL-2.0-or-later. The Apache-2.0 code combines with GPL version 3 only. The NRO's corresponding
+source is this repository at the release's tag, plus FFmpeg 7.1 with devkitPro's patches at
+[the pinned recipe](https://github.com/devkitPro/pacman-packages/tree/5cf3a4da7665a04032565a3e788656cb485dd279/switch/ffmpeg).
+`THIRD-PARTY-NOTICES.txt` is generated at build time from the dependency graph and ships beside the NRO.

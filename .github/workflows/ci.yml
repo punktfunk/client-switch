@@ -50,6 +50,8 @@ jobs:
             DEVKITA64=${{ steps.pins.outputs.DEVKITA64 }}
             LIBNX=${{ steps.pins.outputs.LIBNX }}
             SWITCH_TOOLS=${{ steps.pins.outputs.SWITCH_TOOLS }}
+            SWITCH_FFMPEG=${{ steps.pins.outputs.SWITCH_FFMPEG }}
+            SWITCH_DAV1D=${{ steps.pins.outputs.SWITCH_DAV1D }}
             RUST_NIGHTLY=${{ steps.pins.outputs.RUST_NIGHTLY }}
           cache-from: type=gha,scope=nx-toolchain
           cache-to: type=gha,scope=nx-toolchain,mode=max
@@ -137,3 +139,4 @@ jobs:
           path: |
             dist/punktfunk.nro
             dist/punktfunk.elf
+            dist/THIRD-PARTY-NOTICES.txt

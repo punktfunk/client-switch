@@ -30,14 +30,14 @@ fn generate_third_party_notices(root: &str) {
          "The Vulkan driver, a static archive linked into the title. MIT License, with expat (MIT), zlib and zstd (zlib/BSD).",
          None,
          "https://github.com/JohnUzoka/bevy-horizon"),
-        ("FFmpeg (libavcodec)",
-         "H.264 and HEVC decode through the nvtegra hwaccel, built without GPL parts. LGPL-2.1-or-later.",
+        ("FFmpeg 7.1 (libavcodec, libavutil, libswresample) with nvtegra",
+         "H.264 and HEVC decode on NVDEC through averne's nvtegra hwaccel, which is GPL-2.0-or-later, so FFmpeg is built --enable-gpl. GPL-2.0-or-later. Source: FFmpeg 7.1 with devkitPro's switch-ffmpeg 7.1-5 patches, https://github.com/devkitPro/pacman-packages/tree/5cf3a4da7665a04032565a3e788656cb485dd279/switch/ffmpeg",
          None,
          "https://ffmpeg.org"),
-        ("PyroWave and Granite",
-         "GPU wavelet decoder, linked through pyrowave-sys. MIT License.",
+        ("dav1d",
+         "AV1 decoder that libavcodec's codec registry links (the stream never uses it). BSD-2-Clause.",
          None,
-         "https://github.com/Themaister/pyrowave"),
+         "https://code.videolan.org/videolan/dav1d"),
         ("Skia",
          "2D graphics for the console UI, linked through skia-safe, with its bundled FreeType. BSD-3-Clause; FreeType License.",
          None,
@@ -163,6 +163,15 @@ fn generate_third_party_notices(root: &str) {
         }
     }
 
+    // The licence the NRO itself is distributed under.
+    let gpl = fs::read_to_string(Path::new(root).join("packaging/licenses/GPL-3.0.txt"))
+        .expect("read packaging/licenses/GPL-3.0.txt");
+    texts
+        .entry(gpl.trim().to_string())
+        .or_insert_with(|| ("GPL-3.0.txt".to_string(), std::collections::BTreeSet::new()))
+        .1
+        .insert("the NRO as linked".to_string());
+
     // Build the output document
     let mut lines = Vec::new();
     lines.push("THIRD-PARTY SOFTWARE NOTICES".to_string());
@@ -170,7 +179,9 @@ fn generate_third_party_notices(root: &str) {
     lines.push(String::new());
     lines.push("punktfunk-switch (https://github.com/punktfunk/client-switch) source is licensed under".to_string());
     lines.push("MIT OR Apache-2.0, matching upstream punktfunk (https://git.unom.io/unom/punktfunk).".to_string());
-    lines.push("Released binaries are MIT OR Apache-2.0 too; FFmpeg inside them stays LGPL-2.1-or-later.".to_string());
+    lines.push("The NRO as linked is GPL-3.0-or-later: it carries FFmpeg's nvtegra hwaccel, which is".to_string());
+    lines.push("GPL-2.0-or-later, and Apache-2.0 code combines with GPL version 3 only. Its corresponding".to_string());
+    lines.push("source is this repository at the release's tag and FFmpeg's source named below.".to_string());
     lines.push("It links the Rust crates listed below and the non-Rust components listed first;".to_string());
     lines.push("the full license texts follow the manifest.".to_string());
     lines.push(String::new());
