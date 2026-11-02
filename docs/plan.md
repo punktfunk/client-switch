@@ -300,8 +300,67 @@ Clock control and PyroWave on NVK are their own tasks after the baseline (§10).
 
 ### WP6 — Package and release (one week)
 
-NACP, icon, romfs, `THIRD-PARTY-NOTICES.txt`, `docs/tester.md` as the manual, the release
-workflow on tags, the monorepo's download page row.
+NACP, icon, `THIRD-PARTY-NOTICES.txt`, `docs/tester.md` as the manual, the release workflow on
+tags. The repository stays private; the monorepo's download page row waits for it to go public.
+
+What is there (2026-11-02):
+
+- `scripts/package-nro.sh` writes a NACP (title, author `punktfunk`, version) and libnx's default
+  icon. `packaging/icon_large.png` is 130×130; the NACP takes a 256×256 JPEG.
+- The fonts and icons are compiled in by `pf-console-ui`, so the title needs no romfs.
+- `pf-nx-app/build.rs` writes the notices on every console build and the About screen shows them.
+  The file stays inside the build container; nothing ships it beside the NRO.
+- `core::build_id` reads `PKG_VERSION`, `PF_CORE_REV` and `PF_MESA_PIN`, but nothing sets them:
+  every build reports `0.0.1 core=dev mesa=dev`.
+- **The linked libavcodec is GPL.** It is devkitPro's `switch-ffmpeg` 7.1-5, configured
+  `--enable-gpl` with libass, FreeType, FriBidi, dav1d, swscale and the network protocols;
+  `avcodec_license` reads "GPL version 2 or later". As built, the title is GPL-2.0-or-later,
+  against D6 and D19, and the notices say the opposite. `scripts/build-ffmpeg.sh`, which D6 and
+  `pf-nx-sys/build.rs` name, does not exist.
+- The repository is private, with no tag and no release.
+
+In order:
+
+1. **FFmpeg without GPL.** `scripts/build-ffmpeg.sh` builds the `switch-ffmpeg` 7.1 source and
+   patches (with `nvtegra`) at a pin in `scripts/pins.env`. It configures without `--enable-gpl`,
+   `--disable-everything`, and turns on only the H.264 and HEVC decoders, their `nvtegra`
+   hwaccels, the parsers the lane uses, and the hwcontext. `task ffmpeg` and a CI cache work like
+   NVK and Skia do. `pf-nx-sys` then links `avcodec avutil` only, and its `TODO(verify)` goes.
+   The title logs `avcodec_license` at start. A console round checks that probe 6 and a handheld
+   stream are unchanged.
+2. **Version and build id.** The Taskfile and CI derive `PKG_VERSION` from `git describe`: a tag
+   gives `1.0.0`, any other commit `1.0.0+git.<sha>`. `PF_CORE_REV` comes from `Cargo.lock`,
+   `PF_MESA_PIN` from `pins.env`. The crate moves to 1.0.0. The NACP, the About screen and the
+   first log line all carry the same string.
+3. **Icon and NACP.** `packaging/icon.jpg` is `icon_large.png` scaled to the 256×256 JPEG the
+   NACP takes; no larger art exists, and homebrew menus draw it small. `package-nro.sh` takes it
+   in place of libnx's. The NACP author is `broslife`.
+4. **Notices.** The console build copies `THIRD-PARTY-NOTICES.txt` to `dist/` beside the NRO.
+   The FFmpeg row describes the step-1 build and names its source pin. The PyroWave row goes
+   (v1 does not link it, D14). LGPL-2.1 §6 is met by the source and the build scripts, which
+   everyone who receives a release can read, so the row says where both are.
+5. **`docs/tester.md`, the player's manual.** It covers what a player needs (a Switch 1 on
+   Atmosphère, a host), installing to `/switch/punktfunk/punktfunk.nro`, and launching by
+   holding R over a game, never from the Album (D13). Then the first pairing, handheld and
+   docked, and the controls: A confirms, Minus + A opens the dial, holding L + R + Plus + Minus
+   ends the stream, touch. Then sleep, logs and how to report (`punktfunk.log` and `.log.1`),
+   and the known limits: docked play is less tested than handheld, 20 Mb/s on Wi-Fi, no applet
+   mode, no keyboard or mouse. It is in English, as everything on GitHub is. The README
+   stops saying nothing has run on a console. It points players to the manual and keeps the
+   probe for developers.
+6. **`release.yml` on `v*` tags,** the PS5's shape. The console lane is shared with `ci.yml`
+   (a reusable workflow), not copied. `PKG_VERSION` is the tag. A gate fails the tag when the
+   linked libavcodec's licence string says GPL. The release attaches `punktfunk.nro`, its
+   SHA-256, `punktfunk.elf` (for crash offsets) and `THIRD-PARTY-NOTICES.txt`.
+7. **Tagged, still private.** `wp5-reliability` and this package reach `main`, and `v1.0.0` is
+   the first tag: handheld play is what the client is for, and it works. The release is private
+   with the repository; going public (§11.1) and the monorepo's download page row come later.
+8. **The last console round.** On the tester's Switch, a clean install of the tag's NRO
+   following only `docs/tester.md`. Then the tests deferred to the end (WP4): a second pad, ten
+   minutes docked at 1080p, an hour of play.
+
+**Exit (G6):** a `v*` tag publishes the NRO, its checksum, the ELF and the notices. The linked
+libavcodec is LGPL. The tester installs and streams from the release by the manual alone.
 
 ## 5. Developing without the console
 
