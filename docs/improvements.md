@@ -65,9 +65,6 @@ tester found the first on 2026-11-02:
 - **Confirm side.** The shell confirms on south. Here A, on east, confirms, so `legend_pref`
   (`runtime/menu.rs`) swaps the Nintendo legend for the letters one. Without that, the hints
   read "B Select" over the button that selects.
-- **Codecs.** Settings takes the PS5's list, which includes PyroWave; only `pyrowave_ok: false`
-  keeps it off. The Switch decodes H.264 and HEVC through NVDEC, has no PyroWave lane on the
-  console (`video caps` logs `pyrowave: false`) and no AV1.
 
 The contract this client builds against, in the monorepo:
 
@@ -85,7 +82,7 @@ The contract this client builds against, in the monorepo:
 
    | Where | PS5 now | Switch |
    | --- | --- | --- |
-   | `codecs` | `CODECS_PS5`, with PyroWave | H.264 and HEVC only: `CODECS[..3]` |
+   | `codecs` | `CODECS_PS5`: no AV1, PyroWave behind `pyrowave_ok` | the same. NVDEC has no AV1, and PyroWave runs on NVK's Vulkan 1.3, untested on the console (`pyrowave: false` until then) |
    | `pad_types` | drops Xbox 360, Steam Deck, Steam Controller 2 | the same, plus the Nintendo kinds from the section above |
    | `own_stats_corner` | top left | top left |
    | `has_window` | false | false |
