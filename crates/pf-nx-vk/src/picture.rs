@@ -107,6 +107,11 @@ const MAX_SMOOTHING: usize = 3;
 /// Pictures a smoothing queue holds past its budget: the pacing's own cushion, up to a period,
 /// and one picture of slack before the oldest is dropped.
 const SMOOTHING_SLACK: usize = 2;
+/// Takes in a row with a second due picture waiting before the slot skips one. A burst on the
+/// wire leaves that picture standing for the rest of the session, a refresh of latency at every
+/// budget (log of 2026-11-02: one left behind on 571 of 598 takes, no take ever held for a due).
+/// Due times straddling a vblank leave one now and then, never half a second running.
+const STANDING_TAKES: u32 = 30;
 /// The most pictures the slot ever holds.
 const MAX_QUEUED: usize = MAX_SMOOTHING + SMOOTHING_SLACK;
 
@@ -136,6 +141,8 @@ struct Window {
     undue: u32,
     /// Taken before their due time, to keep the queue inside the budget.
     early: u32,
+    /// Standing backlogs skipped, one picture each.
+    caught_up: u32,
     /// Latch less due over the pictures taken at or past it, µs.
     late_us: u64,
     late_max_us: u64,
@@ -177,12 +184,13 @@ impl Window {
     fn line(&self) -> String {
         let ms = |us: u64| us as f64 / 1000.0;
         format!(
-            "slot[{}s]: {} taken, {} vblanks held for a due, {} without a due, {} early; late mean {:.1}ms max {:.1}ms; left behind 0:{} 1:{} 2+:{}",
+            "slot[{}s]: {} taken, {} vblanks held for a due, {} without a due, {} early, {} caught up; late mean {:.1}ms max {:.1}ms; left behind 0:{} 1:{} 2+:{}",
             WINDOW.as_secs(),
             self.taken,
             self.held,
             self.undue,
             self.early,
+            self.caught_up,
             ms(self.late_us.checked_div(u64::from(self.late_n)).unwrap_or(0)),
             ms(self.late_max_us),
             self.left[0],
@@ -198,6 +206,8 @@ struct Queue<T> {
     /// `0`: newest wins.
     smoothing: usize,
     drops: Drops,
+    /// Smoothing only: takes in a row that left a due picture waiting.
+    standing: u32,
     /// Smoothing only: the takes since the last report.
     window: Window,
 }
@@ -208,6 +218,7 @@ impl<T> Default for Queue<T> {
             items: VecDeque::with_capacity(MAX_QUEUED + 1),
             smoothing: 0,
             drops: Drops::default(),
+            standing: 0,
             window: Window::default(),
         }
     }
@@ -231,6 +242,7 @@ impl<T> Queue<T> {
     /// Newest wins ignores `due`. Smoothing shows the oldest picture due by `latch` and lets one
     /// more due wait for the next vblank: due times that straddle a vblank then take one refresh
     /// each. A third due is a backlog, and its oldest are dropped so latency stays the budget.
+    /// A second due left waiting [`STANDING_TAKES`] takes running is one too, and is skipped.
     /// More waiting than the budget holds means the due times run ahead of the arrivals, and the
     /// oldest goes out early.
     fn take(&mut self, latch: Instant) -> Option<T> {
@@ -250,7 +262,13 @@ impl<T> Queue<T> {
             self.window.held += u32::from(!self.items.is_empty());
             return None;
         }
-        let behind = due.saturating_sub(2);
+        let mut behind = due.saturating_sub(2);
+        self.standing = if due >= 2 { self.standing + 1 } else { 0 };
+        if self.standing >= STANDING_TAKES {
+            behind = due - 1;
+            self.standing = 0;
+            self.window.caught_up += 1;
+        }
         self.drops.replaced += behind as u32;
         self.items.drain(..behind);
         let (at, item) = self.items.pop_front()?;
@@ -260,6 +278,7 @@ impl<T> Queue<T> {
 
     fn clear(&mut self) {
         self.items.clear();
+        self.standing = 0;
     }
 
     fn trim(&mut self) {
@@ -761,6 +780,45 @@ mod tests {
         q.set_smoothing(3);
         q.push(None, 1);
         assert_eq!(q.take(t0), Some(1));
+    }
+
+    #[test]
+    fn a_standing_backlog_is_skipped() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        q.push(Some(t0), 0);
+        let mut shown = Vec::new();
+        for i in 1..=u64::from(STANDING_TAKES) + 2 {
+            q.push(Some(ms(t0, i * 16)), i);
+            shown.extend(q.take(ms(t0, i * 16 + 1)));
+        }
+        let skip = STANDING_TAKES as usize - 1;
+        assert_eq!(shown[skip - 1], skip as u64 - 1);
+        assert_eq!(shown[skip], skip as u64 + 1, "one picture skipped");
+        assert_eq!(q.items.len(), 0, "nothing stands behind the take after it");
+        assert_eq!((q.drops.replaced, q.window.caught_up), (1, 1));
+    }
+
+    #[test]
+    fn a_backlog_that_drains_is_not_skipped() {
+        let t0 = Instant::now();
+        let mut q = Queue::default();
+        q.set_smoothing(1);
+        for i in 0..200_u64 {
+            match i % 10 {
+                // One picture arrives late with the next; the host later skips one, which drains it.
+                2 | 6 => {}
+                3 => {
+                    q.push(Some(ms(t0, (i - 1) * 16)), i - 1);
+                    q.push(Some(ms(t0, i * 16)), i);
+                }
+                _ => q.push(Some(ms(t0, i * 16)), i),
+            }
+            q.take(ms(t0, i * 16 + 1));
+        }
+        assert_eq!(q.drops, Drops::default());
+        assert_eq!(q.window.caught_up, 0);
     }
 
     /// The window says whether a due time held anything, how late the takes ran and what
