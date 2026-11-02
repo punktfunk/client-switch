@@ -141,6 +141,47 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) -> Opti
     None
 }
 
+/// Follows a paired host to the address it now advertises from, matched by its pinned
+/// fingerprint, so a DHCP move doesn't leave the record offline and a re-add doesn't save
+/// it twice. `advertised` says whether some advert currently comes from an address: a record
+/// whose own address still advertises is a second interface, not a move, and stays put.
+///
+/// The advert is unauthenticated, but the pin is what every connection checks, so a forged
+/// one can only point the record at an address whose handshake then fails.
+///
+/// With no record at the advert's address, the record that pins `fp_hex` moves there. With
+/// one there that pins the same certificate, the others pinning it are dropped as
+/// duplicates. Returns whether anything changed.
+pub fn follow_moved_host(
+    hosts: &mut Vec<KnownHost>,
+    fp_hex: &str,
+    addr: &str,
+    port: u16,
+    advertised: impl Fn(&str, u16) -> bool,
+) -> bool {
+    if fp_hex.is_empty() {
+        return false;
+    }
+    let stale =
+        |h: &KnownHost| h.fp_hex == fp_hex && (h.addr.as_str(), h.port) != (addr, port) && !advertised(&h.addr, h.port);
+    match hosts.iter().find(|h| (h.addr.as_str(), h.port) == (addr, port)) {
+        Some(here) if here.fp_hex == fp_hex => {
+            let before = hosts.len();
+            hosts.retain(|h| !stale(h));
+            hosts.len() != before
+        }
+        Some(_) => false,
+        None => {
+            let Some(moved) = hosts.iter_mut().find(|h| stale(h)) else {
+                return false;
+            };
+            moved.addr = addr.to_string();
+            moved.port = port;
+            true
+        }
+    }
+}
+
 fn unique_profile_name(catalog: &[StreamPreset], wanted: &str) -> String {
     let taken = |name: &str| catalog.iter().any(|p| p.name == name);
     if !taken(wanted) {
@@ -429,5 +470,49 @@ mod tests {
         assert!(hosts[0].is_paired() && hosts[0].wol_auto);
         assert_eq!(hosts[0].id, h.id);
         assert_eq!(hosts[0].game_profile("doom"), Some("p1"));
+    }
+
+    fn paired_at(addr: &str, fp: u8) -> KnownHost {
+        let mut h = KnownHost {
+            shared: pf_client_core::trust::KnownHost {
+                name: "desk".into(),
+                addr: addr.into(),
+                port: 9777,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        h.set_fingerprint([fp; 32]);
+        h
+    }
+
+    /// The 2026-11-02 settings: the router moved the host from .137 to .10, the record stayed
+    /// on .137 and showed offline, and re-adding it saved the same pin a second time.
+    #[test]
+    fn a_paired_host_follows_its_advert_to_a_new_address() {
+        let fp = "5a".repeat(32);
+        let quiet = |_: &str, _: u16| false;
+
+        let mut hosts = vec![paired_at("192.168.0.137", 0x5a)];
+        assert!(follow_moved_host(&mut hosts, &fp, "192.168.0.10", 9777, quiet));
+        assert_eq!(hosts[0].addr, "192.168.0.10");
+
+        let mut hosts = vec![paired_at("192.168.0.137", 0x5a), paired_at("192.168.0.10", 0x5a)];
+        assert!(follow_moved_host(&mut hosts, &fp, "192.168.0.10", 9777, quiet));
+        assert_eq!(hosts.len(), 1, "the stale duplicate is dropped");
+        assert_eq!(hosts[0].addr, "192.168.0.10");
+
+        // A second interface that still advertises is not a move.
+        let mut hosts = vec![paired_at("192.168.0.137", 0x5a)];
+        let both = |a: &str, _: u16| a == "192.168.0.137";
+        assert!(!follow_moved_host(&mut hosts, &fp, "192.168.0.10", 9777, both));
+        assert_eq!(hosts[0].addr, "192.168.0.137");
+
+        // Another certificate, or another host already at the address, moves nothing.
+        let mut hosts = vec![paired_at("192.168.0.137", 0x11)];
+        assert!(!follow_moved_host(&mut hosts, &fp, "192.168.0.10", 9777, quiet));
+        let mut hosts = vec![paired_at("192.168.0.137", 0x5a), paired_at("192.168.0.10", 0x11)];
+        assert!(!follow_moved_host(&mut hosts, &fp, "192.168.0.10", 9777, quiet));
+        assert_eq!(hosts.len(), 2);
     }
 }
