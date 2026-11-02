@@ -14,7 +14,7 @@ mod touch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::core::model::BITRATE_MAX_KBPS;
+use crate::core::model::bitrate_max_kbps;
 use crate::platform::{Display, Lifecycle, Pads, Platform, SystemEvent};
 use crate::services::power::ExitPlan;
 use crate::services::store;
@@ -78,14 +78,17 @@ const ABR_PROBE_KBPS: u32 = 320_000;
 
 /// The two automatic-bitrate knobs punktfunk-core reads from the environment. Set before any
 /// thread exists: `set_var` is not thread-safe.
-fn set_abr_env() {
+fn set_abr_env(pyrowave: bool) {
     std::env::set_var("PUNKTFUNK_ABR_PROBE_KBPS", ABR_PROBE_KBPS.to_string());
-    std::env::set_var("PUNKTFUNK_ABR_MAX_MBPS", (BITRATE_MAX_KBPS / 1_000).to_string());
+    std::env::set_var(
+        "PUNKTFUNK_ABR_MAX_MBPS",
+        (bitrate_max_kbps(pyrowave) / 1_000).to_string(),
+    );
 }
 
 /// Runs the title until the player leaves it. Never returns.
 pub fn run(platform: Platform) -> ! {
-    set_abr_env();
+    set_abr_env(platform.video.caps().pyrowave);
     let Platform {
         display,
         video,

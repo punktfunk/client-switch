@@ -314,11 +314,25 @@ impl GamepadType {
     }
 }
 
-/// Automatic bitrate's ceiling, handed to `punktfunk_core::abr` through `run`
-/// (`PUNKTFUNK_ABR_MAX_MBPS`). It binds every codec, so it sits above Automatic `PyroWave`'s
+/// Automatic bitrate's ceiling where `PyroWave` decodes, handed to `punktfunk_core::abr` through
+/// `run` (`PUNKTFUNK_ABR_MAX_MBPS`). It binds every codec, so it sits above Automatic `PyroWave`'s
 /// quality floor (0.5 bit/pixel), below which core clamps a `PyroWave` session to that floor.
-/// HEVC and H.264 stop well below it, at the link's and the decoder's headroom.
 pub const BITRATE_MAX_KBPS: u32 = 650_000;
+
+/// Automatic bitrate's ceiling where only NVDEC decodes: the rate a pinned stream ran clean at,
+/// handheld at stock clocks. Core finds the link's edge by crossing it, and its climbs to
+/// 22-25 Mb/s preceded every 60-110 ms delay spike (2026-10-31). Under the ceiling it still cuts
+/// for a dock or a weak Wi-Fi. A raised CPU clock is what would carry more.
+pub const NVDEC_BITRATE_MAX_KBPS: u32 = 20_000;
+
+/// Automatic bitrate's ceiling for a title whose video lane can or cannot decode `PyroWave`.
+pub const fn bitrate_max_kbps(pyrowave: bool) -> u32 {
+    if pyrowave {
+        BITRATE_MAX_KBPS
+    } else {
+        NVDEC_BITRATE_MAX_KBPS
+    }
+}
 
 /// 70% of measured goodput (headroom for FEC, loss).
 /// Integer arithmetic order matters (`/ 10 * 7`, not `* 0.7`) — all clients must agree exactly.
