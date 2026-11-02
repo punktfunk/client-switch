@@ -91,6 +91,13 @@ The contract this client builds against, in the monorepo:
    | `GlyphStyle::keys` | Remote | Remote |
    | help-text branches (mouse mode, stats verbosity, gamepad UI) | the no-chord wording | the same |
 
+   `players.rs` opens a pad's menu (Test controller, Rumble) on Android and Apple only
+   (`can_test`, `can_rumble`). On every other platform, OK on a Controllers card does nothing, so
+   the Switch's Joy-Con card is display-only. The Switch can do both: its pads rumble in every
+   stream. The contract lets `Platform::Switch` offer the two rows. This client then answers
+   `ConsoleCmd::PadTest` and the `rumble` `PadAction`, which `ui/service.rs` logs and drops
+   today.
+
    The handheld screen is a touchscreen, and this client sends its touches to the host as a
    direct pointer. That is a later row, not part of this contract.
 
