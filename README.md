@@ -19,13 +19,11 @@ pinned git dependency — see `Cargo.toml`) and the shared console UI. This repo
 Switch-specific client: the libnx platform, NVDEC through libavcodec's `nvtegra` hwaccel, a Vulkan
 presenter on Mesa NVK, and the `.nro` packaging.
 
-> **Experimental.** The title and the WP0 probe build, link and package for the console; **nothing
-> has run on a console yet.** `docs/plan.md` is the plan of record, `docs/NOTES.md` what is proven
-> and how.
+**Install it:** download `punktfunk.nro` from the [latest release](https://github.com/punktfunk/client-switch/releases/latest)
+and follow the [manual](docs/tester.md). `docs/plan.md` is the plan of record, `docs/NOTES.md` what is
+proven on the console and how.
 
 ## Features
-
-What it is built to do:
 
 - **Video** — 1280×720 handheld and 1920×1080 docked at 60 Hz, H.264 or HEVC on the console's
   NVDEC; the stream follows the dock. No AV1: the Tegra X1 has none.
@@ -35,24 +33,15 @@ What it is built to do:
   rumble, gyro and the touch screen.
 - **Audio** — stereo through `audout`.
 
-Not yet: USB keyboard and mouse, PyroWave, LAN discovery on the console, and anything measured —
-see `docs/plan.md` §4 for the gates.
+Not yet: USB keyboard and mouse, PyroWave, and launching from the Album. Docked play is tested
+less than handheld.
 
-## Test it on a console
+## Test builds and the probe
 
-You need a Switch 1 on Atmosphère, its SD card, and a PC on the same LAN with devkitPro's
-`nxlink` (or just the SD card).
-
-1. Copy `dist/pf-nx-probe.nro` and `dist/punktfunk.nro` to `/switch/punktfunk/` on the SD card.
-2. Launch the probe from the Homebrew Menu, or push it over the network with
-   `nxlink -s dist/pf-nx-probe.nro` while the Homebrew Menu shows the netloader. It prints one line
-   per check — `probe N <name> ok|fail …` — on nxlink's terminal or on the screen, and writes the
-   same lines to `/switch/punktfunk/probe.log`. Send that file back, with a photo if it crashed.
-3. Launch the title the same way, through **title override** (hold R while opening an installed
-   game) so it gets the full memory. It logs to `/switch/punktfunk/punktfunk.log`.
-
-Checks 1–3 (std, sockets, QUIC) and the title's menus work in Ryujinx too; check 4 and the stream
-need the console (the emulator has no NVK).
+Players use the release and [the manual](docs/tester.md). Every PR's CI uploads `punktfunk.nro`
+and the WP0 probe (`pf-nx-probe.nro`). The probe prints one line per check,
+`probe N <name> ok|fail …`, on `nxlink -s dist/pf-nx-probe.nro`'s terminal or on screen, and
+writes the same lines to `/switch/punktfunk/probe.log`.
 
 ## Build it
 

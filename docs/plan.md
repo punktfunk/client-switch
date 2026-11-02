@@ -1,7 +1,7 @@
 # Nintendo Switch client — a Rust homebrew title on NVDEC
 
 > **Status: designed 2026-10-28; WP0's probe passed on the console and WP1 closed on 2026-10-29
-> (`docs/NOTES.md`, §4); WP2–WP4 closed by 2026-11-01, WP5 on 2026-11-02. WP6 is next.** Target: the Switch 1 (Erista and Mariko, Tegra
+> (`docs/NOTES.md`, §4); WP2–WP4 closed by 2026-11-01, WP5 and WP6 on 2026-11-02, with v1.0.0 released while the repository is still private.** Target: the Switch 1 (Erista and Mariko, Tegra
 > X1), on Atmosphère, as an `.nro`. The Switch 2 is a later leg behind the same seams (§9); no
 > modded one exists to test on. The maintainer's fellow developer holds the only test device, so
 > every work package is written for a developer who never holds the console — the PS5 client's
@@ -358,6 +358,18 @@ In order:
 
 **Exit (G6):** a `v*` tag publishes the NRO, its checksum, the ELF and the notices, which name the
 NRO's GPL and its source. The tester installs and streams from the release by the manual alone.
+
+**Outcome (2026-11-02).** On the tester's Switch 1 the PR's NRO shows its icon and `broslife` in
+the Homebrew Menu and `1.0.0+g8e1e279` in About, and streams as WP5's did. The console lane
+moved into `console.yml`, which `ci.yml` and `release.yml` both call, and the release notes are
+`packaging/release-notes.md`. `v1.0.0` is the first tag. Departures:
+
+- No LGPL FFmpeg: `nvtegra` is GPL, so the NRO is GPL-3.0-or-later and the source stays MIT OR
+  Apache-2.0 (D19).
+- The repository stays private until an organisation admin makes it public; its releases become
+  public with it. The download page row waits for that.
+- The second pad, ten minutes docked at 1080p and the hour of play still wait. The manual says
+  docked is tested less.
 
 ## 5. Developing without the console
 

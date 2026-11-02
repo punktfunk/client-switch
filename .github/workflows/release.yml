@@ -1,0 +1,52 @@
+# A version tag (v1.0.0) builds the title with the tag's version and publishes a GitHub release:
+# punktfunk.nro, its SHA-256, the unstripped ELF (crash offsets resolve against it) and the
+# notices. The NRO is GPL-3.0-or-later (plan D19), so the tag fails when the notices do not say so.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  console:
+    uses: ./.github/workflows/console.yml
+    with:
+      version: ${{ github.ref_name }}
+      ref: ${{ github.sha }}
+
+  release:
+    needs: console
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: punktfunk
+          path: dist
+      - name: Version
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          grep -a -q -F "$version" dist/punktfunk.nro || { echo "punktfunk.nro does not carry $version" >&2; exit 1; }
+          if grep -a -q -E "$version\+g[0-9a-f]{7}" dist/punktfunk.nro; then
+            echo "punktfunk.nro carries a commit's version, not the tag's" >&2; exit 1
+          fi
+      - name: Licence
+        run: |
+          grep -q 'The NRO as linked is GPL-3.0-or-later' dist/THIRD-PARTY-NOTICES.txt ||
+            { echo "THIRD-PARTY-NOTICES.txt does not name the NRO's GPL (plan D19)" >&2; exit 1; }
+      - name: Checksum
+        run: cd dist && sha256sum punktfunk.nro > punktfunk.nro.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: punktfunk ${{ github.ref_name }}
+          body_path: packaging/release-notes.md
+          files: |
+            dist/punktfunk.nro
+            dist/punktfunk.nro.sha256
+            dist/punktfunk.elf
+            dist/THIRD-PARTY-NOTICES.txt

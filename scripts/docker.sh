@@ -20,6 +20,8 @@ if [[ -z ${PKG_VERSION:-} ]]; then
         PKG_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)+g$(git rev-parse --short=7 HEAD)
     fi
 fi
+# release.yml hands in the tag itself (v1.0.0).
+PKG_VERSION=${PKG_VERSION#v}
 export PKG_VERSION
 export PF_CORE_REV=${PUNKTFUNK_REV:0:9}
 PF_MESA_PIN=$(sed -n 's/^mesa_rev=\${MESA_SWITCH_REV:-\([0-9a-f]\{9\}\).*/\1/p' scripts/build-nvk.sh)
