@@ -324,8 +324,9 @@ In order:
    GPL-3.0-or-later. `scripts/pins.env` pins `switch-ffmpeg` 7.1-5 and `switch-dav1d` 1.5.0-1,
    and names devkitPro's recipe commit (`5cf3a4d`), the corresponding source of that FFmpeg.
    The image fails when either package moves. The README's licence section says both.
-2. **Version and build id.** The Taskfile and CI derive `PKG_VERSION` from `git describe`: a tag
-   gives `1.0.0`, any other commit `1.0.0+git.<sha>`. `PF_CORE_REV` comes from `Cargo.lock`,
+2. **Version and build id.** `scripts/docker.sh`, which every console build goes through,
+   derives `PKG_VERSION` from `git describe`: a tag gives `1.0.0`, any other commit
+   `1.0.0+g<sha>`, short enough for the NACP's 16 bytes. `PF_CORE_REV` comes from `Cargo.lock`,
    `PF_MESA_PIN` from `pins.env`. The crate moves to 1.0.0. The NACP, the About screen and the
    first log line all carry the same string.
 3. **Icon and NACP.** `packaging/icon.jpg` is `icon_large.png` scaled to the 256×256 JPEG the
