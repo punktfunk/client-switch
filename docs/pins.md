@@ -9,6 +9,8 @@
 | devkitA64 | `r30-1` (GCC 16.1.0, newlib 4.6.0) | the C compiler, newlib, libgcc's `pic` objects | devkitPro ships a new one: `-Syu` in the image fails until this moves |
 | libnx | `4.12.0-1` | crt0, sockets, threads, the services | with devkitA64 |
 | switch-tools | `1.13.1-1` | `elf2nro`, `nacptool`, `nxlink` | with devkitA64 |
+| switch-ffmpeg | `7.1-5`, recipe `5cf3a4da7` | libavcodec with the `nvtegra` hwaccel. GPL-2.0-or-later, so the NRO is GPL (plan D19); the recipe in `devkitPro/pacman-packages` at that commit is its corresponding source | devkitPro rebuilds it: move the recipe commit with the version |
+| switch-dav1d | `1.5.0-1` | the AV1 decoder libavcodec's registry links | with switch-ffmpeg |
 | devkitpro/devkita64 | `sha256:1fc388c3…` | the image's base (amd64 + arm64), before `-Syu` | with devkitA64 |
 | bevy-horizon | `3eac779b2` | the target JSON, the `libc` and `getrandom` legs, the shims | a fix lands there; diff its `patches/` and target first |
 

@@ -1,7 +1,7 @@
 # Nintendo Switch client — a Rust homebrew title on NVDEC
 
 > **Status: designed 2026-10-28; WP0's probe passed on the console and WP1 closed on 2026-10-29
-> (`docs/NOTES.md`, §4); WP2–WP4 closed by 2026-11-01, WP5 on 2026-11-02. WP6 is next.** Target: the Switch 1 (Erista and Mariko, Tegra
+> (`docs/NOTES.md`, §4); WP2–WP4 closed by 2026-11-01, WP5 and WP6 on 2026-11-02, with v1.0.0 released while the repository is still private.** Target: the Switch 1 (Erista and Mariko, Tegra
 > X1), on Atmosphère, as an `.nro`. The Switch 2 is a later leg behind the same seams (§9); no
 > modded one exists to test on. The maintainer's fellow developer holds the only test device, so
 > every work package is written for a developer who never holds the console — the PS5 client's
@@ -42,7 +42,7 @@ answer for anyone who will not install a CFW.
 | D3 | **Rust std through `-Zbuild-std` on the community's Horizon target**, which two shipped projects use today: `bevy-horizon`'s `aarch64-nintendo-horizon.json` (`os = "horizon"`, `env = "newlib"`, `vendor = "nintendo"`, `family = unix`, `rust-lld`, `--wrap=threadCreate` so std threads get working TLS, a link script that puts libnx's crt0 first) with its vendored crate legs (`libc`, `rustix`, `getrandom`, `polling`, `memmap2`; MIT/Apache) and `nightly-2026-10-04`; FlashNX (Ruffle on the Switch) proves the same std on the stock target with two std patches that the `newlib` env makes unnecessary. No std source is patched. `libnx` is linked the way `bevy_horizon`'s build script does: `nx sysbase c m gcc` from devkitA64. Unproven anywhere and therefore WP0: tokio, quinn, aws-lc-rs on this target. |
 | D4 | **libnx is the OS**: sockets (`bsd`), threads (newlib pthread through libnx `threadCreate`), `audout`, `hid`, `applet`, `fs`, `nxlink`. No `nx` (pure-Rust Horizon) crate: its std is a to-do and it would be a second OS layer under newlib. |
 | D5 | **Graphics: Vulkan on Mesa NVK**, the `mesa-switch` fork both `bevy-horizon` (pin `606441c`) and the Dark Cloud port (`Chronicle` #205, October 2026, "Vulkan 1.3 on the Tegra X1", 60 fps handheld) run on the X1, linked statically as `libvulkan_bh.a`. This makes the Switch the PS5's twin: **`pf-ps5-vk` is lifted** (device, presenter, Skia Vulkan UI layer, PyroWave lane) instead of a GL presenter being written, and `pf-console-ui` takes its Vulkan path. devkitPro's GL is Mesa 20.1 and the Dark Cloud port measured it as the slower path; it is the fallback if NVK fails WP0.4, not a second path. **A second `Display` on libnx's linear framebuffer** (CPU raster, no stream) exists for the probe and the emulator (D15). |
-| D6 | **Video decode: NVDEC through libavcodec's `nvtegra` hwaccel** (averne's userspace NVDEC driver; devkitA64 build, enabled by devkitPro's `switchvars`; used by Moonlight-Switch, chiaki, NXMP). H.264 and HEVC. The FFmpeg tree is pinned by rev in `scripts/pins.env` and built `--disable-gpl --disable-everything` plus the two decoders, the hwaccel and the VIC-backed transfer. A Rust NVDEC driver is not written: the hwaccel is months of hardware work already done, and the FFI is one `-sys` module. |
+| D6 | **Video decode: NVDEC through libavcodec's `nvtegra` hwaccel** (averne's userspace NVDEC driver; devkitA64 build, enabled by devkitPro's `switchvars`; used by Moonlight-Switch, chiaki, NXMP). H.264 and HEVC. The library is devkitPro's `switch-ffmpeg` package, pinned by version in `scripts/pins.env` with the recipe commit that built it. `nvtegra` is GPL-2.0-or-later and FFmpeg's configure builds it only with `--enable-gpl`, so the linked title is GPL (D19). A Rust NVDEC driver is not written: the hwaccel is months of hardware work already done, and the FFI is one `-sys` module. |
 | D7 | **Pictures reach the GPU as pitch-linear NV12** from the hwaccel's VIC transfer, copied from a host-visible staging buffer into the stream image (`vkCmdCopyBufferToImage`), converted by the PS5 presenter's CSC pass with `pf_client_video::video_color`'s rows. One copy per picture (≈3 MB at 1080p) is budgeted for v1; WP5 measures it and imports the nvmap allocation directly only if it shows. |
 | D8 | **Audio: `audout`**, 48 kHz stereo S16, one 5 ms Opus frame per appended buffer, three prefilled — the Kodi plan's ALSA shape. Opus through the `opus` crate's libopus, cmake-built for the target as the PS5 does. The console's `hwopus` service is a later lane, not v1. |
 | D9 | **Input: libnx `hid`**. Handheld Joy-Cons report as one `JoyConPair`, a Pro Controller as `SwitchPro`, the actual type (maintainer rule). Up to four pads → four player slots. HD rumble from the core's `RumbleCommand` (low/high amplitudes onto the 160/320 Hz pair). Gyro from `hidGetSixAxisSensorStates` onto the device-gyro contract. Touch screen → the touch contract, absolute, as the iPad. USB keyboard and mouse on the dock are §10, not v1. (devkitPro carries an SDL3 branch for Horizon; the gamepad worker could run on it later, but `Pads` on `hid` is 300 lines and exact.) |
@@ -52,10 +52,10 @@ answer for anyone who will not install a CFW.
 | D13 | **Full-memory mode first.** The title is validated launched by title override (hold R over an installed title); applet mode (album) is detected (`appletGetAppletType`) and warned about on the start screen. A launch from the Album crashed before the first menu, so applet mode is not supported: the manual says to hold R over a game (WP6). |
 | D14 | **Codecs advertised**: `CODEC_H264 | CODEC_HEVC`, 8-bit, SDR. No AV1 on the X1 (accepted). Main10 only if WP0's probe decodes it through the VIC path. PyroWave is out of v1: the lane lifts with `pf-ps5-vk`, but a 256-core Maxwell at 307–460 MHz has to be measured against the wavelet decode before it is advertised (§10). |
 | D15 | **Dev loop without the console**: `pf-nx-host` runs the app on a Linux box through the real presenter on lavapipe and on the Mac on CPU raster, as `pf-ps5-host` does; **Ryujinx (Ryubing) on the Mac runs the real NRO on the framebuffer `Display`** — libnx, sockets, the nvservices the hwaccel talks to are emulated, so everything but the GPU path is proven here. Stock emulators do not run NVK builds (`bevy-horizon`'s finding). Timing from the emulator is never cited. `nxlink -s` is the deploy and the stdout on the device. |
-| D16 | **CI**: GitHub Actions like `client-ps5`: a host lane (test, clippy, the host client on lavapipe) and a console lane in a Docker image from `devkitpro/devkita64` plus the nightly, rust-src, and three archives built once per pin (`task nvk`, `task ffmpeg`, `task skia`). The NRO is a CI artifact per PR; releases are tags. |
+| D16 | **CI**: GitHub Actions like `client-ps5`: a host lane (test, clippy, the host client on lavapipe) and a console lane in a Docker image from `devkitpro/devkita64` plus the nightly, rust-src, and two archives built once per pin (`task nvk`, `task skia`). The NRO is a CI artifact per PR; releases are tags. |
 | D17 | **Logs**: `sdmc:/switch/punktfunk/punktfunk.log` (truncated per launch) and `nxlink` stdout; the console UI's log ring on top. Test-run bundles (log, `environment.json`, a presenter read-back) zipped on the SD card for the tester to fetch, the PS5's `task fetch-bundle` shape. |
 | D18 | **Packaging**: `punktfunk.nro` with NACP (name punktfunk, version = the repo's), a 256×256 icon, `romfs` for fonts; installed at `/switch/punktfunk/punktfunk.nro`; GitHub Releases. A Homebrew App Store listing is after v1. |
-| D19 | **Licence MIT OR Apache-2.0**; FFmpeg LGPL-only (`--disable-gpl`), Mesa MIT, libnx ISC, Skia BSD, the vendored crate legs under their own licences. `THIRD-PARTY-NOTICES.txt` generated by the app crate's build script as the PS5 does. |
+| D19 | **The source is MIT OR Apache-2.0; the NRO is GPL-3.0-or-later.** The linked libavcodec carries `nvtegra`, which is GPL-2.0-or-later, and the Apache-2.0 pieces combine with GPL version 3 only. Whoever receives an NRO gets the corresponding source: this repository at the tag, plus FFmpeg 7.1 with devkitPro's patches at the pinned recipe commit. Mesa MIT, libnx ISC, Skia BSD, the vendored crate legs under their own licences. `THIRD-PARTY-NOTICES.txt` generated by the app crate's build script as the PS5 does. |
 | D20 | **The app layer is lifted from `pf-ps5-app`, not shared.** The project's rule: shell logic stays per platform; the PS5 app was itself lifted from webOS. The `Platform` seams (§2.2) are copied verbatim so the two titles stay structurally identical; consolidating them into one shared crate is a decision for after both consoles are stable (§11). |
 
 ## 2. Architecture
@@ -300,8 +300,76 @@ Clock control and PyroWave on NVK are their own tasks after the baseline (§10).
 
 ### WP6 — Package and release (one week)
 
-NACP, icon, romfs, `THIRD-PARTY-NOTICES.txt`, `docs/tester.md` as the manual, the release
-workflow on tags, the monorepo's download page row.
+NACP, icon, `THIRD-PARTY-NOTICES.txt`, `docs/tester.md` as the manual, the release workflow on
+tags. The repository stays private; the monorepo's download page row waits for it to go public.
+
+What is there (2026-11-02):
+
+- `scripts/package-nro.sh` writes a NACP (title, author `punktfunk`, version) and libnx's default
+  icon. `packaging/icon_large.png` is 130×130; the NACP takes a 256×256 JPEG.
+- The fonts and icons are compiled in by `pf-console-ui`, so the title needs no romfs.
+- `pf-nx-app/build.rs` writes the notices on every console build and the About screen shows them.
+  The file stays inside the build container; nothing ships it beside the NRO.
+- `core::build_id` reads `PKG_VERSION`, `PF_CORE_REV` and `PF_MESA_PIN`, but nothing sets them:
+  every build reports `0.0.1 core=dev mesa=dev`.
+- **The linked libavcodec is GPL.** It is devkitPro's `switch-ffmpeg` 7.1-5, configured
+  `--enable-gpl`; `avcodec_license` reads "GPL version 2 or later". That cannot be built away:
+  `nvtegra` itself is GPL-2.0-or-later (averne's files in devkitPro's patch), and the patch
+  makes configure demand `--enable-gpl` for it. The notices said the title was LGPL.
+- The repository is private, with no tag and no release.
+
+In order:
+
+1. **The licence as it is (D19).** The source stays MIT OR Apache-2.0 and the NRO is
+   GPL-3.0-or-later. `scripts/pins.env` pins `switch-ffmpeg` 7.1-5 and `switch-dav1d` 1.5.0-1,
+   and names devkitPro's recipe commit (`5cf3a4d`), the corresponding source of that FFmpeg.
+   The image fails when either package moves. The README's licence section says both.
+2. **Version and build id.** `scripts/docker.sh`, which every console build goes through,
+   derives `PKG_VERSION` from `git describe`: a tag gives `1.0.0`, any other commit
+   `1.0.0+g<sha>`, short enough for the NACP's 16 bytes. `PF_CORE_REV` comes from `Cargo.lock`,
+   `PF_MESA_PIN` from `pins.env`. The crate moves to 1.0.0. The NACP, the About screen and the
+   first log line all carry the same string.
+3. **Icon and NACP.** `packaging/icon.jpg` is `icon_large.png` scaled to the 256×256 JPEG the
+   NACP takes; no larger art exists, and homebrew menus draw it small. `package-nro.sh` takes it
+   in place of libnx's. The NACP author is `broslife`.
+4. **Notices.** The console build copies `THIRD-PARTY-NOTICES.txt` to `dist/` beside the NRO.
+   The header says the NRO is GPL-3.0-or-later and where its corresponding source is. The FFmpeg
+   row says GPL-2.0-or-later with `nvtegra` and names the recipe commit, dav1d and zlib get rows,
+   and the PyroWave row goes (v1 does not link it, D14).
+5. **`docs/tester.md`, the player's manual.** It covers what a player needs (a Switch 1 on
+   Atmosphère, a host), installing to `/switch/punktfunk/punktfunk.nro`, and launching by
+   holding R over a game, never from the Album (D13). Then the first pairing, handheld and
+   docked, and the controls: A confirms, Minus + A opens the dial, holding L + R + Plus + Minus
+   ends the stream, touch. Then sleep, logs and how to report (`punktfunk.log` and `.log.1`),
+   and the known limits: docked play is less tested than handheld, 20 Mb/s on Wi-Fi, no applet
+   mode, no keyboard or mouse. It is in English, as everything on GitHub is. The README
+   stops saying nothing has run on a console. It points players to the manual and keeps the
+   probe for developers.
+6. **`release.yml` on `v*` tags,** the PS5's shape. The console lane is shared with `ci.yml`
+   (a reusable workflow), not copied. `PKG_VERSION` is the tag. A gate fails the tag when the
+   notices do not name the GPL. The release attaches `punktfunk.nro`, its
+   SHA-256, `punktfunk.elf` (for crash offsets) and `THIRD-PARTY-NOTICES.txt`.
+7. **Tagged, still private.** `wp5-reliability` and this package reach `main`, and `v1.0.0` is
+   the first tag: handheld play is what the client is for, and it works. The release is private
+   with the repository; going public (§11.1) and the monorepo's download page row come later.
+8. **The last console round.** On the tester's Switch, a clean install of the tag's NRO
+   following only `docs/tester.md`. Then the tests deferred to the end (WP4): a second pad, ten
+   minutes docked at 1080p, an hour of play.
+
+**Exit (G6):** a `v*` tag publishes the NRO, its checksum, the ELF and the notices, which name the
+NRO's GPL and its source. The tester installs and streams from the release by the manual alone.
+
+**Outcome (2026-11-02).** On the tester's Switch 1 the PR's NRO shows its icon and `broslife` in
+the Homebrew Menu and `1.0.0+g8e1e279` in About, and streams as WP5's did. The console lane
+moved into `console.yml`, which `ci.yml` and `release.yml` both call, and the release notes are
+`packaging/release-notes.md`. `v1.0.0` is the first tag. Departures:
+
+- No LGPL FFmpeg: `nvtegra` is GPL, so the NRO is GPL-3.0-or-later and the source stays MIT OR
+  Apache-2.0 (D19).
+- The repository stays private until an organisation admin makes it public; its releases become
+  public with it. The download page row waits for that.
+- The second pad, ten minutes docked at 1080p and the hour of play still wait. The manual says
+  docked is tested less.
 
 ## 5. Developing without the console
 
@@ -326,7 +394,7 @@ client-switch/
   toolchain/patches/{libc,rustix,getrandom,…}  the crate legs, each README: upstream + origin
   toolchain/nx.cmake, toolchain/bin/cc …       toolchain file + cc wrappers for the target
   scripts/pins.env              devkitPro packages, mesa-switch, FFmpeg, skia-safe, PUNKTFUNK_REV
-  scripts/cargo-nx.sh, build-nvk.sh, build-ffmpeg.sh, build-skia.sh, package-nro.sh
+  scripts/cargo-nx.sh, build-nvk.sh, build-skia.sh, package-nro.sh
   Taskfile.yml, taskfiles/docker.yml
   docker/Dockerfile             devkitpro/devkita64 + nightly + the three archives
   src/main.rs                   pf-nx
@@ -356,7 +424,7 @@ client-switch/
 | aws-lc-rs will not cross-build with GCC/newlib | WP0.3 link errors | the PS5's shims; else the `ring` leg as this target's provider, behind a cfg in core |
 | NVK hangs or is slower than the panel | WP0.4 histogram, the bevy hang | the GL fallback (Mesa 20.1, Skia `gl`) — the plan's original shape, one presenter rewrite |
 | Skia archive | §3.3 | raster fallback |
-| `nvtegra` is not in devkitPro's `switch-ffmpeg` at the pinned version | WP0.6 | build the pinned fork; `scripts/build-ffmpeg.sh` exists for it either way |
+| `switch-ffmpeg` moves past its pin | the image's version check | a bump is a PR with the probe re-run and the recipe commit updated |
 | The crate legs drift | every nightly or pin bump | `scripts/pins.env` pins them; a bump is a PR with the probe re-run |
 | Applet mode out of memory | WP0.9 | title override documented as required; applet mode unsupported (D13) |
 | The emulator hides a device-only fault | every round | the tester's bundle decides; Ryujinx is never cited |
