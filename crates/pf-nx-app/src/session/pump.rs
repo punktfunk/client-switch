@@ -514,6 +514,7 @@ pub fn spawn_audio_feed(
         .name("pf-audio-pump".into())
         .spawn(move || audio_pump(&client, &mut stage, &stop))
         .context("spawn audio thread")
+        .inspect(crate::platform::thread_spawned)
 }
 
 /// One cadence series for the heartbeat: how many intervals, which way they ran, how irregular they

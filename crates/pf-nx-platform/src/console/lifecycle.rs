@@ -7,9 +7,13 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use pf_nx_app::platform::{Clocks, Lifecycle, SystemEvent};
+use std::fmt::Write as _;
+use std::sync::Arc;
+
+use pf_nx_app::platform::{Clocks, Lifecycle, SystemEvent, ThreadProbe};
 use pf_nx_sys::applet::{self, FocusState, HookEvent};
-use pf_nx_sys::{clk, mem, rt, socket, swkbd};
+use pf_nx_sys::thread::{ThreadSample, CORES};
+use pf_nx_sys::{clk, mem, rt, socket, swkbd, thread};
 
 pub struct NxLifecycle {
     events: mpsc::Receiver<HookEvent>,
@@ -103,6 +107,10 @@ impl Lifecycle for NxLifecycle {
         }
     }
 
+    fn thread_probe(&self) -> Option<Arc<dyn ThreadProbe>> {
+        Some(Arc::new(NxThreads))
+    }
+
     /// Returns the socket driver's lent heap, closes the detached threads' stacks, and leaves
     /// through libnx's `__appExit`: back to hbl when the heap is clean, else through AM to HOME.
     fn exit(&self) -> ! {
@@ -110,6 +118,71 @@ impl Lifecycle for NxLifecycle {
         socket::exit();
         release_heap();
         std::process::exit(0)
+    }
+}
+
+/// `pf-nx-sys`'s thread registry: every thread `threadCreate` started, numbered in creation order.
+struct NxThreads;
+
+impl ThreadProbe for NxThreads {
+    fn spawned(&self, pthread: usize, name: &str) {
+        // SAFETY: std's `as_pthread_t` of a thread whose handle its spawner still holds.
+        unsafe { thread::name_spawned(pthread, name) };
+    }
+
+    /// `proc 0x7 | cores 0:62% 1:0% 2:0% 3:0% | #3 pf-video-pump s0 m0x1 p0x2c 0:31% | gone #9 …`:
+    /// for each thread its start core, core mask, priority and share of each core it ran on.
+    fn report(&self) -> String {
+        let report = thread::report();
+        let mut line = match report.process_mask {
+            Some(mask) => format!("proc {mask:#x}"),
+            None => "proc ?".to_string(),
+        };
+        let mut cores = [0f32; CORES];
+        for t in &report.threads {
+            for (sum, busy) in cores.iter_mut().zip(t.busy) {
+                *sum += busy.unwrap_or(0.0);
+            }
+        }
+        line.push_str(" | cores");
+        for (core, busy) in cores.iter().enumerate() {
+            let _ = write!(line, " {core}:{:.0}%", busy * 100.0);
+        }
+        if let Some(rc) = report.tick_error {
+            let _ = write!(line, " (ticks refused {})", pf_nx_sys::result_code(rc));
+        }
+        for t in &report.threads {
+            line.push_str(" | ");
+            describe(&mut line, t);
+        }
+        for t in &report.gone {
+            line.push_str(" | gone ");
+            describe(&mut line, t);
+        }
+        line
+    }
+}
+
+fn describe(line: &mut String, t: &ThreadSample) {
+    let unknown = || "?".to_string();
+    let _ = write!(
+        line,
+        "#{} {} s{} m{} p{}",
+        t.seq,
+        t.name.as_deref().unwrap_or("?"),
+        t.start_core.map_or_else(unknown, |c| c.to_string()),
+        t.mask.map_or_else(unknown, |m| format!("{m:#x}")),
+        t.priority.map_or_else(unknown, |p| format!("{p:#x}")),
+    );
+    // The preferred core only where it is not the one the thread started on.
+    let start = t.start_core.and_then(|s| i32::try_from(s).ok());
+    if let Some(preferred) = t.preferred.filter(|&p| Some(p) != start) {
+        let _ = write!(line, " pref{preferred}");
+    }
+    for (core, busy) in t.busy.iter().enumerate() {
+        if let Some(busy) = busy.filter(|b| *b >= 0.005) {
+            let _ = write!(line, " {core}:{:.0}%", busy * 100.0);
+        }
     }
 }
 

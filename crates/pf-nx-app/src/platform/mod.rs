@@ -334,6 +334,43 @@ pub trait Lifecycle {
     fn keyboard(&mut self) -> Option<String> {
         None
     }
+
+    /// Where the title's threads run, for the logs. `None` where nothing tracks them.
+    fn thread_probe(&self) -> Option<Arc<dyn ThreadProbe>> {
+        None
+    }
+}
+
+/// Which core each of the title's threads runs on and how busy it keeps it.
+pub trait ThreadProbe: Send + Sync {
+    /// A thread its spawner just started: `pthread` is std's `as_pthread_t`.
+    fn spawned(&self, pthread: usize, name: &str);
+    /// One line on every thread, with its share of each core since the last call.
+    fn report(&self) -> String;
+}
+
+static THREAD_PROBE: std::sync::OnceLock<Arc<dyn ThreadProbe>> = std::sync::OnceLock::new();
+
+/// Publishes the platform's probe. Call once, before the first thread spawns.
+pub fn install_thread_probe(probe: Arc<dyn ThreadProbe>) {
+    let _ = THREAD_PROBE.set(probe);
+}
+
+/// Tells the probe the name of the thread `handle` joins. The spawner calls it: a thread is never
+/// named from inside itself.
+pub fn thread_spawned<T>(handle: &std::thread::JoinHandle<T>) {
+    #[cfg(unix)]
+    if let (Some(probe), Some(name)) = (THREAD_PROBE.get(), handle.thread().name()) {
+        use std::os::unix::thread::JoinHandleExt;
+        probe.spawned(handle.as_pthread_t() as usize, name);
+    }
+    #[cfg(not(unix))]
+    let _ = handle;
+}
+
+/// The probe's line for a 10 s summary, `None` without one.
+pub fn thread_report() -> Option<String> {
+    THREAD_PROBE.get().map(|probe| probe.report())
 }
 
 /// The CPU, GPU and memory clocks, in Hz.

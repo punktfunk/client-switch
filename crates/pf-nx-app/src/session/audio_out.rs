@@ -148,6 +148,7 @@ impl AudioOutSink {
             .name("pf-audio-out".into())
             .spawn(move || write_loop(&thread_shared, port, usize::from(channels)))
             .context("spawn audio writer")?;
+        crate::platform::thread_spawned(&writer);
         Ok(Self {
             shared,
             channels,

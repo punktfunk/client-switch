@@ -110,6 +110,10 @@ pub unsafe extern "C" fn __wrap_threadCreate(
     if rc != 0 {
         // SAFETY: no thread was created, so `start` is still only ours.
         drop(unsafe { Box::from_raw(start) });
+    } else {
+        // SAFETY: libnx filled `t`, whose first field is the new thread's handle; the thread
+        // waits for `threadStart`, so it is numbered before it runs.
+        crate::thread::created(unsafe { t.cast::<u32>().read() });
     }
     rc
 }
@@ -117,9 +121,19 @@ pub unsafe extern "C" fn __wrap_threadCreate(
 unsafe extern "C" fn thread_start(start: *mut c_void) {
     set_thread_pointer();
     // SAFETY: `start` is the box `__wrap_threadCreate` leaked for this thread alone.
+    unsafe { run_entry(start) };
+}
+
+/// The thread's entry between its registry's start and finish, apart from `thread_start`, which
+/// must not touch a thread-local before the pointer is set.
+#[inline(never)]
+unsafe fn run_entry(start: *mut c_void) {
+    // SAFETY: as `thread_start`.
     let (entry, arg) = *unsafe { Box::from_raw(start.cast::<(ThreadFunc, *mut c_void)>()) };
+    crate::thread::started();
     // SAFETY: the entry and argument the thread's creator passed to `threadCreate`.
     unsafe { entry(arg) };
+    crate::thread::finished();
 }
 
 // std detaches a thread whenever its `JoinHandle` drops unjoined (tokio's blocking pool, the

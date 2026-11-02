@@ -188,4 +188,5 @@ fn spawn_video_thread(
             video_pump(client, stage, first, opener, stop, stats, is_hdr);
         })
         .context("spawn video thread")
+        .inspect(crate::platform::thread_spawned)
 }

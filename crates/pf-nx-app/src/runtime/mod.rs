@@ -99,6 +99,9 @@ pub fn run(platform: Platform) -> ! {
         log,
         device,
     } = platform;
+    if let Some(probe) = lifecycle.thread_probe() {
+        crate::platform::install_thread_probe(probe);
+    }
     crate::services::paths::install(storage.data_dir());
     // Without a log there is nothing to diagnose a failure from; the title still runs.
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();

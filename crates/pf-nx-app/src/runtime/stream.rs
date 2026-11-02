@@ -65,6 +65,7 @@ impl InputThread {
             .name("pf-input".into())
             .spawn(move || input_loop(pads, &input, kind, output, &thread_stop, &rx, &tx))
             .expect("spawn the input thread");
+        crate::platform::thread_spawned(&handle);
         Self { stop, to, from, handle }
     }
 
@@ -426,6 +427,9 @@ fn stream(
 
         if let Some(core) = hud.refresh(connected, decoder) {
             tracing::info!("stats: {} | {core}{}", perf.take_window(), app.clocks_suffix());
+            if let Some(threads) = crate::platform::thread_report() {
+                tracing::info!("threads: {threads}");
+            }
         }
         hud.local = vec![format!(
             "present: {} frames, {} missed{}",
