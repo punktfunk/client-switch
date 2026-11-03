@@ -38,6 +38,9 @@ The usual round trip for section 1:
 - **A dead connection leaves a thread spinning.** Unplugging the dock mid-stream leaves the old
   receive thread running until the app exits, wasting CPU (`punktfunk-core` transport). A fatal
   socket error should end it.
+- **Fewer socket calls per packet.** The system's core 3 saturates at stock clocks serving socket
+  calls (section 2, Performance mode). This client already reads 32 datagrams a call; the rest is
+  in `punktfunk-core`'s receive loop.
 - **A download page row,** once the repository is public.
 
 ## 2. Client only, not done yet
@@ -49,6 +52,10 @@ None of these need the monorepo. Each needs a console test or the maintainer's y
 **Why.** At stock clocks the CPU, not the GPU, is the limit. A handheld sweep with sys-clk
 (NOTES, 2026-11-02): CPU 1785 MHz took the round trip from 19 ms to 7 ms and end to end from
 about 49 ms to 43 ms, and the menu's long frames went away. GPU and memory alone changed little.
+A thread probe (2026-11-03, handheld, stock clocks; PR 11, closed) shows why: the app's threads
+already sit on cores 0 to 2, nearly idle (13, 9 and 6 percent at CPU 1785 MHz), while core 3, the
+system's, runs at 73 to 90 percent serving every socket call. So placing or pinning threads
+cannot help, and the forwarder option "4 CPU cores" would only add load to core 3 and stays off.
 A 27-minute session at CPU 1785 MHz reached 30 ms end to end.
 
 **The idea.** An opt-in setting, off by default: a small CPU raise in the menu, and CPU 1785 MHz
@@ -65,19 +72,6 @@ A 27-minute session at CPU 1785 MHz reached 30 ms end to end.
 hurt composition and the UI. Stay within the official top clocks (CPU 1785, memory 1600). Restore
 before `Lifecycle::exit`. The cost is battery and heat. **Needs the maintainer's yes**, because it
 adds a player-facing setting (`docs/settings.md`).
-
-### Spread the threads over cores 0 to 2
-
-**Why.** libnx creates every thread, so every Rust std thread, on "the process's default core"
-(`threadCreate(..., -2)`), and nothing in this client sets a core. It is likely that the main,
-tokio, decode, audio and receive threads all share one core while two sit idle. That would fit
-the clock sweep above. **Unconfirmed.**
-
-**Test first.** A probe build logs each thread's core, core mask and per-core load after every
-10-second summary (commit `16a1260`, branch `thread-cores`, not merged). If it confirms one core,
-place threads explicitly from `pf-nx-sys` (main and UI on core 0, decode on 1, network on 2) and
-measure as in WP5. Core 3 stays the system's: the forwarder option "4 CPU cores" would let the
-title use it, and it should stay off.
 
 ### The smoothness buffer's Automatic on the Switch
 
