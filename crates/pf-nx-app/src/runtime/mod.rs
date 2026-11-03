@@ -13,9 +13,10 @@ pub mod testrun;
 mod touch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use crate::core::model::bitrate_max_kbps;
-use crate::platform::{Display, Lifecycle, Pads, Platform, SystemEvent};
+use crate::platform::{Display, Lifecycle, Pads, Platform, SocketCalls, SystemEvent};
 use crate::services::power::ExitPlan;
 use crate::services::store;
 use crate::session::{self, Media};
@@ -54,6 +55,17 @@ impl App {
         self.lifecycle
             .clocks()
             .map_or_else(String::new, |c| format!(" | clocks {c}"))
+    }
+
+    /// The socket calls since the last call, one summary; the first call only starts the count.
+    fn socket_window(&self, last: &mut Option<(SocketCalls, Instant)>) -> Option<String> {
+        let now = self.lifecycle.socket_calls()?;
+        let at = Instant::now();
+        let window = last
+            .as_ref()
+            .map(|(before, then)| now.window(before, at.duration_since(*then).as_secs_f64()));
+        *last = Some((now, at));
+        window
     }
 }
 

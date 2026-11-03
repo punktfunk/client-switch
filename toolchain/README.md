@@ -6,7 +6,7 @@ invocation), `docker/Dockerfile` (devkitA64, libnx, switch-tools and the nightly
 
 | Path | What |
 | --- | --- |
-| `aarch64-nintendo-horizon.json` | The target: `os = "horizon"`, `env = "newlib"`, `rust-lld`, the link script that puts libnx's crt0 first, and `--wrap` for `threadCreate`, `fchmod`, `rename`, `rmdir`. |
+| `aarch64-nintendo-horizon.json` | The target: `os = "horizon"`, `env = "newlib"`, `rust-lld`, the link script that puts libnx's crt0 first, and `--wrap` for `threadCreate`, `fchmod`, `rename`, `rmdir`, `setsockopt` and the socket calls the title counts. |
 | `patches/<crate>/` | The crate legs: crates.io source plus Horizon arms, applied by `.cargo/config.toml`. Each `LEG.md` names the upstream version, the origin and the change. |
 | `include/` | C headers devkitA64's newlib lacks (`sys/termios.h` for aws-lc). |
 | `skia/` | What `scripts/build-skia.sh` builds Skia with for the console: the `cc`/`c++` wrappers, `args.gn`, `horizon.patch`, `compat.c` (the `mmap` family over the heap), `include/sys/mman.h`, and `layout-check.py`, which proves bindgen's Linux parse of the headers against devkitA64's G++. |

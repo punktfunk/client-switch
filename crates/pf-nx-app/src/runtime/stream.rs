@@ -358,6 +358,7 @@ fn stream(
     let mut last_elapsed = Duration::ZERO;
     let mut dial_was_open = false;
     let mut perf = StreamPerf::default();
+    let mut sockets = None;
     let mut last_frame = Instant::now();
 
     let next = loop {
@@ -426,6 +427,9 @@ fn stream(
 
         if let Some(core) = hud.refresh(connected, decoder) {
             tracing::info!("stats: {} | {core}{}", perf.take_window(), app.clocks_suffix());
+            if let Some(line) = app.socket_window(&mut sockets) {
+                tracing::info!("{line}");
+            }
         }
         hud.local = vec![format!(
             "present: {} frames, {} missed{}",

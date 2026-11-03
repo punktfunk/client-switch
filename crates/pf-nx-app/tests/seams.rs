@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use pf_nx_app::platform::fake::{FakeAudio, FakeDisplay, FakeLifecycle, FakePads, FakeStorage, FakeVideo};
-use pf_nx_app::platform::{AudioOut, Display, Pads, Platform, Refresh, Storage};
+use pf_nx_app::platform::{read_wait_us, AudioOut, Display, Pads, Platform, Refresh, SocketCalls, Storage};
 
 /// A display presents what the UI drew and reads it back at its own size.
 #[test]
@@ -89,4 +89,39 @@ fn a_menu_test_run_leaves_a_bundle_and_exits() {
     assert_eq!(verdict["ok"], true, "{verdict}");
     assert!(bundle.join("frame-menu.png").exists());
     assert!(bundle.join("environment.json").exists());
+}
+
+/// A window's rates come from what changed since the last one, and it names both switches.
+#[test]
+fn a_socket_window_reads_as_rates() {
+    let before = SocketCalls {
+        polls: 100,
+        batch_reads: 50,
+        batch_datagrams: 200,
+        ..SocketCalls::default()
+    };
+    let now = SocketCalls {
+        polls: 300,
+        batch_reads: 150,
+        batch_datagrams: 600,
+        batch_read_ns: 20_000_000,
+        sends: 40,
+        lean_waker: true,
+        read_wait_us: 1000,
+        ..before
+    };
+    let line = now.window(&before, 10.0);
+    assert!(line.starts_with("socket calls 10.0s: 34/s"), "{line}");
+    assert!(line.contains("recvmmsg 10 (4.0 datagrams, 200 us each)"), "{line}");
+    assert!(line.ends_with("lean waker on, read wait 1000 us"), "{line}");
+}
+
+/// A marker holds milliseconds as any text editor writes them.
+#[test]
+fn a_read_wait_marker_is_milliseconds() {
+    assert_eq!(read_wait_us("1"), 1000);
+    assert_eq!(read_wait_us("\u{feff}0,5\r\n"), 500);
+    assert_eq!(read_wait_us("60"), 5000);
+    assert_eq!(read_wait_us(""), 0);
+    assert_eq!(read_wait_us("-1"), 0);
 }

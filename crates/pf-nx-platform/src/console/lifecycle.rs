@@ -7,7 +7,7 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use pf_nx_app::platform::{Clocks, Lifecycle, SystemEvent};
+use pf_nx_app::platform::{Clocks, Lifecycle, SocketCalls, SystemEvent};
 use pf_nx_sys::applet::{self, FocusState, HookEvent};
 use pf_nx_sys::{clk, mem, rt, socket, swkbd};
 
@@ -90,6 +90,23 @@ impl Lifecycle for NxLifecycle {
             cpu_hz: c.cpu_hz,
             gpu_hz: c.gpu_hz,
             emc_hz: c.emc_hz,
+        })
+    }
+
+    fn socket_calls(&self) -> Option<SocketCalls> {
+        let c = rt::socket_calls();
+        let (lean_waker, read_wait_us) = super::socket_switches();
+        Some(SocketCalls {
+            polls: c.polls,
+            batch_reads: c.batch_reads,
+            batch_datagrams: c.batch_datagrams,
+            batch_read_ns: c.batch_read_ns,
+            recvs: c.recvs,
+            recv_froms: c.recv_froms,
+            sends: c.sends,
+            send_tos: c.send_tos,
+            lean_waker,
+            read_wait_us,
         })
     }
 

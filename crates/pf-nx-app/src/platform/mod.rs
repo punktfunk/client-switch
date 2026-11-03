@@ -329,11 +329,74 @@ pub trait Lifecycle {
         None
     }
 
+    /// The socket calls made since the title started, for the logs. `None` where nothing counts
+    /// them: a dev box.
+    fn socket_calls(&self) -> Option<SocketCalls> {
+        None
+    }
+
     /// Shows the system's keyboard over the title and blocks until the player closes it: the
     /// text they confirmed, or `None` when they cancelled or there is no such keyboard.
     fn keyboard(&mut self) -> Option<String> {
         None
     }
+}
+
+/// The console's socket calls since the title started, and the two A/B switches they ran under.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SocketCalls {
+    pub polls: u64,
+    pub batch_reads: u64,
+    pub batch_datagrams: u64,
+    pub batch_read_ns: u64,
+    pub recvs: u64,
+    pub recv_froms: u64,
+    pub sends: u64,
+    pub send_tos: u64,
+    pub lean_waker: bool,
+    pub read_wait_us: u32,
+}
+
+impl SocketCalls {
+    /// One summary of the calls since `before`, `secs` ago, as rates a second.
+    pub fn window(&self, before: &Self, secs: f64) -> String {
+        let reads = self.batch_reads - before.batch_reads;
+        let datagrams = self.batch_datagrams - before.batch_datagrams;
+        let read_ns = self.batch_read_ns - before.batch_read_ns;
+        let polls = self.polls - before.polls;
+        let recvs = self.recvs - before.recvs;
+        let recv_froms = self.recv_froms - before.recv_froms;
+        let sends = self.sends - before.sends;
+        let send_tos = self.send_tos - before.send_tos;
+        let total = polls + reads + recvs + recv_froms + sends + send_tos;
+        let rate = |n: u64| n as f64 / secs.max(0.001);
+        let each = |n: u64| n as f64 / reads.max(1) as f64;
+        format!(
+            "socket calls {secs:.1}s: {:.0}/s | poll {:.0}, recvmmsg {:.0} ({:.1} datagrams, {:.0} us each), recv {:.0}, \
+             recvfrom {:.0}, send {:.0}, sendto {:.0} a second | lean waker {}, read wait {} us",
+            rate(total),
+            rate(polls),
+            rate(reads),
+            each(datagrams),
+            each(read_ns) / 1e3,
+            rate(recvs),
+            rate(recv_froms),
+            rate(sends),
+            rate(send_tos),
+            if self.lean_waker { "on" } else { "off" },
+            self.read_wait_us,
+        )
+    }
+}
+
+/// The read wait a marker file asks for, in microseconds: its text is milliseconds, capped at
+/// 5 ms. Anything else is no wait.
+pub fn read_wait_us(text: &str) -> u32 {
+    let text = text.trim_start_matches('\u{feff}').trim().replace(',', ".");
+    text.parse::<f64>()
+        .ok()
+        .filter(|ms| ms.is_finite() && *ms > 0.0)
+        .map_or(0, |ms| (ms.min(5.0) * 1000.0) as u32)
 }
 
 /// The CPU, GPU and memory clocks, in Hz.

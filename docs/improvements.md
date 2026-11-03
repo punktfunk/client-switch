@@ -81,9 +81,26 @@ already reads up to 32 datagrams a call (`toolchain/patches/quinn-udp`, section 
 is to find what else calls the socket per packet, and to cut it. It is separate from Performance
 mode and can go in parallel.
 
+**Where the calls go,** read from the code and not yet measured on a console:
+
+- The shared socket's reader spends a `poll` and a `recvmmsg` per wake, even for one datagram.
+- Audio rides QUIC datagrams, one per 5 ms frame, and each can wake tokio from the reader's
+  thread. That wake is a loopback datagram (the mio leg): a `send`, the driver's `poll`, and two
+  `recv` to empty the socket.
+- Every QUIC ACK, input event and feedback report is its own `sendto`.
+
+**The A/B build.** The title counts these calls at the link (`--wrap`, `pf-nx-sys::rt`) and logs a
+`socket calls` line every 10 s. Two marker files in `/switch/punktfunk/`, read at start, turn the
+cuts on:
+
+- `despertador-leve`: a wake with one on its way sends nothing, and the ack reads once.
+- `espera-leitura`, holding milliseconds: each batch read waits that long first, so one call takes
+  more of a frame's burst.
+
 **Test first.** A Status Monitor screenshot at stock clocks during a stream, to confirm that core
-3 is the busy one with the current build. If the remaining calls turn out to sit in
-`punktfunk-core`'s receive loop, that part moves to section 1.
+3 is the busy one with the current build. What the session's runtime needs from tokio's I/O driver,
+the `poll` and `recvmmsg` pair and the ACK rate all sit in `punktfunk-core`: if the counts say they
+matter, those parts move to section 1.
 
 ### The smoothness buffer's Automatic on the Switch
 

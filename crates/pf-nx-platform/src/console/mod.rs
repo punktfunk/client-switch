@@ -9,10 +9,11 @@ mod pads;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use pf_nx_app::platform::{DeviceInfo, Display, OperationMode, Platform, Storage, VideoDecoders};
-use pf_nx_sys::{applet, nvk, setsys, socket, vi};
+use pf_nx_app::platform::{read_wait_us, DeviceInfo, Display, OperationMode, Platform, Storage, VideoDecoders};
+use pf_nx_sys::{applet, nvk, rt, setsys, socket, vi};
 use pf_nx_vk::{GpuDevice, Presenter, Target, VideoSlot};
 
 /// Identity, settings, logs and bundles; the NRO itself lives here too (plan D18).
@@ -21,6 +22,13 @@ const DATA_DIR: &str = "sdmc:/switch/punktfunk";
 /// A file of this name in [`DATA_DIR`], read at start, turns the straight VIC route on, so one
 /// build A/Bs both routes.
 const STRAIGHT_MARKER: &str = "vic-direto";
+
+/// A file of this name in [`DATA_DIR`], read at start, turns the mio leg's lean waker on.
+const LEAN_WAKER_MARKER: &str = "despertador-leve";
+
+/// A file of this name in [`DATA_DIR`], read at start, makes every batch read wait the
+/// milliseconds it holds, so one build A/Bs several waits.
+const READ_WAIT_MARKER: &str = "espera-leitura";
 
 /// The Mesa pin NVK was built from, for the log and the About screen.
 const MESA_PIN: &str = match option_env!("PF_MESA_PIN") {
@@ -75,11 +83,31 @@ fn nxlink() -> Option<Box<dyn Write + Send>> {
     up.then(|| Box::new(std::io::stdout()) as Box<dyn Write + Send>)
 }
 
+/// The markers' switches, read once: whether the waker is lean, and the read wait in microseconds.
+fn socket_switches() -> (bool, u32) {
+    static SWITCHES: OnceLock<(bool, u32)> = OnceLock::new();
+    *SWITCHES.get_or_init(|| {
+        let dir = Path::new(DATA_DIR);
+        let wait = std::fs::read_to_string(dir.join(READ_WAIT_MARKER)).map_or(0, |text| read_wait_us(&text));
+        (dir.join(LEAN_WAKER_MARKER).exists(), wait)
+    })
+}
+
+/// Applies the markers. Before any thread exists: `set_var` is not thread-safe.
+fn apply_socket_switches() {
+    let (lean_waker, wait_us) = socket_switches();
+    if lean_waker {
+        std::env::set_var("PF_NX_LEAN_WAKER", "1");
+    }
+    rt::set_read_wait(Duration::from_micros(u64::from(wait_us)));
+}
+
 /// Builds the console platform. Sockets and nxlink come first, so a display that fails to come
 /// up is reported; the display comes next, as the step most likely to fail.
 pub fn platform(kind: DisplayKind) -> Result<Platform> {
     let log = nxlink();
     std::fs::create_dir_all(DATA_DIR).with_context(|| format!("create {DATA_DIR}"))?;
+    apply_socket_switches();
     let (display, video, gpu, ui): (Box<dyn Display>, Arc<dyn VideoDecoders>, String, String) = match kind {
         DisplayKind::Nvk => {
             let window = vi::default_window();
