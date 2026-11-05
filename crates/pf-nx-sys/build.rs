@@ -1,4 +1,4 @@
-//! On the console target: builds `csrc/pf_swkbd.c`, and `csrc/pf_av.c` with `av`, and links libnx, newlib, the pinned libavcodec and
+//! On the console target: builds `csrc/pf_swkbd.c` and `csrc/pf_ocmod.c`, and `csrc/pf_av.c` with `av`, and links libnx, newlib, the pinned libavcodec and
 //! NVK. On Linux with `av`: the same shim against the system's libavcodec, which decodes in
 //! software for the dev box. Elsewhere: nothing. `cfg(pf_av)` says the shim is linked.
 
@@ -28,6 +28,7 @@ fn main() {
         println!("cargo:rustc-cfg=pf_av");
     }
     build_shim(&dkp, &portlibs, "pf_swkbd");
+    build_shim(&dkp, &portlibs, "pf_ocmod");
 
     let nvk = PathBuf::from(env::var_os("PF_NX_NVK_LIB").unwrap_or_else(|| "/opt/pf-nx/nvk/lib".into()));
     if nvk_on && !nvk.join("libvulkan_bh.a").is_file() {
