@@ -1,20 +1,29 @@
-// NVDEC through libavcodec's nvtegra hwaccel, as six calls the Rust side binds (src/av.rs).
-// One thread uses a decoder at a time; pictures leave as pitch-linear NV12 via the VIC,
-// through libavutil's own frame and a copy, or, when the caller opens with `direct`, straight
-// into the caller's planes where the hwcontext can map them.
+// NVDEC through libavcodec's nvtegra hwaccel, as the calls src/av.rs binds. One thread uses a
+// decoder at a time; pictures leave as pitch-linear NV12 via the VIC, through libavutil's own
+// frame and a copy, or, opened with `direct`, straight into the caller's planes where the
+// hwcontext can map them. In place, a picture leaves as the decoder's own surface.
 // Built for a Linux dev box (no __SWITCH__), the same calls decode in software against the
 // system's libavcodec and interleave its 4:2:0 chroma into the same NV12 planes.
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
 
+#ifdef __SWITCH__
+// nvtegra.h names libnx's NvChannel and MmuRequest without including them.
+#include <switch.h>
+#endif
+
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/time.h>
+#ifdef __SWITCH__
+#include <libavutil/hwcontext_nvtegra.h>
+#endif
 
 // The shim's own errors, outside FFmpeg's AVERROR space; src/av.rs names them.
 #define PF_AV_NOT_NV12 (-0x70660001)
 #define PF_AV_TOO_SMALL (-0x70660002)
+#define PF_AV_NOT_IN_PLACE (-0x70660003)
 
 // How the last picture reached the caller's planes (src/av.rs `Route`).
 enum {
@@ -25,6 +34,8 @@ enum {
     // The hwcontext's transfer straight into the caller's planes.
     PF_AV_ROUTE_VIC = 3,
     PF_AV_ROUTE_CPU = 4,
+    // The decoder's surface itself, sampled where NVDEC wrote it.
+    PF_AV_ROUTE_IN_PLACE = 5,
 };
 
 typedef struct PfAvStats {
@@ -33,12 +44,25 @@ typedef struct PfAvStats {
     uint32_t route;
     // Why transfers stopped going straight into the caller's planes; 0 while they do.
     int32_t direct_err;
+    // NVDEC's clock after the last picture, kHz; 0 off the console.
+    uint32_t nvdec_khz;
 } PfAvStats;
 
 typedef struct PfAvPictureMeta {
     uint32_t width, height;
     uint64_t pts;
 } PfAvPictureMeta;
+
+// A decoded surface out of the decoder (src/av.rs `Surface`); NVDEC decodes into it again only
+// after `frame` is freed. Both planes are 16Bx2 block-linear with two GOBs to a block, `pitch`
+// bytes a row; the CbCr plane starts `chroma_offset` bytes in. `base` and `size` are 4 KiB
+// aligned. `pool` changes when libavcodec replaces its surface pool: older addresses may be freed.
+typedef struct PfAvSurface {
+    AVFrame *frame;
+    uint8_t *base;
+    uint32_t size, pitch, chroma_offset, width, height, pool;
+    uint64_t pts;
+} PfAvSurface;
 
 typedef struct PfAvDecoder {
     AVCodecContext *ctx;
@@ -51,6 +75,12 @@ typedef struct PfAvDecoder {
     int64_t sent_at;
     uint64_t taken;
     PfAvStats stats;
+    // Hold NVDEC at its top clock; the clock last asked for, Hz.
+    int pin_clock;
+    uint32_t pinned_hz;
+    // The surface pool last handed out from, held so its address names no later pool.
+    AVBufferRef *pool;
+    uint32_t pool_gen;
 } PfAvDecoder;
 
 void pf_av_close(PfAvDecoder *d) {
@@ -61,6 +91,7 @@ void pf_av_close(PfAvDecoder *d) {
     av_frame_free(&d->hw);
     av_frame_free(&d->sw);
     av_frame_free(&d->direct);
+    av_buffer_unref(&d->pool);
     av_free(d);
 }
 
@@ -126,6 +157,35 @@ int pf_av_send(PfAvDecoder *d, const uint8_t *data, int len, uint64_t pts) {
     return 0;
 }
 
+// Non-zero holds NVDEC at its top clock from the next picture; zero hands it back to nvtegra's
+// scaling, which takes over at its next rescale.
+void pf_av_set_top_clock(PfAvDecoder *d, int on) {
+    on = on != 0;
+    if (d->pin_clock != on) {
+        d->pin_clock = on;
+        d->pinned_hz = 0;
+    }
+}
+
+// nvtegra rescales NVDEC every 20 pictures so one takes about a frame interval: playback's
+// rule, which puts a 1080p picture at about 8 ms. Asking the top clock again after each
+// rescale holds it there; closing the decoder releases the request.
+static void hold_clock(PfAvDecoder *d) {
+#ifdef __SWITCH__
+    AVHWDeviceContext *dev = (AVHWDeviceContext *)d->device->data;
+    AVNVTegraChannel *ch = &((AVNVTegraDeviceContext *)dev->hwctx)->nvdec_channel;
+    if (d->pin_clock && ch->clock != d->pinned_hz) {
+        // nvtegra's own top request; mm rounds it down to the fastest step.
+        if (R_SUCCEEDED(mmuRequestSetAndWait(&ch->mmu_request, UINT32_MAX - 999, -1)))
+            mmuRequestGet(&ch->mmu_request, &ch->clock);
+        d->pinned_hz = ch->clock;
+    }
+    d->stats.nvdec_khz = ch->clock / 1000;
+#else
+    (void)d;
+#endif
+}
+
 // The caller's memory as a buffer the frame refers to; the caller owns it.
 static void keep(void *opaque, uint8_t *data) {
     (void)opaque;
@@ -162,6 +222,53 @@ out:
     return err;
 }
 
+// Moves the picture in `d->hw` into `out`. PF_AV_NOT_IN_PLACE off the console, or for a layout
+// the in-place shader does not read; `d->hw` then keeps the picture.
+static int hand_out(PfAvDecoder *d, PfAvSurface *out) {
+    out->frame = NULL;
+#ifdef __SWITCH__
+    AVFrame *hw = d->hw;
+    if (!hw->hw_frames_ctx || hw->format != AV_PIX_FMT_NVTEGRA)
+        return PF_AV_NOT_IN_PLACE;
+    AVNVTegraMap *map = av_nvtegra_frame_get_fbuf_map(hw);
+    uint8_t *base = av_nvtegra_map_get_addr(map);
+    uint32_t size = av_nvtegra_map_get_size(map);
+    int pitch = hw->linesize[0];
+    size_t chroma = (size_t)(hw->data[1] - base);
+    if (map->is_linear || !base || hw->data[0] != base || hw->linesize[1] != pitch || pitch <= 0 ||
+        (pitch & 63) || ((uintptr_t)base & 0xfff) || (size & 0xfff) ||
+        chroma + (size_t)pitch * (((size_t)hw->height + 1) / 2) > size)
+        return PF_AV_NOT_IN_PLACE;
+    if (!d->pool || d->pool->data != hw->hw_frames_ctx->data) {
+        AVBufferRef *pool = av_buffer_ref(hw->hw_frames_ctx);
+        if (!pool)
+            return AVERROR(ENOMEM);
+        av_buffer_unref(&d->pool);
+        d->pool = pool;
+        d->pool_gen++;
+    }
+    if (!(out->frame = av_frame_alloc()))
+        return AVERROR(ENOMEM);
+    out->pool = d->pool_gen;
+    out->base = base;
+    out->size = size;
+    out->pitch = (uint32_t)pitch;
+    out->chroma_offset = (uint32_t)chroma;
+    out->width = (uint32_t)hw->width;
+    out->height = (uint32_t)hw->height;
+    out->pts = (uint64_t)hw->pts;
+    av_frame_move_ref(out->frame, hw);
+    return 1;
+#else
+    (void)d;
+    return PF_AV_NOT_IN_PLACE;
+#endif
+}
+
+void pf_av_surface_free(AVFrame *frame) {
+    av_frame_free(&frame);
+}
+
 static int aligned_256(const void *p, size_t stride) {
     return (((uintptr_t)p | stride) & 0xff) == 0;
 }
@@ -187,14 +294,16 @@ static void interleave_uv(uint8_t *dst, size_t dst_stride, const AVFrame *src, s
 }
 
 // 1 a picture written, 0 none ready, < 0 an AVERROR; the picture is dropped on error. `meta`
-// is filled whenever a picture came out, so a too-small buffer reports the size it needs.
+// is filled whenever a picture came out, so a too-small buffer reports the size it needs. A
+// non-NULL `keep` takes the decoded surface too, its `frame` NULL where it cannot go in place.
 int pf_av_receive(PfAvDecoder *d, uint8_t *y, size_t y_stride, size_t y_len, uint8_t *uv,
-                  size_t uv_stride, size_t uv_len, PfAvPictureMeta *meta) {
+                  size_t uv_stride, size_t uv_len, PfAvPictureMeta *meta, PfAvSurface *keep) {
     int err = avcodec_receive_frame(d->ctx, d->hw);
     if (err == AVERROR(EAGAIN)) return 0;
     if (err < 0) return err;
     d->stats.decoded++;
     d->stats.last_decode_us = (uint32_t)(av_gettime_relative() - d->sent_at);
+    hold_clock(d);
     meta->width = (uint32_t)d->hw->width;
     meta->height = (uint32_t)d->hw->height;
     meta->pts = (uint64_t)d->hw->pts;
@@ -255,8 +364,27 @@ int pf_av_receive(PfAvDecoder *d, uint8_t *y, size_t y_stride, size_t y_len, uin
     }
     err = 1;
 out:
+    if (err == 1 && keep)
+        hand_out(d, keep);
     av_frame_unref(d->hw);
     av_frame_unref(d->sw);
+    return err;
+}
+
+// The next picture as the decoder's surface, with no transfer: 1 out, 0 none ready, < 0 an
+// AVERROR or PF_AV_NOT_IN_PLACE, the picture dropped.
+int pf_av_receive_surface(PfAvDecoder *d, PfAvSurface *out) {
+    int err = avcodec_receive_frame(d->ctx, d->hw);
+    if (err == AVERROR(EAGAIN)) return 0;
+    if (err < 0) return err;
+    d->stats.decoded++;
+    d->stats.last_decode_us = (uint32_t)(av_gettime_relative() - d->sent_at);
+    hold_clock(d);
+    d->stats.last_transfer_us = 0;
+    d->stats.last_copy_us = 0;
+    d->stats.route = PF_AV_ROUTE_IN_PLACE;
+    err = hand_out(d, out);
+    av_frame_unref(d->hw);
     return err;
 }
 

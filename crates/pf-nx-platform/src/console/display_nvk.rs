@@ -49,6 +49,10 @@ impl Display for NvkDisplay {
         self.presenter.set_stream(on, fit);
     }
 
+    fn set_ui_layer(&mut self, on: bool) {
+        self.presenter.set_ui_layer(on);
+    }
+
     fn read_back(&mut self) -> Result<Option<Rgba>> {
         self.presenter.read_back()
     }

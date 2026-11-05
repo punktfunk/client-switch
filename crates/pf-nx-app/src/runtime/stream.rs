@@ -439,6 +439,9 @@ fn stream(
         )];
         let dt = last_frame.elapsed().as_secs_f64();
         last_frame = Instant::now();
+        // Stats off and the dial out of sight draw nothing: the layer is skipped, not blended.
+        app.display
+            .set_ui_layer(hud.tier != StatsVerbosity::Off || ring.damage() != 0);
         let result = app.display.frame(&mut |canvas| {
             if let Some(fonts) = &fonts {
                 hud.draw(canvas, fonts, scale);

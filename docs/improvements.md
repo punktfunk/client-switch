@@ -124,6 +124,25 @@ wall time rather than CPU time. Neither cut shipped. Each setting ran once and n
 photo came back, so core 3's load in these rounds is unknown. The code is on the branch
 `fewer-socket-calls` (PR 12, closed).
 
+### Pictures in place: the console run
+
+**What.** NVDEC's surfaces go to the presenter as they lie: imported once each through
+`VK_EXT_external_memory_host` and detiled (16Bx2 block-linear) by the tiled CSC pass, with no
+VIC transfer, no copy and no staging upload (`pf-nx-vk/src/in_place.rs`). Each decoder starts on
+the VIC; its first detailed picture is read back through the GPU and compared with the VIC's
+copy, and only a match moves the lane in place. A mismatch or a failed import keeps the VIC.
+
+**Test first.** A docked 1080p session: the log's `in place: picture … read back as the VIC
+wrote it` line, then `nvdec[10s]` with `route in place`, transfer and copy at 0, and the picture
+right. A file `vic-copia` in `/switch/punktfunk/` keeps the VIC route for the A/B.
+
+### NVDEC's top clock in handheld
+
+nvtegra rescales NVDEC every 20 pictures so that one takes about a frame interval
+(`av_nvtegra_dfs_update`, floor 180 MHz up to 1080p). Docked, this client holds the top clock;
+handheld keeps the scaling, at about 4 ms a 720p picture (NOTES, 2026-10-31). The maintainer
+keeps it off by default in handheld (2026-11-05); an opt-in could go with Performance mode.
+
 ### The smoothness buffer's Automatic on the Switch
 
 The shared setting resolves Automatic to two frames on every client

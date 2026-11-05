@@ -99,12 +99,17 @@ pub trait Display {
     }
 
     /// Draws one frame and presents it at the next vblank: the newest due stream picture
-    /// (when [`Self::set_stream`] is on), then `ui` over it on a transparent layer. Blocks
-    /// until a swapchain image is free, so this paces the main loop.
+    /// (when [`Self::set_stream`] is on), then `ui` over it on a transparent layer while
+    /// [`Self::set_ui_layer`] has it on. Blocks until a swapchain image is free, so this paces
+    /// the main loop.
     fn frame(&mut self, ui: &mut dyn FnMut(&skia_safe::Canvas)) -> Result<FrameReport>;
 
-    /// Whether the stream layer shows. Off, the UI draws over black.
+    /// Whether the stream layer shows. Off, the UI draws over black and the UI layer is on.
     fn set_stream(&mut self, on: bool, fit: Fit);
+
+    /// Whether [`Self::frame`] draws and blends the UI layer. A stream turns it off while its
+    /// overlay is empty, which spares a full-screen clear, flush and blend each frame.
+    fn set_ui_layer(&mut self, _on: bool) {}
 
     /// The last presented frame as tightly packed RGBA, for test-run bundles.
     fn read_back(&mut self) -> Result<Option<Rgba>>;

@@ -7,6 +7,7 @@
 #![cfg(any(target_os = "linux", target_os = "horizon"))]
 
 pub mod device;
+pub mod in_place;
 pub mod output;
 pub mod picture;
 pub mod pipelines;
@@ -18,6 +19,7 @@ pub mod ui;
 pub mod util;
 
 pub use device::{GpuDevice, Target};
+pub use in_place::{Check, InPlace, TiledSurface};
 pub use picture::{Drops, Nv12Upload, Picture, Planes, StagingPlanes, VideoSlot};
 pub use presenter::Presenter;
 #[cfg(feature = "pyrowave")]

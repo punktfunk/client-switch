@@ -3,28 +3,33 @@
 //! shows real pictures there.
 //!
 //! `feed` decodes on the session's video thread: send the access unit, then receive every
-//! picture straight into the presenter's next staging buffer, which `commit` copies into a
-//! plane set and publishes (D7). On the console the picture goes through libavutil's own frame
-//! and the shim copies it; with [`NxVideo::straight`] the VIC writes into that staging buffer
-//! itself where it can map it (WP5). The `nvdec[10s]` line names which route ran. On the
-//! framebuffer display the pictures land in scratch planes
-//! and are dropped, so the emulator still runs the hwaccel. A decoder error fails this feed,
-//! which has the session ask for a keyframe, and the next feed starts from a flushed decoder.
+//! picture. By the VIC a picture lands in the presenter's next staging buffer, which `commit`
+//! copies into a plane set and publishes (D7): through libavutil's own frame and the shim's copy,
+//! or with [`NxVideo::straight`] written there by the VIC itself (WP5). In place
+//! ([`NxVideo::in_place`]) NVDEC's own surface goes to the presenter, which samples it as it
+//! lies; the lane takes that route once a picture's surface reads back as the VIC copied it, and
+//! leaves it for good on any mismatch. The `nvdec[10s]` line names the route and NVDEC's clock.
+//! On the framebuffer display the pictures land in scratch planes and are dropped, so the
+//! emulator still runs the hwaccel. A decoder error fails this feed, which has the session ask
+//! for a keyframe, and the next feed starts from a flushed decoder.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use pf_nx_app::core::caps::VideoCaps;
 use pf_nx_app::core::media::{FeedFlags, MediaClock, VideoSink, VideoSinkCaps};
 use pf_nx_app::platform::{StreamSpec, VideoDecoders};
 use pf_nx_sys::av;
-use pf_nx_vk::{GpuDevice, Nv12Upload, StagingPlanes, VideoSlot};
+use pf_nx_vk::{Check, GpuDevice, InPlace, Nv12Upload, StagingPlanes, TiledSurface, VideoSlot};
 use punktfunk_core::quic;
 
 /// How often the lane logs where a picture's time went: the `stats:` line's cadence.
 const TIMING_WINDOW: Duration = Duration::from_secs(10);
+/// While the in-place route is checked, every this-many-th picture is checked: half a second at
+/// 60 Hz, so a flat start costs little.
+const CHECK_EVERY: u32 = 30;
 
 /// The decoder behind the lane, for the sink's name and the log.
 #[cfg(target_os = "horizon")]
@@ -38,6 +43,10 @@ pub struct NxVideo {
     /// The VIC writes into the staging buffer itself. Off by default: on the console it neither
     /// lowered the transfer plus copy nor the end-to-end time (WP5, 2026-11-01).
     straight: bool,
+    /// Pictures go to the presenter as NVDEC left them, once one checks out.
+    in_place: bool,
+    /// Whether NVDEC holds its top clock, asked at each access unit.
+    top_clock: fn() -> bool,
 }
 
 impl NxVideo {
@@ -45,6 +54,8 @@ impl NxVideo {
         Self {
             gpu: Some((dev, slot)),
             straight: false,
+            in_place: false,
+            top_clock: || false,
         }
     }
 
@@ -52,12 +63,27 @@ impl NxVideo {
         Self {
             gpu: None,
             straight: false,
+            in_place: false,
+            top_clock: || false,
         }
     }
 
     /// Has the VIC write straight into the staging buffer where it can.
     pub fn straight(mut self, on: bool) -> Self {
         self.straight = on;
+        self
+    }
+
+    /// Has the presenter sample NVDEC's surfaces where they lie, once one reads back right.
+    /// The straight route keeps the VIC.
+    pub fn in_place(mut self, on: bool) -> Self {
+        self.in_place = on;
+        self
+    }
+
+    /// Holds NVDEC at its top clock while `when` says so, asked at each access unit.
+    pub fn top_clock(mut self, when: fn() -> bool) -> Self {
+        self.top_clock = when;
         self
     }
 }
@@ -84,21 +110,35 @@ impl VideoDecoders for NxVideo {
             Some((dev, slot)) => Out::Gpu(Nv12Upload::new(dev.clone(), slot.clone(), spec)?),
             None => Out::scratch(spec),
         };
+        let route = match &self.gpu {
+            Some((dev, slot)) if self.in_place && !self.straight => {
+                match InPlace::new(dev.clone(), slot.clone(), spec) {
+                    Ok(lane) => Route::Checking(lane, 0),
+                    Err(e) => {
+                        tracing::info!("in place: off for this stream: {e:#}");
+                        Route::Vic
+                    }
+                }
+            }
+            _ => Route::Vic,
+        };
         tracing::info!(
             "{DECODER}: {codec:?} {}x{}, {}",
             spec.width,
             spec.height,
-            if self.straight {
-                "straight VIC route asked for"
-            } else {
-                "VIC then copy"
+            match (&route, self.straight) {
+                (Route::Checking(..), _) => "VIC then copy until a picture checks out in place",
+                (_, true) => "straight VIC route asked for",
+                _ => "VIC then copy",
             }
         );
         let started = Instant::now();
         Ok(Box::new(NxSink {
             lane: Mutex::new(Lane {
-                decoder,
+                route,
                 out,
+                decoder,
+                top_clock: self.top_clock,
                 needs_flush: false,
                 timing: Timing::new(),
                 started,
@@ -168,9 +208,22 @@ impl Out {
 /// is the rule; the rest bound a decoder that swallowed access units.
 const DUES_KEPT: usize = 8;
 
+/// How the lane's pictures reach the presenter.
+enum Route {
+    /// By the VIC into the staging planes.
+    Vic,
+    /// By the VIC, while every [`CHECK_EVERY`]th picture is checked in place; pictures so far.
+    Checking(InPlace, u32),
+    /// As NVDEC left them.
+    InPlace(InPlace),
+}
+
+/// Fields drop in order: the route's surface imports go before the decoder frees its surfaces.
 struct Lane {
-    decoder: av::Decoder,
+    route: Route,
     out: Out,
+    decoder: av::Decoder,
+    top_clock: fn() -> bool,
     /// The last feed failed; flush before the next one.
     needs_flush: bool,
     timing: Timing,
@@ -182,6 +235,7 @@ struct Lane {
 
 impl Lane {
     fn feed(&mut self, au: &[u8], pts: u64, due_ns: u64) -> Result<()> {
+        self.decoder.set_top_clock((self.top_clock)());
         if std::mem::take(&mut self.needs_flush) {
             self.decoder.flush();
             self.dues.clear();
@@ -205,15 +259,30 @@ impl Lane {
         Ok(())
     }
 
-    /// Receives one picture into the next staging planes; `false` when none is ready.
+    /// Receives one picture by the lane's route; `false` when none is ready.
     fn receive(&mut self) -> Result<bool> {
+        if matches!(self.route, Route::InPlace(_)) {
+            return self.receive_in_place();
+        }
         let waited = Instant::now();
         let planes = self.out.stage()?;
         let wait = waited.elapsed();
-        let got = self
-            .decoder
-            .receive_into(planes.y, planes.y_stride, planes.uv, planes.uv_stride)?;
-        let Some(meta) = got else { return Ok(false) };
+        let check = matches!(self.route, Route::Checking(_, n) if n % CHECK_EVERY == 0);
+        let got = if check {
+            self.decoder
+                .receive_kept_into(planes.y, planes.y_stride, planes.uv, planes.uv_stride)?
+        } else {
+            self.decoder
+                .receive_into(planes.y, planes.y_stride, planes.uv, planes.uv_stride)?
+                .map(|meta| (meta, None))
+        };
+        let Some((meta, kept)) = got else { return Ok(false) };
+        if let Route::Checking(_, n) = &mut self.route {
+            *n += 1;
+        }
+        if check {
+            settle(&mut self.route, kept.as_ref(), &planes);
+        }
         let due = self.due_of(meta.pts);
         self.timing.note_due(due);
         let started = Instant::now();
@@ -221,6 +290,36 @@ impl Lane {
         let upload = started.elapsed();
         self.timing
             .note(&self.decoder.stats(), wait, upload, self.out.copy_gpu_us(), shown);
+        Ok(true)
+    }
+
+    /// Receives one picture as NVDEC left it and publishes it; `false` when none is ready. A
+    /// surface the presenter cannot sample, or a failed import, puts the lane on the VIC.
+    fn receive_in_place(&mut self) -> Result<bool> {
+        let surface = match self.decoder.receive_surface() {
+            Ok(Some(surface)) => surface,
+            Ok(None) => return Ok(false),
+            Err(e) if e.is::<av::NotInPlace>() => {
+                tracing::warn!("in place: back to the VIC: {e:#}");
+                self.route = Route::Vic;
+                return Ok(true);
+            }
+            Err(e) => return Err(e),
+        };
+        let due = self.due_of(surface.pts());
+        self.timing.note_due(due);
+        let Route::InPlace(lane) = &mut self.route else {
+            unreachable!("only the in-place route receives surfaces")
+        };
+        let started = Instant::now();
+        let published = lane.publish(&tiled(&surface), surface.pts(), due, Box::new(surface));
+        let upload = started.elapsed();
+        if let Err(e) = &published {
+            tracing::warn!("in place: back to the VIC: {e:#}");
+            self.route = Route::Vic;
+        }
+        self.timing
+            .note(&self.decoder.stats(), Duration::ZERO, upload, None, published.is_ok());
         Ok(true)
     }
 
@@ -236,10 +335,62 @@ impl Lane {
     }
 }
 
+/// The surface as the presenter's in-place lane reads it.
+fn tiled(s: &av::Surface) -> TiledSurface {
+    TiledSurface {
+        base: s.base(),
+        size: s.size(),
+        pitch: s.pitch(),
+        chroma_offset: s.chroma_offset(),
+        width: s.width(),
+        height: s.height(),
+        pool: s.pool(),
+    }
+}
+
+/// Moves a checking route on from the check of `kept`, the surface of the picture the VIC has
+/// just written into `planes`: in place on a match, back to the VIC for good on a mismatch or a
+/// failure, unchanged on a picture too flat to tell.
+fn settle(route: &mut Route, kept: Option<&av::Surface>, planes: &StagingPlanes<'_>) {
+    let Route::Checking(lane, n) = route else { return };
+    let verdict = match kept {
+        Some(s) => lane.check(
+            &tiled(s),
+            &planes.y[..],
+            planes.y_stride,
+            &planes.uv[..],
+            planes.uv_stride,
+        ),
+        None => Err(anyhow!("{}", av::NotInPlace)),
+    };
+    let n = *n;
+    match verdict {
+        Ok(Check::Flat) => {}
+        Ok(Check::Match { atoms, differ }) => {
+            tracing::info!(
+                "in place: picture {n} read back as the VIC wrote it ({differ} of {atoms} atoms off); pictures now go in place"
+            );
+            if let Route::Checking(lane, _) = std::mem::replace(route, Route::Vic) {
+                *route = Route::InPlace(lane);
+            }
+        }
+        Ok(Check::Differ { atoms, differ }) => {
+            tracing::warn!(
+                "in place: {differ} of {atoms} atoms of picture {n} read back otherwise; staying on the VIC"
+            );
+            *route = Route::Vic;
+        }
+        Err(e) => {
+            tracing::warn!("in place: the check of picture {n} failed, staying on the VIC: {e:#}");
+            *route = Route::Vic;
+        }
+    }
+}
+
 /// Where the lane's time went over one [`TIMING_WINDOW`]: the wait for a free staging buffer,
-/// the decoder's own time, the transfer to NV12, the shim's copy out of libavutil's frame (none
-/// when the transfer wrote the staging planes itself), the upload's submit, and the staging
-/// copy's time on the GPU.
+/// the decoder's own time and clock, the transfer to NV12, the shim's copy out of libavutil's
+/// frame (none when the transfer wrote the staging planes itself), the upload's submit, and the
+/// staging copy's time on the GPU.
 struct Timing {
     since: Instant,
     pictures: u32,
@@ -258,6 +409,8 @@ struct Timing {
     in_flight_max: u32,
     /// How the last picture reached the staging planes; `None` before the first.
     route: Option<av::Route>,
+    /// NVDEC's clock after the last picture, kHz.
+    nvdec_khz: u32,
     /// Pictures whose host PTS found no due time: they are shown at once, whatever the budget.
     undue: u32,
     /// The due time less the moment the picture came out of the decoder, µs, over the pictures
@@ -286,6 +439,7 @@ impl Timing {
             gpu_copies: 0,
             in_flight_max: 0,
             route: None,
+            nvdec_khz: 0,
             undue: 0,
             slack_us: 0,
             slack_min_us: i64::MAX,
@@ -328,7 +482,7 @@ impl Timing {
         // falling back.
         if self.route != Some(s.route) {
             tracing::info!(
-                "nvdec: pictures reach the staging planes by {}{}{}",
+                "nvdec: route {}{}{}",
                 s.route.name(),
                 self.route.map_or_else(String::new, |r| format!(" (was {})", r.name())),
                 if s.direct_err == 0 {
@@ -339,6 +493,7 @@ impl Timing {
             );
         }
         self.route = Some(s.route);
+        self.nvdec_khz = s.nvdec_khz;
         self.copy_us += u64::from(s.last_copy_us);
         self.copy_max_us = self.copy_max_us.max(s.last_copy_us);
         if let Some(us) = gpu_copy_us {
@@ -366,7 +521,7 @@ impl Timing {
             .checked_div(u64::from(self.gpu_copies))
             .map_or_else(|| "-".to_string(), |us| format!("{:.2}", us as f64 / 1000.0));
         tracing::info!(
-            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms; transfer mean {:.1}ms max {:.1}ms; copy mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; gpu copy mean {gpu_copy}ms; in flight max {}; route {}; {}",
+            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms at {:.1}MHz; transfer mean {:.1}ms max {:.1}ms; copy mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; gpu copy mean {gpu_copy}ms; in flight max {}; route {}; {}",
             TIMING_WINDOW.as_secs(),
             self.pictures,
             self.dropped,
@@ -375,6 +530,7 @@ impl Timing {
             self.wait_max.as_secs_f64() * 1000.0,
             ms(self.decode_us / n),
             ms(u64::from(self.decode_max_us)),
+            f64::from(self.nvdec_khz) / 1000.0,
             ms(self.transfer_us / n),
             ms(u64::from(self.transfer_max_us)),
             ms(self.copy_us / n),

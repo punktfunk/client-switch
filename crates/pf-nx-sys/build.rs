@@ -97,13 +97,26 @@ fn build_shim(dkp: &Path, portlibs: &Path, name: &str) {
 fn build_dev_box_shim() {
     println!("cargo:rerun-if-changed=csrc/pf_av.c");
     let mut build = cc::Build::new();
+    let mut found = Vec::new();
     for lib in ["libavcodec", "libavutil"] {
-        let found = pkg_config::probe_library(lib)
+        let lib = pkg_config::Config::new()
+            .cargo_metadata(false)
+            .probe(lib)
             .unwrap_or_else(|e| panic!("{lib} for the dev box's software decoder (libavcodec-dev): {e}"));
-        for dir in found.include_paths {
+        for dir in &lib.include_paths {
             build.include(dir);
         }
+        found.push(lib);
     }
     build.file("csrc/pf_av.c").warnings(true).compile("pf_av");
+    // After the shim: with --as-needed a library named before its user is dropped.
+    for lib in found {
+        for dir in lib.link_paths {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+        }
+        for name in lib.libs {
+            println!("cargo:rustc-link-lib={name}");
+        }
+    }
     println!("cargo:rustc-cfg=pf_av");
 }
