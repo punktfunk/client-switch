@@ -4,6 +4,8 @@
 //! rate with a button, then sleeps, docks or leaves; every change of the clocks, focus or mode
 //! becomes a line. The rate is never put back on the way out: the next run's first line shows
 //! what the system left. Runs add to `probe-clock.log`, so one file holds a whole session.
+//!
+//! X, Y and B set clkrst directly. A and R go through the overclock module, when one runs.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -12,14 +14,17 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pf_nx_sys::clk::{self, Clocks};
+use pf_nx_sys::ocmod::OcModule;
 use pf_nx_sys::{applet, hid, result_code};
 
 use crate::{nx, Out};
 
 /// `HidNpadButton`'s bits.
+const BUTTON_A: u64 = 1 << 0;
 const BUTTON_B: u64 = 1 << 1;
 const BUTTON_X: u64 = 1 << 2;
 const BUTTON_Y: u64 = 1 << 3;
+const BUTTON_R: u64 = 1 << 7;
 const BUTTON_PLUS: u64 = 1 << 10;
 
 /// The official top rate, a middle one for the menu, and the rate games run at.
@@ -89,6 +94,7 @@ fn run(dir: &Path, out: &mut Out, pads: &mut hid::Pads) {
         show(seen)
     ));
     lines.say("X: CPU 1785. Y: CPU 1224. B: CPU 1020. Plus: leave without restoring.");
+    let module = find_module(&mut lines);
 
     let (tx, events) = mpsc::channel();
     let _hook = applet::hook(move |e| {
@@ -113,6 +119,16 @@ fn run(dir: &Path, out: &mut Out, pads: &mut hid::Pads) {
         if pressed & BUTTON_PLUS != 0 {
             lines.say(&format!("leave {}", show(clk::clocks())));
             return;
+        }
+        for (button, hz) in [(BUTTON_A, CPU_TOP_HZ), (BUTTON_R, 0)] {
+            if pressed & button != 0 {
+                let answer = match module.as_ref().map(|m| m.hold_cpu(hz)) {
+                    Some(Ok(())) => "ok".to_owned(),
+                    Some(Err(rc)) => format!("FAIL({})", result_code(rc)),
+                    None => "no-module".to_owned(),
+                };
+                lines.say(&format!("hold cpu={} {answer} {}", hz / 1_000_000, show(clk::clocks())));
+            }
         }
         for (button, hz) in [
             (BUTTON_X, CPU_TOP_HZ),
@@ -145,6 +161,27 @@ fn run(dir: &Path, out: &mut Out, pads: &mut hid::Pads) {
         std::thread::sleep(FRAME);
     }
     lines.say("closed by the system");
+}
+
+/// The overclock module that runs, named in a line with its versions.
+fn find_module(lines: &mut Lines) -> Option<OcModule> {
+    let module = match OcModule::find() {
+        Ok(module) => module,
+        Err(rc) => {
+            lines.say(&format!("module FAIL({})", result_code(rc)));
+            return None;
+        }
+    };
+    let Some(found) = module else {
+        lines.say("module none");
+        return None;
+    };
+    match found.info() {
+        Ok((api, version)) => lines.say(&format!("module {} api={api} version={version}", found.service())),
+        Err(rc) => lines.say(&format!("module {} info=FAIL({})", found.service(), result_code(rc))),
+    }
+    lines.say("A: module holds CPU 1785. R: module lets go.");
+    module
 }
 
 /// The buttons down on player 1 or the handheld.
