@@ -1,6 +1,6 @@
 //! The presenter: the [`Display`] seam on the one device. Each frame clears to black, draws the
 //! newest stream picture into its fitted rectangle (when the stream layer is on), blends the UI
-//! layer over it, and presents at the next vblank.
+//! layer over it (unless a stream switched that layer off), and presents at the next vblank.
 //!
 //! Pictures arrive from the decode lanes through a [`VideoSlot`]: newest wins, and the last one
 //! shown is drawn again until a newer one arrives. A picture stays alive until the frame that
@@ -59,6 +59,8 @@ pub struct Presenter {
     frames: Vec<FrameRes>,
     frame: usize,
     ui: UiLayer,
+    /// The UI layer is drawn and blended; a stream with an empty overlay turns it off.
+    ui_on: bool,
     slot: Arc<VideoSlot>,
     current: Option<Arc<Picture>>,
     stream: Option<Fit>,
@@ -165,6 +167,7 @@ impl Presenter {
             frames,
             frame: 0,
             ui,
+            ui_on: true,
             slot,
             current: None,
             stream: None,
@@ -277,7 +280,7 @@ impl Presenter {
         }
     }
 
-    /// Records the composition into `fb`: clear, picture, UI layer.
+    /// Records the composition into `fb`: clear, picture, and the UI layer while it is on.
     ///
     /// # Safety
     /// `cmd` is recording, `fb` belongs to `pass`, and `sets` are not read by work in flight.
@@ -339,29 +342,31 @@ impl Presenter {
                 );
                 dev.cmd_draw(cmd, 3, 1, 0, 0);
             }
-            self.write_set(sets[2], &[self.ui.view()], vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-            dev.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipes.overlay.pipeline);
-            dev.cmd_set_viewport(
-                cmd,
-                0,
-                &[vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: extent.width as f32,
-                    height: extent.height as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                }],
-            );
-            dev.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipes.overlay.layout,
-                0,
-                &[sets[2]],
-                &[],
-            );
-            dev.cmd_draw(cmd, 3, 1, 0, 0);
+            if self.ui_on {
+                self.write_set(sets[2], &[self.ui.view()], vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+                dev.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipes.overlay.pipeline);
+                dev.cmd_set_viewport(
+                    cmd,
+                    0,
+                    &[vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: extent.width as f32,
+                        height: extent.height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }],
+                );
+                dev.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipes.overlay.layout,
+                    0,
+                    &[sets[2]],
+                    &[],
+                );
+                dev.cmd_draw(cmd, 3, 1, 0, 0);
+            }
             dev.cmd_end_render_pass(cmd);
         }
     }
@@ -469,7 +474,9 @@ impl Display for Presenter {
             self.rebuild()?;
         }
 
-        self.ui.draw(ui);
+        if self.ui_on {
+            self.ui.draw(ui);
+        }
         // The acquire blocks until the panel frees an image, just after a vblank: the picture is
         // taken after it, so one that lands during the wait still makes this frame.
         let index = self.acquire(ready)?;
@@ -508,7 +515,9 @@ impl Display for Presenter {
             if let Some(t) = &mut self.timer {
                 t.begin(&self.dev, cmd, f);
             }
-            self.ui.finish(&self.dev, cmd, f);
+            if self.ui_on {
+                self.ui.finish(&self.dev, cmd, f);
+            }
             self.compose(cmd, self.pipes.pass_out, self.framebuffers[index as usize], sets);
             if let Some(t) = &self.timer {
                 t.end(&self.dev, cmd, f);
@@ -569,7 +578,12 @@ impl Display for Presenter {
         if !on {
             self.slot.clear();
             self.current = None;
+            self.ui_on = true;
         }
+    }
+
+    fn set_ui_layer(&mut self, on: bool) {
+        self.ui_on = on;
     }
 
     fn read_back(&mut self) -> Result<Option<Rgba>> {
