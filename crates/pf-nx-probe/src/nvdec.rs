@@ -90,7 +90,7 @@ fn decode(step: &str, codec: Codec, data: &[u8], out: &mut Out) -> Result<String
         aus.len()
     ));
     let opened = Instant::now();
-    let mut dec = Decoder::open(codec, 1920, 1080, false).map_err(err)?;
+    let mut dec = Decoder::open(codec, 1920, 1080, false, false).map_err(err)?;
     let open_ms = opened.elapsed().as_millis();
     out.line(&format!("probe 6 nvdec at {step} send open={open_ms}ms"));
 

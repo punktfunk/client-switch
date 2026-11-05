@@ -8,9 +8,17 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef __SWITCH__
+// nvtegra.h names libnx's NvChannel and MmuRequest without including them.
+#include <switch.h>
+#endif
+
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/time.h>
+#ifdef __SWITCH__
+#include <libavutil/hwcontext_nvtegra.h>
+#endif
 
 // The shim's own errors, outside FFmpeg's AVERROR space; src/av.rs names them.
 #define PF_AV_NOT_NV12 (-0x70660001)
@@ -33,6 +41,8 @@ typedef struct PfAvStats {
     uint32_t route;
     // Why transfers stopped going straight into the caller's planes; 0 while they do.
     int32_t direct_err;
+    // NVDEC's clock after the last picture, kHz; 0 off the console.
+    uint32_t nvdec_khz;
 } PfAvStats;
 
 typedef struct PfAvPictureMeta {
@@ -51,6 +61,9 @@ typedef struct PfAvDecoder {
     int64_t sent_at;
     uint64_t taken;
     PfAvStats stats;
+    // Hold NVDEC at its top clock; the clock last asked for, Hz.
+    int pin_clock;
+    uint32_t pinned_hz;
 } PfAvDecoder;
 
 void pf_av_close(PfAvDecoder *d) {
@@ -66,9 +79,9 @@ void pf_av_close(PfAvDecoder *d) {
 
 // codec: 0 H.264, 1 HEVC. The hwaccel is found by name, so no header needs its enum.
 // `direct` non-zero tries the transfer straight into the caller's planes first; zero always
-// goes through libavutil's frame and a copy.
+// goes through libavutil's frame and a copy. `pin_clock` non-zero holds NVDEC at its top clock.
 // TODO(verify): the device type's name is "nvtegra" in the pinned tree (WP0.6).
-int pf_av_open(int codec, int width, int height, int direct, PfAvDecoder **out) {
+int pf_av_open(int codec, int width, int height, int direct, int pin_clock, PfAvDecoder **out) {
     *out = NULL;
     const AVCodec *c = avcodec_find_decoder(codec == 1 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264);
     if (!c) return AVERROR_DECODER_NOT_FOUND;
@@ -93,8 +106,10 @@ int pf_av_open(int codec, int width, int height, int direct, PfAvDecoder **out) 
 #ifdef __SWITCH__
     if (!(d->ctx->hw_device_ctx = av_buffer_ref(d->device)) || (direct && !(d->direct = av_frame_alloc())))
         goto fail;
+    d->pin_clock = pin_clock;
 #else
     (void)direct;
+    (void)pin_clock;
 #endif
     // The default get_format picks the device's hw format when hw_device_ctx is set.
     d->ctx->width = width;
@@ -124,6 +139,25 @@ int pf_av_send(PfAvDecoder *d, const uint8_t *data, int len, uint64_t pts) {
     d->sent_at = t;
     d->taken++;
     return 0;
+}
+
+// nvtegra rescales NVDEC every 20 pictures so one takes about a frame interval: playback's
+// rule, which puts a 1080p picture at about 8 ms. Asking the top clock again after each
+// rescale holds it there; closing the decoder releases the request.
+static void hold_clock(PfAvDecoder *d) {
+#ifdef __SWITCH__
+    AVHWDeviceContext *dev = (AVHWDeviceContext *)d->device->data;
+    AVNVTegraChannel *ch = &((AVNVTegraDeviceContext *)dev->hwctx)->nvdec_channel;
+    if (d->pin_clock && ch->clock != d->pinned_hz) {
+        // nvtegra's own top request; mm rounds it down to the fastest step.
+        if (R_SUCCEEDED(mmuRequestSetAndWait(&ch->mmu_request, UINT32_MAX - 999, -1)))
+            mmuRequestGet(&ch->mmu_request, &ch->clock);
+        d->pinned_hz = ch->clock;
+    }
+    d->stats.nvdec_khz = ch->clock / 1000;
+#else
+    (void)d;
+#endif
 }
 
 // The caller's memory as a buffer the frame refers to; the caller owns it.
@@ -195,6 +229,7 @@ int pf_av_receive(PfAvDecoder *d, uint8_t *y, size_t y_stride, size_t y_len, uin
     if (err < 0) return err;
     d->stats.decoded++;
     d->stats.last_decode_us = (uint32_t)(av_gettime_relative() - d->sent_at);
+    hold_clock(d);
     meta->width = (uint32_t)d->hw->width;
     meta->height = (uint32_t)d->hw->height;
     meta->pts = (uint64_t)d->hw->pts;

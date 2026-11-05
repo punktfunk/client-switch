@@ -44,6 +44,8 @@ pub struct Stats {
     /// Why transfers stopped going straight into the caller's planes, an `AVERROR`; 0 while
     /// they do.
     pub direct_err: i32,
+    /// NVDEC's clock after the last picture, kHz; 0 off the console.
+    pub nvdec_khz: u32,
 }
 
 /// How the last picture reached the caller's planes (`PF_AV_ROUTE_*`).
@@ -97,6 +99,7 @@ pub struct RawStats {
     pub last_copy_us: u32,
     pub route: u32,
     pub direct_err: i32,
+    pub nvdec_khz: u32,
 }
 
 /// The shim's own codes, outside libavcodec's `AVERROR` space (`csrc/pf_av.c`).
@@ -120,6 +123,7 @@ mod ffi {
             width: c_int,
             height: c_int,
             direct: c_int,
+            pin_clock: c_int,
             out: *mut *mut PfAvDecoder,
         ) -> c_int;
         pub fn pf_av_send(d: *mut PfAvDecoder, data: *const u8, len: c_int, pts: u64) -> c_int;
@@ -172,12 +176,13 @@ unsafe impl Send for Decoder {}
 impl Decoder {
     /// Opens `codec` for a `width`×`height` stream. `straight` has the VIC write into the
     /// caller's planes ([`Route::Vic`]) where it can; otherwise every picture goes through
-    /// libavutil's frame and a copy ([`Route::VicThenCopy`]).
-    pub fn open(codec: Codec, width: u32, height: u32, straight: bool) -> anyhow::Result<Self> {
+    /// libavutil's frame and a copy ([`Route::VicThenCopy`]). `top_clock` holds NVDEC at its
+    /// fastest clock, where nvtegra would scale it down to just keep pace.
+    pub fn open(codec: Codec, width: u32, height: u32, straight: bool, top_clock: bool) -> anyhow::Result<Self> {
         let (w, h) = (i32::try_from(width)?, i32::try_from(height)?);
         let mut raw = core::ptr::null_mut();
         // SAFETY: `raw` is a valid out-pointer; the shim sets it only on success.
-        let rc = unsafe { ffi::pf_av_open(codec as i32, w, h, i32::from(straight), &mut raw) };
+        let rc = unsafe { ffi::pf_av_open(codec as i32, w, h, i32::from(straight), i32::from(top_clock), &mut raw) };
         if rc < 0 {
             return Err(av_error(&format!("open the {codec:?} decoder"), rc));
         }
@@ -255,6 +260,7 @@ impl Decoder {
             last_copy_us: s.last_copy_us,
             route: Route::from_raw(s.route),
             direct_err: s.direct_err,
+            nvdec_khz: s.nvdec_khz,
         }
     }
 }
@@ -269,7 +275,7 @@ impl Drop for Decoder {
 
 #[cfg(not(pf_av))]
 impl Decoder {
-    pub fn open(codec: Codec, _width: u32, _height: u32, _straight: bool) -> anyhow::Result<Self> {
+    pub fn open(codec: Codec, _width: u32, _height: u32, _straight: bool, _top_clock: bool) -> anyhow::Result<Self> {
         anyhow::bail!("open the {codec:?} decoder: no decoder on this box (NVDEC on the console, libavcodec on Linux)")
     }
 
@@ -303,7 +309,7 @@ mod tests {
     #[cfg(not(pf_av))]
     #[test]
     fn open_fails_off_the_console() {
-        let err = Decoder::open(Codec::Hevc, 1920, 1080, false).err().unwrap();
+        let err = Decoder::open(Codec::Hevc, 1920, 1080, false, false).err().unwrap();
         assert_eq!(
             err.to_string(),
             "open the Hevc decoder: no decoder on this box (NVDEC on the console, libavcodec on Linux)"
@@ -314,7 +320,7 @@ mod tests {
     #[test]
     fn a_dev_box_opens_both_codecs_in_software() {
         for codec in [Codec::H264, Codec::Hevc] {
-            let mut d = Decoder::open(codec, 1920, 1080, false).unwrap();
+            let mut d = Decoder::open(codec, 1920, 1080, false, false).unwrap();
             assert_eq!(d.stats(), Stats::default());
             d.flush();
         }
@@ -325,14 +331,15 @@ mod tests {
         use core::mem::{offset_of, size_of};
         // PfAvPictureMeta: u32 width, u32 height, u64 pts → 16.
         assert_eq!((size_of::<PictureMeta>(), offset_of!(PictureMeta, pts)), (16, 8));
-        // PfAvStats: u64 decoded, five u32 and an i32 → 32.
+        // PfAvStats: u64 decoded, five u32, an i32 and a u32 → 36, padded to 40.
         assert_eq!(
             (
                 size_of::<RawStats>(),
                 offset_of!(RawStats, last_transfer_us),
-                offset_of!(RawStats, direct_err)
+                offset_of!(RawStats, direct_err),
+                offset_of!(RawStats, nvdec_khz)
             ),
-            (32, 16, 28)
+            (40, 16, 28, 32)
         );
         assert_eq!(Codec::Hevc as i32, 1);
     }

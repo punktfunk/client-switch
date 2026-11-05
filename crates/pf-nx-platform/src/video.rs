@@ -6,10 +6,11 @@
 //! picture straight into the presenter's next staging buffer, which `commit` copies into a
 //! plane set and publishes (D7). On the console the picture goes through libavutil's own frame
 //! and the shim copies it; with [`NxVideo::straight`] the VIC writes into that staging buffer
-//! itself where it can map it (WP5). The `nvdec[10s]` line names which route ran. On the
-//! framebuffer display the pictures land in scratch planes
-//! and are dropped, so the emulator still runs the hwaccel. A decoder error fails this feed,
-//! which has the session ask for a keyframe, and the next feed starts from a flushed decoder.
+//! itself where it can map it (WP5). Above 720p NVDEC is held at its top clock. The
+//! `nvdec[10s]` line names which route ran and NVDEC's clock. On the framebuffer display the
+//! pictures land in scratch planes and are dropped, so the emulator still runs the hwaccel. A
+//! decoder error fails this feed, which has the session ask for a keyframe, and the next feed
+//! starts from a flushed decoder.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -79,20 +80,24 @@ impl VideoDecoders for NxVideo {
             spec.bit_depth,
             if spec.chroma444 { " 4:4:4" } else { "" }
         );
-        let decoder = av::Decoder::open(codec, spec.width, spec.height, self.straight)?;
+        // nvtegra scales NVDEC down until a picture takes most of a frame interval: about 8 ms at
+        // 1080p, which with the transfer and the copy leaves a 60 Hz frame no slack. 720p fits.
+        let top_clock = spec.width * spec.height > 1280 * 720;
+        let decoder = av::Decoder::open(codec, spec.width, spec.height, self.straight, top_clock)?;
         let out = match &self.gpu {
             Some((dev, slot)) => Out::Gpu(Nv12Upload::new(dev.clone(), slot.clone(), spec)?),
             None => Out::scratch(spec),
         };
         tracing::info!(
-            "{DECODER}: {codec:?} {}x{}, {}",
+            "{DECODER}: {codec:?} {}x{}, {}{}",
             spec.width,
             spec.height,
             if self.straight {
                 "straight VIC route asked for"
             } else {
                 "VIC then copy"
-            }
+            },
+            if top_clock { ", NVDEC at its top clock" } else { "" }
         );
         let started = Instant::now();
         Ok(Box::new(NxSink {
@@ -237,9 +242,9 @@ impl Lane {
 }
 
 /// Where the lane's time went over one [`TIMING_WINDOW`]: the wait for a free staging buffer,
-/// the decoder's own time, the transfer to NV12, the shim's copy out of libavutil's frame (none
-/// when the transfer wrote the staging planes itself), the upload's submit, and the staging
-/// copy's time on the GPU.
+/// the decoder's own time and clock, the transfer to NV12, the shim's copy out of libavutil's
+/// frame (none when the transfer wrote the staging planes itself), the upload's submit, and the
+/// staging copy's time on the GPU.
 struct Timing {
     since: Instant,
     pictures: u32,
@@ -258,6 +263,8 @@ struct Timing {
     in_flight_max: u32,
     /// How the last picture reached the staging planes; `None` before the first.
     route: Option<av::Route>,
+    /// NVDEC's clock after the last picture, kHz.
+    nvdec_khz: u32,
     /// Pictures whose host PTS found no due time: they are shown at once, whatever the budget.
     undue: u32,
     /// The due time less the moment the picture came out of the decoder, µs, over the pictures
@@ -286,6 +293,7 @@ impl Timing {
             gpu_copies: 0,
             in_flight_max: 0,
             route: None,
+            nvdec_khz: 0,
             undue: 0,
             slack_us: 0,
             slack_min_us: i64::MAX,
@@ -339,6 +347,7 @@ impl Timing {
             );
         }
         self.route = Some(s.route);
+        self.nvdec_khz = s.nvdec_khz;
         self.copy_us += u64::from(s.last_copy_us);
         self.copy_max_us = self.copy_max_us.max(s.last_copy_us);
         if let Some(us) = gpu_copy_us {
@@ -366,7 +375,7 @@ impl Timing {
             .checked_div(u64::from(self.gpu_copies))
             .map_or_else(|| "-".to_string(), |us| format!("{:.2}", us as f64 / 1000.0));
         tracing::info!(
-            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms; transfer mean {:.1}ms max {:.1}ms; copy mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; gpu copy mean {gpu_copy}ms; in flight max {}; route {}; {}",
+            "nvdec[{}s]: {} pictures ({} dropped, {} decoded in all); staging wait mean {:.1}ms max {:.1}ms; decode mean {:.1}ms max {:.1}ms at {:.1}MHz; transfer mean {:.1}ms max {:.1}ms; copy mean {:.1}ms max {:.1}ms; upload mean {:.2}ms; gpu copy mean {gpu_copy}ms; in flight max {}; route {}; {}",
             TIMING_WINDOW.as_secs(),
             self.pictures,
             self.dropped,
@@ -375,6 +384,7 @@ impl Timing {
             self.wait_max.as_secs_f64() * 1000.0,
             ms(self.decode_us / n),
             ms(u64::from(self.decode_max_us)),
+            f64::from(self.nvdec_khz) / 1000.0,
             ms(self.transfer_us / n),
             ms(u64::from(self.transfer_max_us)),
             ms(self.copy_us / n),

@@ -117,8 +117,9 @@ fn firmware_version() {
 
 #[test]
 fn shim_structs() {
-    // PfAvPictureMeta: u32, u32, u64 → 16. PfAvStats: u64, 6 × 32-bit → 32.
+    // PfAvPictureMeta: u32, u32, u64 → 16. PfAvStats: u64, 7 × 32-bit → 36, padded to 40.
     assert_eq!(layout::<PictureMeta>(), (16, 8));
-    assert_eq!(layout::<RawStats>(), (32, 8));
+    assert_eq!(layout::<RawStats>(), (40, 8));
     assert_eq!(offset_of!(RawStats, in_flight), 8);
+    assert_eq!(offset_of!(RawStats, nvdec_khz), 32);
 }
