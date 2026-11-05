@@ -85,6 +85,24 @@ mode and can go in parallel.
 3 is the busy one with the current build. If the remaining calls turn out to sit in
 `punktfunk-core`'s receive loop, that part moves to section 1.
 
+### NVDEC's top clock in handheld
+
+**Why.** nvtegra rescales NVDEC every 20 pictures so that one takes about a frame interval
+(`av_nvtegra_dfs_update`, floor 180 MHz up to 1080p). Above 720p this client now holds the top
+clock; handheld keeps the scaling, at about 4 ms a 720p picture (NOTES, 2026-10-31).
+
+**The idea.** Hold it in handheld too, for a shorter decode. **Needs the maintainer's yes**: it
+spends battery. It could go with Performance mode.
+
+### Pictures without the VIC and the copy
+
+**Why.** Each picture costs NVDEC, then a VIC transfer that maps and unmaps the destination
+through nvdrv and flushes 3 MB of cache, then the 3 MB copy: about 3 and 3.7 ms at 1080p.
+
+**The idea.** NVK's fork imports an NvMap ID (`nvk_switch_allocate_shared_memory`). The decoded
+surface's NvMap could be sampled in place, its 16Bx2 block-linear layout detiled in the CSC
+shader. **Test first:** the import of a decoder surface, and the picture it samples.
+
 ### The smoothness buffer's Automatic on the Switch
 
 The shared setting resolves Automatic to two frames on every client
