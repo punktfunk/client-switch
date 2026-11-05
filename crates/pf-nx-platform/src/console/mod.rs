@@ -53,6 +53,11 @@ fn operation_mode() -> OperationMode {
     }
 }
 
+/// On mains power: NVDEC may hold its top clock. Handheld keeps nvtegra's scaling.
+fn docked() -> bool {
+    applet::operation_mode() == applet::OperationMode::Docked
+}
+
 /// The stream and swapchain size each mode calls for (plan D11).
 fn mode_size(mode: OperationMode) -> (u32, u32) {
     match mode {
@@ -99,7 +104,9 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             (
                 Box::new(display_nvk::NvkDisplay::new(presenter, mode)),
                 Arc::new(
-                    crate::video::NxVideo::gpu(dev, slot).straight(Path::new(DATA_DIR).join(STRAIGHT_MARKER).exists()),
+                    crate::video::NxVideo::gpu(dev, slot)
+                        .straight(Path::new(DATA_DIR).join(STRAIGHT_MARKER).exists())
+                        .top_clock(docked),
                 ),
                 gpu,
                 ui,

@@ -79,9 +79,9 @@ void pf_av_close(PfAvDecoder *d) {
 
 // codec: 0 H.264, 1 HEVC. The hwaccel is found by name, so no header needs its enum.
 // `direct` non-zero tries the transfer straight into the caller's planes first; zero always
-// goes through libavutil's frame and a copy. `pin_clock` non-zero holds NVDEC at its top clock.
+// goes through libavutil's frame and a copy.
 // TODO(verify): the device type's name is "nvtegra" in the pinned tree (WP0.6).
-int pf_av_open(int codec, int width, int height, int direct, int pin_clock, PfAvDecoder **out) {
+int pf_av_open(int codec, int width, int height, int direct, PfAvDecoder **out) {
     *out = NULL;
     const AVCodec *c = avcodec_find_decoder(codec == 1 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264);
     if (!c) return AVERROR_DECODER_NOT_FOUND;
@@ -106,10 +106,8 @@ int pf_av_open(int codec, int width, int height, int direct, int pin_clock, PfAv
 #ifdef __SWITCH__
     if (!(d->ctx->hw_device_ctx = av_buffer_ref(d->device)) || (direct && !(d->direct = av_frame_alloc())))
         goto fail;
-    d->pin_clock = pin_clock;
 #else
     (void)direct;
-    (void)pin_clock;
 #endif
     // The default get_format picks the device's hw format when hw_device_ctx is set.
     d->ctx->width = width;
@@ -139,6 +137,16 @@ int pf_av_send(PfAvDecoder *d, const uint8_t *data, int len, uint64_t pts) {
     d->sent_at = t;
     d->taken++;
     return 0;
+}
+
+// Non-zero holds NVDEC at its top clock from the next picture; zero hands it back to nvtegra's
+// scaling, which takes over at its next rescale.
+void pf_av_set_top_clock(PfAvDecoder *d, int on) {
+    on = on != 0;
+    if (d->pin_clock != on) {
+        d->pin_clock = on;
+        d->pinned_hz = 0;
+    }
 }
 
 // nvtegra rescales NVDEC every 20 pictures so one takes about a frame interval: playback's

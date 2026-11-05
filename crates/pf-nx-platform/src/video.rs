@@ -6,7 +6,7 @@
 //! picture straight into the presenter's next staging buffer, which `commit` copies into a
 //! plane set and publishes (D7). On the console the picture goes through libavutil's own frame
 //! and the shim copies it; with [`NxVideo::straight`] the VIC writes into that staging buffer
-//! itself where it can map it (WP5). Above 720p NVDEC is held at its top clock. The
+//! itself where it can map it (WP5). Docked, NVDEC is held at its top clock. The
 //! `nvdec[10s]` line names which route ran and NVDEC's clock. On the framebuffer display the
 //! pictures land in scratch planes and are dropped, so the emulator still runs the hwaccel. A
 //! decoder error fails this feed, which has the session ask for a keyframe, and the next feed
@@ -39,6 +39,8 @@ pub struct NxVideo {
     /// The VIC writes into the staging buffer itself. Off by default: on the console it neither
     /// lowered the transfer plus copy nor the end-to-end time (WP5, 2026-11-01).
     straight: bool,
+    /// Whether NVDEC holds its top clock, asked at each access unit.
+    top_clock: fn() -> bool,
 }
 
 impl NxVideo {
@@ -46,6 +48,7 @@ impl NxVideo {
         Self {
             gpu: Some((dev, slot)),
             straight: false,
+            top_clock: || false,
         }
     }
 
@@ -53,12 +56,19 @@ impl NxVideo {
         Self {
             gpu: None,
             straight: false,
+            top_clock: || false,
         }
     }
 
     /// Has the VIC write straight into the staging buffer where it can.
     pub fn straight(mut self, on: bool) -> Self {
         self.straight = on;
+        self
+    }
+
+    /// Holds NVDEC at its top clock while `when` says so, asked at each access unit.
+    pub fn top_clock(mut self, when: fn() -> bool) -> Self {
+        self.top_clock = when;
         self
     }
 }
@@ -80,30 +90,27 @@ impl VideoDecoders for NxVideo {
             spec.bit_depth,
             if spec.chroma444 { " 4:4:4" } else { "" }
         );
-        // nvtegra scales NVDEC down until a picture takes most of a frame interval: about 8 ms at
-        // 1080p, which with the transfer and the copy leaves a 60 Hz frame no slack. 720p fits.
-        let top_clock = spec.width * spec.height > 1280 * 720;
-        let decoder = av::Decoder::open(codec, spec.width, spec.height, self.straight, top_clock)?;
+        let decoder = av::Decoder::open(codec, spec.width, spec.height, self.straight)?;
         let out = match &self.gpu {
             Some((dev, slot)) => Out::Gpu(Nv12Upload::new(dev.clone(), slot.clone(), spec)?),
             None => Out::scratch(spec),
         };
         tracing::info!(
-            "{DECODER}: {codec:?} {}x{}, {}{}",
+            "{DECODER}: {codec:?} {}x{}, {}",
             spec.width,
             spec.height,
             if self.straight {
                 "straight VIC route asked for"
             } else {
                 "VIC then copy"
-            },
-            if top_clock { ", NVDEC at its top clock" } else { "" }
+            }
         );
         let started = Instant::now();
         Ok(Box::new(NxSink {
             lane: Mutex::new(Lane {
                 decoder,
                 out,
+                top_clock: self.top_clock,
                 needs_flush: false,
                 timing: Timing::new(),
                 started,
@@ -176,6 +183,7 @@ const DUES_KEPT: usize = 8;
 struct Lane {
     decoder: av::Decoder,
     out: Out,
+    top_clock: fn() -> bool,
     /// The last feed failed; flush before the next one.
     needs_flush: bool,
     timing: Timing,
@@ -187,6 +195,7 @@ struct Lane {
 
 impl Lane {
     fn feed(&mut self, au: &[u8], pts: u64, due_ns: u64) -> Result<()> {
+        self.decoder.set_top_clock((self.top_clock)());
         if std::mem::take(&mut self.needs_flush) {
             self.decoder.flush();
             self.dues.clear();

@@ -87,12 +87,10 @@ mode and can go in parallel.
 
 ### NVDEC's top clock in handheld
 
-**Why.** nvtegra rescales NVDEC every 20 pictures so that one takes about a frame interval
-(`av_nvtegra_dfs_update`, floor 180 MHz up to 1080p). Above 720p this client now holds the top
-clock; handheld keeps the scaling, at about 4 ms a 720p picture (NOTES, 2026-10-31).
-
-**The idea.** Hold it in handheld too, for a shorter decode. **Needs the maintainer's yes**: it
-spends battery. It could go with Performance mode.
+nvtegra rescales NVDEC every 20 pictures so that one takes about a frame interval
+(`av_nvtegra_dfs_update`, floor 180 MHz up to 1080p). Docked, this client holds the top clock;
+handheld keeps the scaling, at about 4 ms a 720p picture (NOTES, 2026-10-31). The maintainer
+keeps it off by default in handheld (2026-11-05); an opt-in could go with Performance mode.
 
 ### Pictures without the VIC and the copy
 
