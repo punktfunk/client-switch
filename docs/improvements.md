@@ -67,23 +67,62 @@ hurt composition and the UI. Stay within the official top clocks (CPU 1785, memo
 before `Lifecycle::exit`. The cost is battery and heat. **Needs the maintainer's yes**, because it
 adds a player-facing setting (`docs/settings.md`).
 
-### Fewer socket calls per packet
+### Take the picture late in the refresh
 
-**Why.** At stock clocks the system's core 3 saturates serving socket calls. A thread probe
-(2026-11-03, handheld, stock clocks; PR 11, closed) found the app's threads already spread over
-cores 0 to 2 and nearly idle (13, 9 and 6 percent at CPU 1785 MHz), while core 3 ran at 73 to 90
-percent: every socket call is an IPC served there. That is why the CPU clock cuts latency and why
-placing or pinning threads cannot help. The forwarder option "4 CPU cores" would only add load to
-core 3 and stays off.
+**Why.** `Presenter::frame` takes the picture right after `acquire` returns, which the code expects
+just after a vblank. A picture decoded moments later misses that take and waits a whole refresh,
+even with about 15 ms left before the next vblank. Composing takes about 2 ms, so most of that
+wait buys nothing.
 
-**The idea.** Fewer socket calls per packet, so core 3 has room at stock clocks. This client
-already reads up to 32 datagrams a call (`toolchain/patches/quinn-udp`, section 3). What remains
-is to find what else calls the socket per packet, and to cut it. It is separate from Performance
-mode and can go in parallel.
+**The idea.** While streaming, sleep a few milliseconds after `acquire`, then take the picture. The
+same vblank then carries a newer picture, so a picture should reach the panel about that many
+milliseconds sooner on average, with no extra dropped pictures. The saving does not depend on how
+many images wait in the swapchain. An estimate of 5 to 10 ms, not measured. The idea came from
+reading moonlight-vplus's `precise-sync` pacing, which aims each picture at the next vsync using
+the display's deadline.
 
-**Test first.** A Status Monitor screenshot at stock clocks during a stream, to confirm that core
-3 is the busy one with the current build. If the remaining calls turn out to sit in
-`punktfunk-core`'s receive loop, that part moves to section 1.
+**The test.** A marker file in `/switch/punktfunk/` holding the milliseconds, read at start, with
+rounds at none, 4, 8 and 11 ms, handheld, the same game, stock clocks and Smooth 1. `latch` must
+become the time `acquire` returned plus a refresh, or the sleep will count as lateness. Then
+`slot[10s]`'s late mean shows the gain in the log. It runs about 35 ms today, and a full refresh of
+that is the `latch` estimate, not time in the queue.
+
+**Risks.** The console's real deadline is unknown. Past it a picture slips a refresh, a loss the log
+may not show, so go up in steps and let the tester's feel count too. That `acquire` returns just
+after a vblank is the code's assumption, not a measurement. Filming the screen is ruled out: too
+much work for the tester. If the log shows no gain, drop the idea. Needs no monorepo change and no
+maintainer's yes for the test.
+
+**Also open.** The stats' display stage and end to end stop when `queue_present` returns, not at
+the panel. With three FIFO images, a picture may wait behind one already queued, a hidden refresh
+`presenter.rs` does not count. Reasoned from the code, not measured.
+
+### Fewer socket calls per packet: tested, not worth it
+
+**Why it was tried.** At stock clocks the system's core 3 runs at 73 to 90 percent during a stream,
+while the app's threads on cores 0 to 2 sit nearly idle (thread probe, 2026-11-03; PR 11, closed).
+Every socket call is an IPC served there. Placing or pinning threads cannot help, and the
+forwarder option "4 CPU cores" would only add load to core 3 and stays off.
+
+**The test.** Five rounds on 2026-11-04, handheld, CPU 1020 MHz during the stream, Smooth 1, bitrate
+Automatic. A build counted every socket call, with two cuts behind marker files: a lighter tokio
+wake, and a 1 ms wait before each batch read. Medians over windows at 55 or more pictures a second:
+
+| Round | Calls a second | Datagrams a read | Round trip | End to end |
+| --- | --- | --- | --- | --- |
+| No cut, first game | 1485 | 12.6 | 10.9 ms | 35.4 ms |
+| Lighter wake | 1248 | 12.7 | 11.8 ms | 37.8 ms |
+| Read wait | 1404 | 15.6 | 14.7 ms | 34.3 ms |
+| Both | 1164 | 15.5 | 14.6 ms | 44.1 ms |
+| No cut, second game | 1452 | 13.7 | 13.2 ms | 35.8 ms |
+
+**The result.** The best cut removed 20 percent of the calls, against a target of 50, and the round
+trip did not fall. A read costs about 330 microseconds per datagram at every batch size, so the
+reader spends about 60 percent of its time in `recvmmsg` whatever the call count. The cost follows
+datagrams, about 1870 a second, not calls. That points to a ceiling near 3000 a second, measured as
+wall time rather than CPU time. Neither cut shipped. Each setting ran once and no Status Monitor
+photo came back, so core 3's load in these rounds is unknown. The code is on the branch
+`fewer-socket-calls` (PR 12, closed).
 
 ### The smoothness buffer's Automatic on the Switch
 
