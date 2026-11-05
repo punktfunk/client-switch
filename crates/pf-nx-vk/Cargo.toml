@@ -25,5 +25,9 @@ punktfunk-core.workspace = true
 pf-client-video.workspace = true
 pf-nx-app = { path = "../pf-nx-app" }
 
+# The lavapipe tests load the system's Vulkan loader.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+ash = { workspace = true, features = ["loaded"] }
+
 [lints]
 workspace = true

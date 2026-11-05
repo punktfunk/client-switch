@@ -85,21 +85,24 @@ mode and can go in parallel.
 3 is the busy one with the current build. If the remaining calls turn out to sit in
 `punktfunk-core`'s receive loop, that part moves to section 1.
 
+### Pictures in place: the console run
+
+**What.** NVDEC's surfaces go to the presenter as they lie: imported once each through
+`VK_EXT_external_memory_host` and detiled (16Bx2 block-linear) by the tiled CSC pass, with no
+VIC transfer, no copy and no staging upload (`pf-nx-vk/src/in_place.rs`). Each decoder starts on
+the VIC; its first detailed picture is read back through the GPU and compared with the VIC's
+copy, and only a match moves the lane in place. A mismatch or a failed import keeps the VIC.
+
+**Test first.** A docked 1080p session: the log's `in place: picture … read back as the VIC
+wrote it` line, then `nvdec[10s]` with `route in place`, transfer and copy at 0, and the picture
+right. A file `vic-copia` in `/switch/punktfunk/` keeps the VIC route for the A/B.
+
 ### NVDEC's top clock in handheld
 
 nvtegra rescales NVDEC every 20 pictures so that one takes about a frame interval
 (`av_nvtegra_dfs_update`, floor 180 MHz up to 1080p). Docked, this client holds the top clock;
 handheld keeps the scaling, at about 4 ms a 720p picture (NOTES, 2026-10-31). The maintainer
 keeps it off by default in handheld (2026-11-05); an opt-in could go with Performance mode.
-
-### Pictures without the VIC and the copy
-
-**Why.** Each picture costs NVDEC, then a VIC transfer that maps and unmaps the destination
-through nvdrv and flushes 3 MB of cache, then the 3 MB copy: about 3 and 3.7 ms at 1080p.
-
-**The idea.** NVK's fork imports an NvMap ID (`nvk_switch_allocate_shared_memory`). The decoded
-surface's NvMap could be sampled in place, its 16Bx2 block-linear layout detiled in the CSC
-shader. **Test first:** the import of a decoder surface, and the picture it samples.
 
 ### The smoothness buffer's Automatic on the Switch
 

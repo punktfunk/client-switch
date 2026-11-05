@@ -1,6 +1,7 @@
 //! NVDEC through libavcodec's `nvtegra` hwaccel, behind the C shim `csrc/pf_av.c`. The shim is
-//! the only code that names libavcodec's structs; this side binds its six calls and `av_strerror`
-//! (`libavutil/error.h`). Pictures come out as pitch-linear NV12 copied into the caller's planes.
+//! the only code that names libavcodec's structs; this side binds its calls and `av_strerror`
+//! (`libavutil/error.h`). Pictures come out as pitch-linear NV12 copied into the caller's planes,
+//! or in place as the decoder's own block-linear [`Surface`].
 //!
 //! On Linux the same shim decodes in software against the system's libavcodec, for the dev box;
 //! elsewhere [`Decoder::open`] returns an error, so the workspace builds anywhere.
@@ -26,6 +27,96 @@ pub struct PictureMeta {
     pub width: u32,
     pub height: u32,
     pub pts: u64,
+}
+
+/// `PfAvSurface`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct RawSurface {
+    pub frame: *mut core::ffi::c_void,
+    pub base: *mut u8,
+    pub size: u32,
+    pub pitch: u32,
+    pub chroma_offset: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pool: u32,
+    pub pts: u64,
+}
+
+impl RawSurface {
+    #[cfg_attr(not(pf_av), allow(dead_code))]
+    fn empty() -> Self {
+        Self {
+            frame: core::ptr::null_mut(),
+            base: core::ptr::null_mut(),
+            size: 0,
+            pitch: 0,
+            chroma_offset: 0,
+            width: 0,
+            height: 0,
+            pool: 0,
+            pts: 0,
+        }
+    }
+}
+
+/// A decoded picture in the decoder's own surface: NVDEC decodes into that memory again only
+/// after this drops. Both planes are 16Bx2 block-linear with two GOBs to a block, [`Self::pitch`]
+/// bytes a row; the `CbCr` plane starts [`Self::chroma_offset`] bytes in.
+pub struct Surface(RawSurface);
+
+// SAFETY: the surface is read, never written, through `base`, and dropping it only returns a
+// buffer to libavutil's pool, which takes returns from any thread.
+unsafe impl Send for Surface {}
+// SAFETY: as above; nothing here mutates through a shared reference.
+unsafe impl Sync for Surface {}
+
+impl Surface {
+    /// The surface's memory, 4 KiB aligned.
+    pub fn base(&self) -> *const u8 {
+        self.0.base
+    }
+
+    /// Bytes from [`Self::base`], a 4 KiB multiple.
+    pub fn size(&self) -> usize {
+        self.0.size as usize
+    }
+
+    pub fn pitch(&self) -> u32 {
+        self.0.pitch
+    }
+
+    pub fn chroma_offset(&self) -> u32 {
+        self.0.chroma_offset
+    }
+
+    pub fn width(&self) -> u32 {
+        self.0.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.0.height
+    }
+
+    /// The pts its access unit was sent with.
+    pub fn pts(&self) -> u64 {
+        self.0.pts
+    }
+
+    /// The decoder's surface pool, which changes when libavcodec replaces it: memory of an
+    /// older pool may be freed once no surface of it is held.
+    pub fn pool(&self) -> u32 {
+        self.0.pool
+    }
+}
+
+#[cfg(pf_av)]
+impl Drop for Surface {
+    fn drop(&mut self) {
+        // SAFETY: `frame` came from the shim's hand-out and is freed once, here.
+        unsafe { ffi::pf_av_surface_free(self.0.frame) };
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,6 +154,8 @@ pub enum Route {
     Vic,
     /// Detiled on the CPU straight into the caller's planes.
     Cpu,
+    /// The decoder's surface itself, sampled where NVDEC wrote it.
+    InPlace,
 }
 
 impl Route {
@@ -72,6 +165,7 @@ impl Route {
             2 => Self::CpuThenCopy,
             3 => Self::Vic,
             4 => Self::Cpu,
+            5 => Self::InPlace,
             _ => Self::Software,
         }
     }
@@ -84,6 +178,7 @@ impl Route {
             Self::CpuThenCopy => "CPU detile, copied",
             Self::Vic => "VIC straight",
             Self::Cpu => "CPU detile straight",
+            Self::InPlace => "in place",
         }
     }
 }
@@ -102,13 +197,27 @@ pub struct RawStats {
     pub nvdec_khz: u32,
 }
 
+/// [`Decoder::receive_surface`]'s picture is in a surface the in-place shader does not read:
+/// the route, not the stream, has failed. The picture is dropped.
+#[derive(Clone, Copy, Debug)]
+pub struct NotInPlace;
+
+impl core::fmt::Display for NotInPlace {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("the decoder's surface is not one the in-place shader reads")
+    }
+}
+
+impl std::error::Error for NotInPlace {}
+
 /// The shim's own codes, outside libavcodec's `AVERROR` space (`csrc/pf_av.c`).
 pub const PF_AV_NOT_NV12: i32 = -0x7066_0001;
 pub const PF_AV_TOO_SMALL: i32 = -0x7066_0002;
+pub const PF_AV_NOT_IN_PLACE: i32 = -0x7066_0003;
 
 #[cfg(pf_av)]
 mod ffi {
-    use super::{PictureMeta, RawStats};
+    use super::{PictureMeta, RawStats, RawSurface};
     use core::ffi::{c_char, c_int};
 
     /// `PfAvDecoder`, owned by the shim.
@@ -136,7 +245,10 @@ mod ffi {
             uv_stride: usize,
             uv_len: usize,
             meta: *mut PictureMeta,
+            keep: *mut RawSurface,
         ) -> c_int;
+        pub fn pf_av_receive_surface(d: *mut PfAvDecoder, out: *mut RawSurface) -> c_int;
+        pub fn pf_av_surface_free(frame: *mut core::ffi::c_void);
         pub fn pf_av_flush(d: *mut PfAvDecoder);
         pub fn pf_av_close(d: *mut PfAvDecoder);
         pub fn pf_av_stats(d: *const PfAvDecoder, out: *mut RawStats);
@@ -212,9 +324,49 @@ impl Decoder {
         uv: &mut [u8],
         uv_stride: usize,
     ) -> anyhow::Result<Option<PictureMeta>> {
+        self.receive(y, y_stride, uv, uv_stride, core::ptr::null_mut())
+    }
+
+    /// [`Self::receive_into`], and the decoder's surface of the same picture where it can go in
+    /// place, so the two can be compared.
+    pub fn receive_kept_into(
+        &mut self,
+        y: &mut [u8],
+        y_stride: usize,
+        uv: &mut [u8],
+        uv_stride: usize,
+    ) -> anyhow::Result<Option<(PictureMeta, Option<Surface>)>> {
+        let mut keep = RawSurface::empty();
+        let got = self.receive(y, y_stride, uv, uv_stride, &mut keep)?;
+        Ok(got.map(|meta| (meta, (!keep.frame.is_null()).then_some(Surface(keep)))))
+    }
+
+    /// The next picture in place, with no transfer; `None` when none is ready. A surface the
+    /// in-place shader cannot read fails with [`NotInPlace`], the picture dropped.
+    pub fn receive_surface(&mut self) -> anyhow::Result<Option<Surface>> {
+        let mut out = RawSurface::empty();
+        // SAFETY: `out` is a valid out-pointer; the shim sets `frame` only to a picture it hands over.
+        let rc = unsafe { ffi::pf_av_receive_surface(self.raw.as_ptr(), &mut out) };
+        match rc {
+            1 => Ok(Some(Surface(out))),
+            0 => Ok(None),
+            PF_AV_NOT_IN_PLACE => Err(NotInPlace.into()),
+            _ => Err(av_error("receive a surface", rc)),
+        }
+    }
+
+    /// `keep` null, or a surface the shim fills when the picture can go in place.
+    fn receive(
+        &mut self,
+        y: &mut [u8],
+        y_stride: usize,
+        uv: &mut [u8],
+        uv_stride: usize,
+        keep: *mut RawSurface,
+    ) -> anyhow::Result<Option<PictureMeta>> {
         let mut meta = PictureMeta::default();
         // SAFETY: each plane pointer is writable for the length passed with it; the shim checks
-        // every row against those lengths before it copies.
+        // every row against those lengths before it copies. `keep` is null or a valid out-pointer.
         let rc = unsafe {
             ffi::pf_av_receive(
                 self.raw.as_ptr(),
@@ -225,6 +377,7 @@ impl Decoder {
                 uv_stride,
                 uv.len(),
                 &mut meta,
+                keep,
             )
         };
         match rc {
@@ -307,6 +460,20 @@ impl Decoder {
         match self.never {}
     }
 
+    pub fn receive_kept_into(
+        &mut self,
+        _y: &mut [u8],
+        _y_stride: usize,
+        _uv: &mut [u8],
+        _uv_stride: usize,
+    ) -> anyhow::Result<Option<(PictureMeta, Option<Surface>)>> {
+        match self.never {}
+    }
+
+    pub fn receive_surface(&mut self) -> anyhow::Result<Option<Surface>> {
+        match self.never {}
+    }
+
     pub fn stats(&self) -> Stats {
         match self.never {}
     }
@@ -350,6 +517,16 @@ mod tests {
                 offset_of!(RawStats, nvdec_khz)
             ),
             (40, 16, 28, 32)
+        );
+        // PfAvSurface: two pointers, six u32 → 40, then u64 pts → 48.
+        assert_eq!(
+            (
+                size_of::<RawSurface>(),
+                offset_of!(RawSurface, chroma_offset),
+                offset_of!(RawSurface, pool),
+                offset_of!(RawSurface, pts)
+            ),
+            (48, 24, 36, 40)
         );
         assert_eq!(Codec::Hevc as i32, 1);
     }

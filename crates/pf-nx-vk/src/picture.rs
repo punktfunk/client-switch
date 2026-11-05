@@ -26,6 +26,9 @@ pub enum Planes {
     Three([vk::ImageView; 3]),
     /// Y and interleaved `CbCr`: the NV12 upload.
     Two([vk::ImageView; 2]),
+    /// Y and `CbCr` texel buffers over a decoder's block-linear surface, `pitch` bytes a row:
+    /// NV12 sampled in place (`in_place`).
+    Tiled { views: [vk::BufferView; 2], pitch: u32 },
 }
 
 pub struct Picture {
@@ -294,6 +297,16 @@ impl<T> Queue<T> {
     }
 }
 
+/// The stream's colour, as the CSC passes read it.
+pub(crate) fn color_of(spec: &StreamSpec) -> ColorDesc {
+    ColorDesc {
+        primaries: spec.color.primaries,
+        transfer: spec.color.transfer,
+        matrix: spec.color.matrix,
+        full_range: spec.color.full_range != 0,
+    }
+}
+
 /// Rows in a staging buffer start this many bytes apart, at least.
 const ROW_ALIGN: usize = 256;
 /// Staging buffers: the decoder fills one while the GPU copies out of the other.
@@ -395,12 +408,7 @@ impl Nv12Upload {
             slot,
             extent,
             stride,
-            color: ColorDesc {
-                primaries: spec.color.primaries,
-                transfer: spec.color.transfer,
-                matrix: spec.color.matrix,
-                full_range: spec.color.full_range != 0,
-            },
+            color: color_of(spec),
             hud: spec.hud.clone(),
             e2e: spec.video_e2e.clone(),
             planes: Vec::new(),

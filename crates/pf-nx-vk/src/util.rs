@@ -144,6 +144,28 @@ pub unsafe fn barrier(
     }
 }
 
+/// Records a global memory barrier from `src` to `dst`.
+///
+/// # Safety
+/// `cmd` is recording on `dev`.
+pub unsafe fn memory_barrier(
+    dev: &GpuDevice,
+    cmd: vk::CommandBuffer,
+    src: (vk::PipelineStageFlags2, vk::AccessFlags2),
+    dst: (vk::PipelineStageFlags2, vk::AccessFlags2),
+) {
+    let barrier = [vk::MemoryBarrier2::default()
+        .src_stage_mask(src.0)
+        .src_access_mask(src.1)
+        .dst_stage_mask(dst.0)
+        .dst_access_mask(dst.1)];
+    // SAFETY: the caller guarantees `cmd` is recording.
+    unsafe {
+        dev.device
+            .cmd_pipeline_barrier2(cmd, &vk::DependencyInfo::default().memory_barriers(&barrier));
+    }
+}
+
 /// Linear, clamped. Chroma is upsampled by the sampler and the UI layer is scaled by it.
 pub fn sampler(dev: &GpuDevice) -> Result<vk::Sampler> {
     // SAFETY: the builder is a local; the sampler is returned to the caller.

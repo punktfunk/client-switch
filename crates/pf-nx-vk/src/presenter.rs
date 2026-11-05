@@ -30,8 +30,8 @@ struct FrameRes {
     fence: vk::Fence,
     /// Signalled by the acquire; waited by this frame's submit.
     ready: vk::Semaphore,
-    /// planar, two-plane, overlay.
-    sets: [vk::DescriptorSet; 3],
+    /// planar, two-plane, overlay, tiled.
+    sets: [vk::DescriptorSet; 4],
     /// The picture this frame sampled, released once its fence signals.
     in_use: Option<Arc<Picture>>,
 }
@@ -66,7 +66,7 @@ pub struct Presenter {
     stream: Option<Fit>,
     last_present: Option<Instant>,
     readback: Option<Readback>,
-    readback_sets: [vk::DescriptorSet; 3],
+    readback_sets: [vk::DescriptorSet; 4],
     /// The extent asked of a surface that leaves it to the caller.
     want: vk::Extent2D,
     /// The swapchain no longer matches the window: rebuild before the next acquire.
@@ -108,10 +108,15 @@ impl Presenter {
                 None,
             )
         }?;
-        let sets_needed = (FRAMES as u32 + 1) * 3;
-        let sizes = [vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(sets_needed * 3)];
+        let sets_needed = (FRAMES as u32 + 1) * 4;
+        let sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(sets_needed * 3),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_TEXEL_BUFFER)
+                .descriptor_count((FRAMES as u32 + 1) * 2),
+        ];
         // SAFETY: as above.
         let desc_pool = unsafe {
             dev.device.create_descriptor_pool(
@@ -280,7 +285,8 @@ impl Presenter {
         }
     }
 
-    /// Records the composition into `fb`: clear, picture, and the UI layer while it is on.
+    /// Records the composition into `fb`: clear, picture, and the UI layer while it is on. A
+    /// picture in place is preceded by a barrier: NVDEC wrote it outside Vulkan.
     ///
     /// # Safety
     /// `cmd` is recording, `fb` belongs to `pass`, and `sets` are not read by work in flight.
@@ -289,7 +295,7 @@ impl Presenter {
         cmd: vk::CommandBuffer,
         pass: vk::RenderPass,
         fb: vk::Framebuffer,
-        sets: [vk::DescriptorSet; 3],
+        sets: [vk::DescriptorSet; 4],
     ) {
         let extent = self.output.extent;
         let full = vk::Rect2D {
@@ -302,9 +308,21 @@ impl Presenter {
             },
         }];
         let dev = &self.dev.device;
+        let picture = self.stream.and(self.current.as_ref());
         // SAFETY: forwarded from the caller; every handle is owned by this presenter or by the
         // picture it holds for the frame.
         unsafe {
+            if picture.is_some_and(|p| matches!(p.planes, Planes::Tiled { .. })) {
+                crate::util::memory_barrier(
+                    &self.dev,
+                    cmd,
+                    (
+                        vk::PipelineStageFlags2::HOST | vk::PipelineStageFlags2::ALL_COMMANDS,
+                        vk::AccessFlags2::HOST_WRITE | vk::AccessFlags2::MEMORY_WRITE,
+                    ),
+                    (vk::PipelineStageFlags2::FRAGMENT_SHADER, vk::AccessFlags2::SHADER_READ),
+                );
+            }
             dev.cmd_begin_render_pass(
                 cmd,
                 &vk::RenderPassBeginInfo::default()
@@ -315,21 +333,42 @@ impl Presenter {
                 vk::SubpassContents::INLINE,
             );
             dev.cmd_set_scissor(cmd, 0, &[full]);
-            if let (Some(fit), Some(picture)) = (self.stream, self.current.as_ref()) {
-                let (pipe, set, views): (_, _, &[vk::ImageView]) = match &picture.planes {
-                    Planes::Three(v) => (&self.pipes.planar, sets[0], v),
-                    Planes::Two(v) => (&self.pipes.two_plane, sets[1], v),
+            if let (Some(fit), Some(picture)) = (self.stream, picture) {
+                let (pipe, set, surface) = match &picture.planes {
+                    Planes::Three(v) => {
+                        self.write_set(sets[0], v, picture.layout);
+                        (&self.pipes.planar, sets[0], None)
+                    }
+                    Planes::Two(v) => {
+                        self.write_set(sets[1], v, picture.layout);
+                        (&self.pipes.two_plane, sets[1], None)
+                    }
+                    Planes::Tiled { views, pitch } => {
+                        self.write_texel_set(sets[3], views);
+                        (
+                            &self.pipes.tiled,
+                            sets[3],
+                            Some([*pitch, picture.width, picture.height, 0]),
+                        )
+                    }
                 };
-                self.write_set(set, views, picture.layout);
                 let rows = csc_rows(picture.color, picture.depth, picture.msb_packed);
-                let mut pc = [0f32; 16];
-                pc[..12].copy_from_slice(rows.as_flattened());
+                let mut pc = [0u32; 20];
+                for (w, r) in pc.iter_mut().zip(rows.as_flattened()) {
+                    *w = r.to_bits();
+                }
                 // The output is SDR: a PQ picture is tonemapped.
-                pc[12] = if picture.color.is_pq() { 1.0 } else { 0.0 };
-                pc[13] = TONEMAP_PEAK;
-                pc[14] = picture.uv_scale[0];
-                pc[15] = picture.uv_scale[1];
-                let words = pc.map(f32::to_ne_bytes);
+                pc[12] = if picture.color.is_pq() { 1f32 } else { 0f32 }.to_bits();
+                pc[13] = TONEMAP_PEAK.to_bits();
+                pc[14] = picture.uv_scale[0].to_bits();
+                pc[15] = picture.uv_scale[1].to_bits();
+                let len = if let Some(surface) = surface {
+                    pc[16..].copy_from_slice(&surface);
+                    20
+                } else {
+                    16
+                };
+                let words = pc.map(u32::to_ne_bytes);
                 dev.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe.pipeline);
                 dev.cmd_set_viewport(cmd, 0, &[Self::fitted(fit, picture.width, picture.height, extent)]);
                 dev.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, pipe.layout, 0, &[set], &[]);
@@ -338,7 +377,7 @@ impl Presenter {
                     pipe.layout,
                     vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    words.as_flattened(),
+                    &words.as_flattened()[..len * 4],
                 );
                 dev.cmd_draw(cmd, 3, 1, 0, 0);
             }
@@ -393,6 +432,24 @@ impl Presenter {
             })
             .collect();
         // SAFETY: `writes` borrows `infos`, both live for the call; the set is not in use by
+        // work in flight (its frame's fence was waited, or the device idled for read-back).
+        unsafe { self.dev.device.update_descriptor_sets(&writes, &[]) };
+    }
+
+    /// Points `set`'s two texel-buffer bindings at a tiled picture's plane views.
+    fn write_texel_set(&self, set: vk::DescriptorSet, views: &[vk::BufferView; 2]) {
+        let writes: Vec<vk::WriteDescriptorSet> = views
+            .iter()
+            .enumerate()
+            .map(|(i, view)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(i as u32)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_TEXEL_BUFFER)
+                    .texel_buffer_view(std::slice::from_ref(view))
+            })
+            .collect();
+        // SAFETY: `writes` borrows `views`, both live for the call; the set is not in use by
         // work in flight (its frame's fence was waited, or the device idled for read-back).
         unsafe { self.dev.device.update_descriptor_sets(&writes, &[]) };
     }
@@ -715,12 +772,13 @@ unsafe fn destroy_readback(dev: &GpuDevice, rb: &Readback) {
     }
 }
 
-/// One planar, one two-plane and one overlay set from `pool`, freed with it.
-fn alloc_sets(dev: &GpuDevice, pool: vk::DescriptorPool, pipes: &Pipelines) -> Result<[vk::DescriptorSet; 3]> {
+/// One planar, two-plane, overlay and tiled set from `pool`, freed with it.
+fn alloc_sets(dev: &GpuDevice, pool: vk::DescriptorPool, pipes: &Pipelines) -> Result<[vk::DescriptorSet; 4]> {
     let layouts = [
         pipes.planar.set_layout,
         pipes.two_plane.set_layout,
         pipes.overlay.set_layout,
+        pipes.tiled.set_layout,
     ];
     // SAFETY: the pool and layouts are live; the sets are freed with the pool.
     let sets = unsafe {
@@ -730,7 +788,7 @@ fn alloc_sets(dev: &GpuDevice, pool: vk::DescriptorPool, pipes: &Pipelines) -> R
                 .set_layouts(&layouts),
         )
     }?;
-    Ok([sets[0], sets[1], sets[2]])
+    Ok([sets[0], sets[1], sets[2], sets[3]])
 }
 
 fn semaphore(dev: &GpuDevice) -> Result<vk::Semaphore> {

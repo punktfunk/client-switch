@@ -21,6 +21,8 @@ const DATA_DIR: &str = "sdmc:/switch/punktfunk";
 /// A file of this name in [`DATA_DIR`], read at start, turns the straight VIC route on, so one
 /// build A/Bs both routes.
 const STRAIGHT_MARKER: &str = "vic-direto";
+/// A file of this name keeps pictures on the VIC route instead of in place, for the same A/B.
+const VIC_MARKER: &str = "vic-copia";
 
 /// The Mesa pin NVK was built from, for the log and the About screen.
 const MESA_PIN: &str = match option_env!("PF_MESA_PIN") {
@@ -101,11 +103,13 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let presenter = Presenter::new(dev.clone(), slot.clone()).context("bring up the display")?;
             let gpu = format!("NVK {MESA_PIN} ({})", dev.name);
             let ui = presenter.ui();
+            let marker = |name: &str| Path::new(DATA_DIR).join(name).exists();
             (
                 Box::new(display_nvk::NvkDisplay::new(presenter, mode)),
                 Arc::new(
                     crate::video::NxVideo::gpu(dev, slot)
-                        .straight(Path::new(DATA_DIR).join(STRAIGHT_MARKER).exists())
+                        .straight(marker(STRAIGHT_MARKER))
+                        .in_place(!marker(VIC_MARKER))
                         .top_clock(docked),
                 ),
                 gpu,

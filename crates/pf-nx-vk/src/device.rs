@@ -2,7 +2,8 @@
 //! [`VulkanDecodeDevice`] the shared `PyroWave` decoder builds on.
 //!
 //! NVK is not conformant on the X1, so the device asks for the least the presenter needs:
-//! `synchronization2` for its barriers, nothing else. Robust buffer access stays off: on the
+//! `synchronization2` for its barriers, and `VK_EXT_external_memory_host` where offered, for
+//! pictures sampled in place. Robust buffer access stays off: on the
 //! X1's SM 5.3 NVK checks each storage access with a branch. The `PyroWave` conjuncts (int16,
 //! 8-bit storage, subgroup control, timeline semaphores) are asked for only with the
 //! `pyrowave` feature and only where the probe found them all.
@@ -49,6 +50,8 @@ pub struct GpuDevice {
     pub name: String,
     /// The handoff the `PyroWave` decoder is built from; carries the shared queue lock.
     pub vkd: VulkanDecodeDevice,
+    /// `VK_EXT_external_memory_host` is on: host memory can be imported.
+    pub host_import: bool,
     pub target: Target,
     messenger: Option<Messenger>,
 }
@@ -198,10 +201,18 @@ impl GpuDevice {
             .ok_or_else(|| anyhow!("no Vulkan 1.3 device with a graphics+compute queue"))?;
 
         let pyro = cfg!(feature = "pyrowave") && p.ok;
-        let device_exts: Vec<&CStr> = match target {
+        let mut device_exts: Vec<&CStr> = match target {
             Target::Vi { .. } => vec![ash::khr::swapchain::NAME],
             Target::Offscreen { .. } => Vec::new(),
         };
+        // SAFETY: read-only query on a live physical device.
+        let offered = unsafe { instance.enumerate_device_extension_properties(pdev) }.unwrap_or_default();
+        let host_import = offered
+            .iter()
+            .any(|e| e.extension_name_as_c_str() == Ok(ash::ext::external_memory_host::NAME));
+        if host_import {
+            device_exts.push(ash::ext::external_memory_host::NAME);
+        }
         let ext_ptrs: Vec<*const std::ffi::c_char> = device_exts.iter().map(|n| n.as_ptr()).collect();
         let prio = [1.0f32];
         let queue_ci = [vk::DeviceQueueCreateInfo::default()
@@ -284,6 +295,7 @@ impl GpuDevice {
             api_version: p.api_version,
             name: p.name,
             vkd,
+            host_import,
             target,
             messenger: None,
         })
@@ -292,7 +304,7 @@ impl GpuDevice {
     /// The device's feature line for the probe and the first bundle.
     pub fn feature_line(&self) -> String {
         format!(
-            "vulkan {}.{} {} pyrowave={} int16={} sb8={} subgroup_ctl={} full_subgroups={} f16={} messenger={}",
+            "vulkan {}.{} {} pyrowave={} int16={} sb8={} subgroup_ctl={} full_subgroups={} f16={} host_import={} messenger={}",
             vk::api_version_major(self.api_version),
             vk::api_version_minor(self.api_version),
             self.name,
@@ -302,6 +314,7 @@ impl GpuDevice {
             self.vkd.f_subgroup_size_control,
             self.vkd.f_compute_full_subgroups,
             self.vkd.f_shader_float16,
+            self.host_import,
             self.messenger.is_some(),
         )
     }

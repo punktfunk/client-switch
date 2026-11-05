@@ -1,7 +1,7 @@
-//! The render passes and the three pipelines a frame uses: planar CSC (`PyroWave`), two-plane
-//! CSC (the NV12 upload) and the UI layer's premultiplied blit. The shaders are the desktop
-//! presenter's committed SPIR-V (`pf_client_video::video_csc_spv`), so the colour maths lives
-//! in one place.
+//! The render passes and the pipelines a frame uses: planar CSC (`PyroWave`), two-plane CSC (the
+//! NV12 upload), tiled CSC (NV12 sampled in place) and the UI layer's premultiplied blit. All but
+//! the tiled one are the desktop presenter's committed SPIR-V (`pf_client_video::video_csc_spv`);
+//! the tiled one is this crate's (`shaders/nv12_tiled.frag`), with the same colour rows.
 
 use anyhow::{anyhow, Result};
 use ash::vk;
@@ -11,6 +11,10 @@ use crate::device::GpuDevice;
 
 /// Three CSC rows plus the params vec4.
 pub const PUSH_BYTES: u32 = 16 * 4;
+/// [`PUSH_BYTES`] and the tiled surface's pitch, width and height, with one word spare.
+pub const TILED_PUSH_BYTES: u32 = PUSH_BYTES + 4 * 4;
+
+const TILED_FRAG: &[u8] = include_bytes!("../shaders/nv12_tiled.frag.spv");
 
 pub struct Pipe {
     pub set_layout: vk::DescriptorSetLayout,
@@ -26,6 +30,8 @@ pub struct Pipelines {
     pub sampler: vk::Sampler,
     pub planar: Pipe,
     pub two_plane: Pipe,
+    /// Two uniform texel buffers over a decoder's block-linear surface.
+    pub tiled: Pipe,
     pub overlay: Pipe,
 }
 
@@ -35,10 +41,30 @@ impl Pipelines {
         let sampler = crate::util::sampler(dev)?;
         let pass_out = render_pass(dev, format, out_layout)?;
         let pass_read = render_pass(dev, format, vk::ImageLayout::TRANSFER_SRC_OPTIMAL)?;
+        let image = vk::DescriptorType::COMBINED_IMAGE_SAMPLER;
         Ok(Self {
-            planar: pipe(dev, pass_out, sampler, 3, true, spv::PLANAR_CSC_FRAG, false)?,
-            two_plane: pipe(dev, pass_out, sampler, 2, true, spv::NV12_CSC_FRAG, false)?,
-            overlay: pipe(dev, pass_out, sampler, 1, false, spv::OVERLAY_FRAG, true)?,
+            planar: pipe(
+                dev,
+                pass_out,
+                sampler,
+                3,
+                image,
+                PUSH_BYTES,
+                spv::PLANAR_CSC_FRAG,
+                false,
+            )?,
+            two_plane: pipe(dev, pass_out, sampler, 2, image, PUSH_BYTES, spv::NV12_CSC_FRAG, false)?,
+            tiled: pipe(
+                dev,
+                pass_out,
+                sampler,
+                2,
+                vk::DescriptorType::UNIFORM_TEXEL_BUFFER,
+                TILED_PUSH_BYTES,
+                TILED_FRAG,
+                false,
+            )?,
+            overlay: pipe(dev, pass_out, sampler, 1, image, 0, spv::OVERLAY_FRAG, true)?,
             pass_out,
             pass_read,
             sampler,
@@ -50,7 +76,7 @@ impl Pipelines {
     pub unsafe fn destroy(&self, dev: &GpuDevice) {
         // SAFETY: the caller guarantees the device is idle; every handle is owned here.
         unsafe {
-            for p in [&self.planar, &self.two_plane, &self.overlay] {
+            for p in [&self.planar, &self.two_plane, &self.tiled, &self.overlay] {
                 dev.device.destroy_pipeline(p.pipeline, None);
                 dev.device.destroy_pipeline_layout(p.layout, None);
                 dev.device.destroy_descriptor_set_layout(p.set_layout, None);
@@ -103,25 +129,32 @@ fn render_pass(dev: &GpuDevice, format: vk::Format, final_layout: vk::ImageLayou
     }?)
 }
 
-/// A bufferless fullscreen-triangle pipeline sampling `planes` images through immutable samplers.
+/// A bufferless fullscreen-triangle pipeline reading `planes` descriptors of type `desc`: images
+/// through immutable samplers, or texel buffers. `push` bytes of push constants, `0` for none.
+#[allow(clippy::too_many_arguments)]
 fn pipe(
     dev: &GpuDevice,
     pass: vk::RenderPass,
     sampler: vk::Sampler,
     planes: u32,
-    push: bool,
+    desc: vk::DescriptorType,
+    push: u32,
     frag: &[u8],
     premultiplied_blend: bool,
 ) -> Result<Pipe> {
     let immutable = [sampler];
     let bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..planes)
         .map(|i| {
-            vk::DescriptorSetLayoutBinding::default()
+            let binding = vk::DescriptorSetLayoutBinding::default()
                 .binding(i)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_type(desc)
                 .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-                .immutable_samplers(&immutable)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+            if desc == vk::DescriptorType::COMBINED_IMAGE_SAMPLER {
+                binding.immutable_samplers(&immutable)
+            } else {
+                binding
+            }
         })
         .collect();
     // SAFETY: builders are locals outliving the calls; the objects go to the returned `Pipe`.
@@ -131,10 +164,10 @@ fn pipe(
     }?;
     let ranges = [vk::PushConstantRange::default()
         .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-        .size(PUSH_BYTES)];
+        .size(push)];
     let set_layouts = [set_layout];
     let mut layout_ci = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
-    if push {
+    if push > 0 {
         layout_ci = layout_ci.push_constant_ranges(&ranges);
     }
     // SAFETY: as above.

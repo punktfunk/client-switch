@@ -8,7 +8,7 @@ use std::mem::{align_of, offset_of, size_of};
 
 use pf_nx_sys::applet::AppletHookCookie;
 use pf_nx_sys::audout::AudioOutBuffer;
-use pf_nx_sys::av::{PictureMeta, RawStats};
+use pf_nx_sys::av::{PictureMeta, RawStats, RawSurface};
 use pf_nx_sys::clk::ClkrstSession;
 use pf_nx_sys::fb::RawFramebuffer;
 use pf_nx_sys::hid::*;
@@ -122,4 +122,8 @@ fn shim_structs() {
     assert_eq!(layout::<RawStats>(), (40, 8));
     assert_eq!(offset_of!(RawStats, in_flight), 8);
     assert_eq!(offset_of!(RawStats, nvdec_khz), 32);
+    // PfAvSurface: frame*, base*, 6 × u32 → 40, u64 pts → 48.
+    assert_eq!(layout::<RawSurface>(), (48, 8));
+    assert_eq!(offset_of!(RawSurface, pool), 36);
+    assert_eq!(offset_of!(RawSurface, pts), 40);
 }
