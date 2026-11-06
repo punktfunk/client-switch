@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use pf_nx_app::platform::{DeviceInfo, Display, OperationMode, Platform, Storage, VideoDecoders};
-use pf_nx_sys::{applet, nvk, setsys, socket, vi};
+use pf_nx_sys::{applet, nvk, set, setsys, socket, vi};
 use pf_nx_vk::{GpuDevice, Presenter, Target, VideoSlot};
 
 /// Identity, settings, logs and bundles; the NRO itself lives here too (plan D18).
@@ -137,6 +137,7 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             applet::applet_type(),
             applet::AppletType::Application | applet::AppletType::SystemApplication
         ),
+        languages: set::system_languages(),
     };
     Ok(Platform {
         display,

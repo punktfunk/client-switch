@@ -103,6 +103,7 @@ pub fn run(platform: Platform) -> ! {
     // Without a log there is nothing to diagnose a failure from; the title still runs.
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();
     install_panic_hook();
+    let language = pf_l10n::set_languages(&device.languages);
     tracing::info!(
         "punktfunk-switch {} on {} ({} firmware {}), gpu {}, ui {}{}",
         crate::core::build_id(),
@@ -113,6 +114,7 @@ pub fn run(platform: Platform) -> ! {
         device.ui,
         if device.applet_mode { ", applet mode" } else { "" },
     );
+    tracing::info!("language {language} for the system's {:?}", device.languages);
     punktfunk_core::client::set_client_label(&client_label(&device));
     crate::core::caps::install(video.caps());
     // ureq's agents resolve their provider from the process default and panic without one.
