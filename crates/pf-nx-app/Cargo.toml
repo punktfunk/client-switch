@@ -33,5 +33,9 @@ miniz_oxide = "0.8"
 serde_json = "1"
 miniz_oxide = "0.8"
 
+[dev-dependencies]
+# `en-XA`, the pseudo-language the tests word in to find text that does not come from pf-l10n.
+pf-l10n = { workspace = true, features = ["pseudo"] }
+
 [lints]
 workspace = true
