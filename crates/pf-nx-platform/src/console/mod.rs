@@ -1,6 +1,7 @@
 //! The console's implementations, assembled into one [`Platform`].
 
 mod audio;
+mod clocks;
 mod display_fb;
 mod display_nvk;
 mod lifecycle;

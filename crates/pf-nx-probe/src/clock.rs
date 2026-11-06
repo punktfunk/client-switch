@@ -14,7 +14,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pf_nx_sys::clk::{self, Clocks};
-use pf_nx_sys::ocmod::OcModule;
+use pf_nx_sys::ocmod::{OcModule, MODULE_CPU};
 use pf_nx_sys::{applet, hid, result_code};
 
 use crate::{nx, Out};
@@ -122,7 +122,7 @@ fn run(dir: &Path, out: &mut Out, pads: &mut hid::Pads) {
         }
         for (button, hz) in [(BUTTON_A, CPU_TOP_HZ), (BUTTON_R, 0)] {
             if pressed & button != 0 {
-                let answer = match module.as_ref().map(|m| m.hold_cpu(hz)) {
+                let answer = match module.as_ref().map(|m| m.hold(MODULE_CPU, hz)) {
                     Some(Ok(())) => "ok".to_owned(),
                     Some(Err(rc)) => format!("FAIL({})", result_code(rc)),
                     None => "no-module".to_owned(),

@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use super::{
-    AudioOut, AudioPort, Display, Fit, FrameReport, Lifecycle, Motion, PadFeedback, PadSample, Pads, Refresh, Rgba,
-    Storage, StreamSpec, SystemEvent, TouchPoint, VideoDecoders,
+    AudioOut, AudioPort, ClockStage, Display, Fit, FrameReport, Lifecycle, Motion, PadFeedback, PadSample, Pads,
+    Refresh, Rgba, Storage, StreamSpec, SystemEvent, TouchPoint, VideoDecoders,
 };
 use crate::core::caps::VideoCaps;
 use crate::core::media::{VideoSink, VideoSinkCaps};
@@ -240,6 +240,7 @@ impl Storage for FakeStorage {
 pub struct FakeLifecycle {
     pub events: Arc<Mutex<VecDeque<SystemEvent>>>,
     pub splash_hidden: Arc<Mutex<bool>>,
+    pub clock_stages: Arc<Mutex<Vec<ClockStage>>>,
 }
 
 impl Lifecycle for FakeLifecycle {
@@ -249,6 +250,10 @@ impl Lifecycle for FakeLifecycle {
 
     fn poll_events(&mut self, out: &mut Vec<SystemEvent>) {
         out.extend(self.events.lock().expect("fake lifecycle poisoned").drain(..));
+    }
+
+    fn set_clock_stage(&mut self, stage: ClockStage) {
+        self.clock_stages.lock().expect("fake lifecycle poisoned").push(stage);
     }
 
     fn exit(&self) -> ! {
