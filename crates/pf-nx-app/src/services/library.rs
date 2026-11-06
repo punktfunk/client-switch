@@ -52,15 +52,16 @@ pub enum LibraryError {
 
 impl std::fmt::Display for LibraryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use pf_l10n::console as m;
         match self {
-            Self::NotPaired => f.write_str("Not paired — pair with the host first."),
-            Self::PinMismatch => f.write_str("Host certificate changed — re-pair with a PIN."),
-            Self::Http(code) => write!(f, "Management API returned HTTP {code}."),
-            Self::Unreachable(_) => f.write_str("The host isn't answering."),
-            Self::Timeout(_) => f.write_str("The host is answering too slowly."),
-            Self::BadReply(_) => f.write_str("Couldn't read the host's reply."),
-            Self::Tls(_) => f.write_str("Couldn't secure the connection to the host."),
-            Self::Identity(_) => f.write_str("Couldn't load this device's pairing identity."),
+            Self::NotPaired => f.write_str(m::console_lib_not_paired()),
+            Self::PinMismatch => f.write_str(m::console_lib_pin_changed()),
+            Self::Http(code) => f.write_str(&m::console_lib_http(code)),
+            Self::Unreachable(_) => f.write_str(m::console_lib_unreachable()),
+            Self::Timeout(_) => f.write_str(m::console_lib_timeout()),
+            Self::BadReply(_) => f.write_str(m::console_lib_bad_reply()),
+            Self::Tls(_) => f.write_str(m::console_lib_tls()),
+            Self::Identity(_) => f.write_str(m::console_lib_identity()),
         }
     }
 }
@@ -421,6 +422,26 @@ impl rustls::client::danger::ServerCertVerifier for PinVerify {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sentence for each failure comes from `pf-l10n`, not a literal.
+    #[test]
+    fn every_failure_reads_the_language() {
+        let all = [
+            LibraryError::NotPaired,
+            LibraryError::PinMismatch,
+            LibraryError::Http(500),
+            LibraryError::Unreachable(String::new()),
+            LibraryError::Timeout(String::new()),
+            LibraryError::BadReply(String::new()),
+            LibraryError::Tls(String::new()),
+            LibraryError::Identity(String::new()),
+        ];
+        pf_l10n::with_language("en-XA", || {
+            for e in &all {
+                assert!(e.to_string().starts_with('['), "{e:?}");
+            }
+        });
+    }
 
     fn page(ids: &[&str], next: Option<&str>) -> Result<LibraryPage, LibraryError> {
         let items: Vec<_> = ids

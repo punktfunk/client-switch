@@ -159,13 +159,15 @@ pub fn run(platform: Platform) -> ! {
     lifecycle.exit()
 }
 
-/// What the first menu says when the title runs as an applet (plan D13).
-const APPLET_MODE_NOTICE: &str =
-    "Opened from the Album, punktfunk has little memory and may close — hold R while starting a game to open it with full memory.";
+/// What the first menu says when the title runs as an applet (plan D13). Holding `R` at
+/// launch starts it with full memory.
+fn applet_mode_notice() -> String {
+    pf_l10n::console::console_switch_applet_mode("R")
+}
 
 /// The menu and the stream in turn, until one of them quits.
 fn alternate(app: &mut App) -> Option<ExitPlan> {
-    let mut notice = app.device.applet_mode.then(|| APPLET_MODE_NOTICE.to_string());
+    let mut notice = app.device.applet_mode.then(applet_mode_notice);
     loop {
         let outcome = match menu::run(app, notice.take()) {
             Ok(outcome) => outcome,
