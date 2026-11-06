@@ -59,7 +59,7 @@ punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", rev = "c4d6fe1828
 pf-client-core = { git = "https://git.unom.io/unom/punktfunk", rev = "c4d6fe182882dd1874afc47e78bbe7ff8d8c822c", default-features = false }
 pf-console-ui = { git = "https://git.unom.io/unom/punktfunk", rev = "c4d6fe182882dd1874afc47e78bbe7ff8d8c822c", default-features = false }
 # The parts this crate reads itself. The host's sentences come worded from the core.
-pf-l10n = { git = "https://git.unom.io/unom/punktfunk", rev = "c4d6fe182882dd1874afc47e78bbe7ff8d8c822c", default-features = false, features = ["client", "console"] }
+pf-l10n = { git = "https://git.unom.io/unom/punktfunk", rev = "c4d6fe182882dd1874afc47e78bbe7ff8d8c822c", default-features = false, features = ["client", "console", "host"] }
 # No `pyrowave` here: pf-nx-vk's own feature turns the lane on (plan D14), so a default build
 # compiles none of the wavelet decoder for the console.
 pf-client-video = { git = "https://git.unom.io/unom/punktfunk", rev = "c4d6fe182882dd1874afc47e78bbe7ff8d8c822c", default-features = false }
