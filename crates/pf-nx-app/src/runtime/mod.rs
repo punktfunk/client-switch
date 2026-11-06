@@ -13,9 +13,10 @@ pub mod testrun;
 mod touch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use crate::core::model::bitrate_max_kbps;
-use crate::platform::{Display, Lifecycle, Pads, Platform, SystemEvent};
+use crate::platform::{ClockStage, Display, Lifecycle, Pads, Platform, SystemEvent};
 use crate::services::power::ExitPlan;
 use crate::services::store;
 use crate::session::{self, Media};
@@ -95,13 +96,16 @@ pub fn run(platform: Platform) -> ! {
         audio,
         pads,
         storage,
-        lifecycle,
+        mut lifecycle,
         log,
         device,
     } = platform;
     crate::services::paths::install(storage.data_dir());
     // Without a log there is nothing to diagnose a failure from; the title still runs.
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();
+    if let Some(release) = lifecycle.clock_release() {
+        let _ = CLOCK_RELEASE.set(release);
+    }
     install_panic_hook();
     tracing::info!(
         "punktfunk-switch {} on {} ({} firmware {}), gpu {}, ui {}{}",
@@ -114,6 +118,7 @@ pub fn run(platform: Platform) -> ! {
         if device.applet_mode { ", applet mode" } else { "" },
     );
     punktfunk_core::client::set_client_label(&client_label(&device));
+    lifecycle.set_clock_stage(ClockStage::Menu);
     crate::core::caps::install(video.caps());
     // ureq's agents resolve their provider from the process default and panic without one.
     punktfunk_core::tls::install_default_provider();
@@ -174,10 +179,16 @@ fn alternate(app: &mut App) -> Option<ExitPlan> {
         };
         match outcome {
             UiOutcome::Quit(plan) => return plan,
-            UiOutcome::Launch(launch) => match stream::run(app, *launch) {
-                StreamOutcome::ReturnToMenu(why) => notice = why,
-                StreamOutcome::Quit(plan) => return plan,
-            },
+            UiOutcome::Launch(launch) => {
+                app.lifecycle.set_clock_stage(ClockStage::Stream);
+                match stream::run(app, *launch) {
+                    StreamOutcome::ReturnToMenu(why) => {
+                        app.lifecycle.set_clock_stage(ClockStage::Menu);
+                        notice = why;
+                    }
+                    StreamOutcome::Quit(plan) => return plan,
+                }
+            }
         }
     }
 }
@@ -187,15 +198,21 @@ fn client_label(device: &crate::platform::DeviceInfo) -> String {
     format!("Switch {}", device.firmware).trim_end().to_string()
 }
 
+/// The platform's way to hand the clocks back, for the panic hook.
+static CLOCK_RELEASE: OnceLock<fn()> = OnceLock::new();
+
 /// A panic on any thread goes to the log, then its frames where the target can walk them, then
-/// the process aborts. The message is flushed before the walk: on the console, which builds
-/// without unwind tables, the walk itself aborts.
+/// the process aborts. The message is flushed and the clocks go back before the walk: on the
+/// console, which builds without unwind tables, the walk itself aborts.
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let thread = std::thread::current();
         let name = thread.name().unwrap_or("unnamed");
         tracing::error!("PANIC on thread {name:?}: {info}");
         crate::logger::flush();
+        if let Some(release) = CLOCK_RELEASE.get() {
+            release();
+        }
         let backtrace = std::backtrace::Backtrace::force_capture();
         tracing::error!("PANIC on thread {name:?}, frames:\n{backtrace}");
         crate::logger::flush();

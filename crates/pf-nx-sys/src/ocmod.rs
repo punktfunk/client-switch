@@ -5,9 +5,10 @@
 #[cfg(target_os = "horizon")]
 use core::ffi::{c_char, CStr};
 
-/// `HocClkModule_CPU`, `SysClkModule_CPU`.
-#[cfg(target_os = "horizon")]
-const MODULE_CPU: u32 = 0;
+/// `HocClkModule_*`, `SysClkModule_*`: the same numbers in both.
+pub const MODULE_CPU: u32 = 0;
+pub const MODULE_GPU: u32 = 1;
+pub const MODULE_MEM: u32 = 2;
 
 /// Horizon OC's service, then sys-clk's and its forks'.
 #[cfg(target_os = "horizon")]
@@ -69,11 +70,11 @@ impl OcModule {
         Ok((api, text.to_string_lossy().into_owned()))
     }
 
-    /// Asks it to hold the CPU at `hz`; 0 hands the clock back. It lives in the module's memory
-    /// until then, past the title's exit.
-    pub fn hold_cpu(&self, hz: u32) -> Result<(), u32> {
+    /// Asks it to hold `module`, a `MODULE_*`, at `hz`; 0 hands the clock back. It lives in the
+    /// module's memory until then, past the title's exit.
+    pub fn hold(&self, module: u32, hz: u32) -> Result<(), u32> {
         // SAFETY: `service` is NUL-terminated; the rest are plain values.
-        match unsafe { ffi::pf_ocmod_override(self.service.as_ptr(), MODULE_CPU, hz) } {
+        match unsafe { ffi::pf_ocmod_override(self.service.as_ptr(), module, hz) } {
             0 => Ok(()),
             rc => Err(rc),
         }

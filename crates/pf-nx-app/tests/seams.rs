@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use pf_nx_app::platform::fake::{FakeAudio, FakeDisplay, FakeLifecycle, FakePads, FakeStorage, FakeVideo};
+use pf_nx_app::platform::ClockStage;
 use pf_nx_app::platform::{AudioOut, Display, Pads, Platform, Refresh, Storage};
 
 /// A display presents what the UI drew and reads it back at its own size.
@@ -59,6 +60,8 @@ fn a_menu_test_run_leaves_a_bundle_and_exits() {
     let storage = FakeStorage::temp("menu-run");
     std::fs::write(storage.data_dir().join("test-run.json"), r#"{"scenario":"menu"}"#).unwrap();
     let dir = storage.data_dir().to_path_buf();
+    let lifecycle = FakeLifecycle::default();
+    let clock_stages = lifecycle.clock_stages.clone();
     let title = std::thread::spawn(move || {
         pf_nx_app::run(Platform {
             display: Box::new(FakeDisplay::new(640, 360)),
@@ -66,7 +69,7 @@ fn a_menu_test_run_leaves_a_bundle_and_exits() {
             audio: Arc::new(FakeAudio::default()),
             pads: Box::new(FakePads::default()),
             storage: Arc::new(storage),
-            lifecycle: Box::new(FakeLifecycle::default()),
+            lifecycle: Box::new(lifecycle),
             log: None,
             device: pf_nx_app::platform::DeviceInfo {
                 platform: "fake",
@@ -77,6 +80,11 @@ fn a_menu_test_run_leaves_a_bundle_and_exits() {
     let exit = title.join().expect_err("the title only leaves through Lifecycle::exit");
     assert_eq!(exit.downcast_ref::<&str>(), Some(&"title exited"));
     assert!(!dir.join("test-run.json").exists(), "the scenario is consumed");
+    assert_eq!(
+        *clock_stages.lock().unwrap(),
+        [ClockStage::Menu],
+        "the menu holds its clocks from the start"
+    );
     let verdict_root = dir.join("verdict");
     let bundle = std::fs::read_dir(&verdict_root)
         .unwrap()

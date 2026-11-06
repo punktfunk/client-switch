@@ -207,3 +207,10 @@ record their clocks; the numbers below are under that profile unless an item say
   (title at `be98e16`, 2026-10-31).
 - With the accelerometer's sign flipped, a pad lying still reads [0, 1, 0] g on the wire, as
   SDL's frame has it (title at `8a18316`, 2026-10-31).
+- With Horizon OC 2.5.1 on (`hoc:clk`, API 2) and no profile, clkrst alone falls back to 1020 in
+  100-300 ms, and the module's override (command 8) holds 1785 with no help from the title. The
+  hold comes back on its own within 0.2 s of a wake, and a wake without one reads 1020. Clearing
+  it takes about 0.3 s, and clearing with nothing held answers ok. The hold outlives the title:
+  1785 was still there on the next run, 12 s after leaving. With the module off, sm's HasService
+  answers without blocking and clkrst holds until sleep. Dock changes, plain sys-clk and GPU or
+  memory holds are not proven (probe at `c5b5088`, 2026-11-06).
