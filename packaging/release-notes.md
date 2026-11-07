@@ -1,5 +1,14 @@
-First release of punktfunk for the Nintendo Switch: stream games from your PC to a Switch 1
-running Atmosphère.
+punktfunk for the Nintendo Switch: stream games from your PC to a Switch 1 running Atmosphère.
+
+## What's new in 1.1.0
+
+- **Lower latency handheld.** Decoded pictures reach the screen without the extra copies. In a
+  console test at the same bitrate, the median stream delay fell from about 36 ms to 25 ms.
+- **More headroom docked.** The hardware decoder holds its top clock while docked, and the
+  stream skips the overlay when nothing is on it.
+- **Clearer messages when a host refuses you.** The technical cause stays in the log.
+- **The Homebrew Menu now shows Punktfunk.** The file and its folder keep their names, so to
+  update, replace `punktfunk.nro`.
 
 ## Install
 
