@@ -20,7 +20,7 @@ To update, replace the file. Your hosts, pairing and settings are kept.
 
 ## Launch it the right way
 
-**Hold R while you open any installed game**, then pick punktfunk in the Homebrew Menu. That
+**Hold R while you open any installed game**, then pick Punktfunk in the Homebrew Menu. That
 runs it with the console's full memory.
 
 **Do not open it from the Album.** The Album runs homebrew with a small slice of memory, and
