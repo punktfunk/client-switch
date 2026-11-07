@@ -6,7 +6,7 @@
 
 use core::arch::asm;
 use core::ffi::{c_char, c_int, c_long, c_void};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 extern "C" {
@@ -23,6 +23,26 @@ extern "C" {
     fn __real_rename(old: *const c_char, new: *const c_char) -> c_int;
     fn __real_rmdir(path: *const c_char) -> c_int;
     fn __real_setsockopt(fd: c_int, level: c_int, name: c_int, value: *const c_void, len: u32) -> c_int;
+    fn __real_poll(fds: *mut c_void, nfds: u32, timeout: c_int) -> c_int;
+    fn __real_recvmmsg(fd: c_int, msgs: *mut c_void, vlen: u32, flags: c_int, timeout: *mut c_void) -> c_int;
+    fn __real_recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
+    fn __real_recvfrom(
+        fd: c_int,
+        buf: *mut c_void,
+        len: usize,
+        flags: c_int,
+        addr: *mut c_void,
+        addr_len: *mut u32,
+    ) -> isize;
+    fn __real_send(fd: c_int, buf: *const c_void, len: usize, flags: c_int) -> isize;
+    fn __real_sendto(
+        fd: c_int,
+        buf: *const c_void,
+        len: usize,
+        flags: c_int,
+        addr: *const c_void,
+        addr_len: u32,
+    ) -> isize;
     fn __errno() -> *mut c_int;
     fn threadClose(t: *mut c_void) -> u32;
     fn __libnx_free(p: *mut c_void);
@@ -382,6 +402,121 @@ pub unsafe extern "C" fn __wrap_setsockopt(
         *__errno() = ENOBUFS;
         -1
     }
+}
+
+static POLLS: AtomicU64 = AtomicU64::new(0);
+static BATCH_READS: AtomicU64 = AtomicU64::new(0);
+static BATCH_DATAGRAMS: AtomicU64 = AtomicU64::new(0);
+static BATCH_READ_NS: AtomicU64 = AtomicU64::new(0);
+static RECVS: AtomicU64 = AtomicU64::new(0);
+static RECV_FROMS: AtomicU64 = AtomicU64::new(0);
+static SENDS: AtomicU64 = AtomicU64::new(0);
+static SEND_TOS: AtomicU64 = AtomicU64::new(0);
+
+/// The socket calls made since the title started. Each is one IPC to the `bsd` service, which
+/// the system serves on core 3.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SocketCalls {
+    pub polls: u64,
+    pub batch_reads: u64,
+    pub batch_datagrams: u64,
+    pub batch_read_ns: u64,
+    pub recvs: u64,
+    pub recv_froms: u64,
+    pub sends: u64,
+    pub send_tos: u64,
+}
+
+pub fn socket_calls() -> SocketCalls {
+    let read = |n: &AtomicU64| n.load(Ordering::Relaxed);
+    SocketCalls {
+        polls: read(&POLLS),
+        batch_reads: read(&BATCH_READS),
+        batch_datagrams: read(&BATCH_DATAGRAMS),
+        batch_read_ns: read(&BATCH_READ_NS),
+        recvs: read(&RECVS),
+        recv_froms: read(&RECV_FROMS),
+        sends: read(&SENDS),
+        send_tos: read(&SEND_TOS),
+    }
+}
+
+/// # Safety
+/// As `poll`.
+#[no_mangle]
+pub unsafe extern "C" fn __wrap_poll(fds: *mut c_void, nfds: u32, timeout: c_int) -> c_int {
+    POLLS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: the caller's arguments.
+    unsafe { __real_poll(fds, nfds, timeout) }
+}
+
+/// # Safety
+/// As `recvmmsg`.
+#[no_mangle]
+pub unsafe extern "C" fn __wrap_recvmmsg(
+    fd: c_int,
+    msgs: *mut c_void,
+    vlen: u32,
+    flags: c_int,
+    timeout: *mut c_void,
+) -> c_int {
+    let start = Instant::now();
+    // SAFETY: the caller's arguments.
+    let got = unsafe { __real_recvmmsg(fd, msgs, vlen, flags, timeout) };
+    BATCH_READ_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    BATCH_READS.fetch_add(1, Ordering::Relaxed);
+    BATCH_DATAGRAMS.fetch_add(got.max(0) as u64, Ordering::Relaxed);
+    got
+}
+
+/// # Safety
+/// As `recv`.
+#[no_mangle]
+pub unsafe extern "C" fn __wrap_recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize {
+    RECVS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: the caller's arguments.
+    unsafe { __real_recv(fd, buf, len, flags) }
+}
+
+/// # Safety
+/// As `recvfrom`.
+#[no_mangle]
+pub unsafe extern "C" fn __wrap_recvfrom(
+    fd: c_int,
+    buf: *mut c_void,
+    len: usize,
+    flags: c_int,
+    addr: *mut c_void,
+    addr_len: *mut u32,
+) -> isize {
+    RECV_FROMS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: the caller's arguments.
+    unsafe { __real_recvfrom(fd, buf, len, flags, addr, addr_len) }
+}
+
+/// # Safety
+/// As `send`.
+#[no_mangle]
+pub unsafe extern "C" fn __wrap_send(fd: c_int, buf: *const c_void, len: usize, flags: c_int) -> isize {
+    SENDS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: the caller's arguments.
+    unsafe { __real_send(fd, buf, len, flags) }
+}
+
+/// # Safety
+/// As `sendto`.
+#[no_mangle]
+pub unsafe extern "C" fn __wrap_sendto(
+    fd: c_int,
+    buf: *const c_void,
+    len: usize,
+    flags: c_int,
+    addr: *const c_void,
+    addr_len: u32,
+) -> isize {
+    SEND_TOS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: the caller's arguments.
+    unsafe { __real_sendto(fd, buf, len, flags, addr, addr_len) }
 }
 
 /// libnx's crt0 runs `.init_array` through these; rust-lld links no crti/crtn to define them.

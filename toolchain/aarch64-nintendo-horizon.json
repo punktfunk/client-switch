@@ -29,7 +29,13 @@
       "--wrap=fchmod",
       "--wrap=rename",
       "--wrap=rmdir",
-      "--wrap=setsockopt"
+      "--wrap=setsockopt",
+      "--wrap=poll",
+      "--wrap=recvmmsg",
+      "--wrap=recv",
+      "--wrap=recvfrom",
+      "--wrap=send",
+      "--wrap=sendto"
     ]
   },
   "relocation-model": "pic",
