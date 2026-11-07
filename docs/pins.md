@@ -5,7 +5,7 @@
 | Pin | Value | What it fixes | Moves when |
 | --- | --- | --- | --- |
 | Rust nightly | `nightly-2026-10-04` (rustc 1.101.0, `db8f076d2`) | `-Z build-std` for the custom target; the legs were made against it | a std change is needed; re-run the probe |
-| punktfunk | `c4d6fe182` | `punktfunk-core`, `pf-client-core`, `pf-console-ui`, `pf-client-video`, `pf-l10n`, one rev for all | the shared crates change; one bump, all five |
+| punktfunk | `b58dc3cfe` | `punktfunk-core`, `pf-client-core`, `pf-console-ui`, `pf-client-video`, `pf-l10n`, one rev for all | the shared crates change; one bump, all five |
 | devkitA64 | `r30-1` (GCC 16.1.0, newlib 4.6.0) | the C compiler, newlib, libgcc's `pic` objects | devkitPro ships a new one: `-Syu` in the image fails until this moves |
 | libnx | `4.12.0-1` | crt0, sockets, threads, the services | with devkitA64 |
 | switch-tools | `1.13.1-1` | `elf2nro`, `nacptool`, `nxlink` | with devkitA64 |
