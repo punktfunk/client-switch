@@ -55,7 +55,7 @@ ash = { version = "0.38", default-features = false, features = ["debug", "std"] 
 skia-safe = { version = "0.153", features = ["textlayout"] }
 # One REV for all shared crates: a tag and a rev build two copies whose types don't unify.
 # At least the merge of monorepo #2180, which carries the Horizon cfgs this client builds on.
-punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", rev = "b58dc3cfe152c48c584c8e2f77dc05d08f6aeb12", features = ["quic"] }
+punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", rev = "b58dc3cfe152c48c584c8e2f77dc05d08f6aeb12", features = ["quic", "l10n"] }
 pf-client-core = { git = "https://git.unom.io/unom/punktfunk", rev = "b58dc3cfe152c48c584c8e2f77dc05d08f6aeb12", default-features = false }
 pf-console-ui = { git = "https://git.unom.io/unom/punktfunk", rev = "b58dc3cfe152c48c584c8e2f77dc05d08f6aeb12", default-features = false }
 # The parts this crate reads itself. The host's sentences come worded from the core.
