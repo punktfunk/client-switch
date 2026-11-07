@@ -55,7 +55,10 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         gpu_cache_bytes: pf_console_ui::DEFAULT_GPU_CACHE_BYTES,
         screen: None,
         profiles: false,
+        // No profile picker, so a locked profile is dialled as it stands.
+        prompts_unlock: false,
         spatial: false,
+        languages: app.device.languages.clone(),
     };
     let scripted = app.test_run.as_ref().and_then(|run| {
         let host = run.host.as_deref()?;
@@ -166,7 +169,9 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
                         }
                         Err(e) => {
                             tracing::warn!("console: launch refused: {e:#}");
-                            handles.console.set_notice(format!("Couldn't start the stream — {e}"));
+                            handles
+                                .console
+                                .set_notice(pf_l10n::client::dial_stream_start_failed().to_string());
                         }
                     }
                 }
@@ -244,7 +249,7 @@ fn pad_label(batch: &[PadSample]) -> Option<&'static str> {
         PadKind::JoyConLeft => "Joy-Con (L)",
         PadKind::JoyConRight => "Joy-Con (R)",
         PadKind::SwitchPro => "Pro Controller",
-        PadKind::Other => "Controller",
+        PadKind::Other => pf_l10n::console::console_pad_fallback_name(),
     })
 }
 
@@ -265,12 +270,14 @@ fn legend_pref(pref: GamepadPref) -> GamepadPref {
 
 fn pad_infos(batch: &[PadSample], stored: GamepadType) -> impl Iterator<Item = PadInfo> + '_ {
     batch.iter().map(move |s| PadInfo {
-        name: pad_label(std::slice::from_ref(s)).unwrap_or("Controller").into(),
+        name: pad_label(std::slice::from_ref(s))
+            .unwrap_or_else(pf_l10n::console::console_pad_fallback_name)
+            .into(),
         key: format!("slot{}", s.slot),
         pref: shown_kind(stored, std::slice::from_ref(s)).to_core(),
         steam_virtual: false,
         battery: None,
-        detail: format!("Player {}", s.slot + 1),
+        detail: pf_l10n::console::console_pad_player(s.slot + 1),
         forwarded: true,
         rumble: true,
     })

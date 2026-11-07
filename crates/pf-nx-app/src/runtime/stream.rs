@@ -253,7 +253,7 @@ pub(super) fn run(app: &mut App, launch: ConnectOutcome) -> StreamOutcome {
                 tracing::info!("link lost — redial {redials} of {RECONNECTS}");
                 match redial(app, &target, &settings) {
                     Some(c) => connected = c,
-                    None => return StreamOutcome::ReturnToMenu(Some("The connection was lost.".into())),
+                    None => return StreamOutcome::ReturnToMenu(Some(pf_l10n::client::ended_lost().into())),
                 }
             }
             Next::Redial => {
@@ -427,16 +427,12 @@ fn stream(
         if let Some(core) = hud.refresh(connected, decoder) {
             tracing::info!("stats: {} | {core}{}", perf.take_window(), app.clocks_suffix());
         }
-        hud.local = vec![format!(
-            "present: {} frames, {} missed{}",
-            perf.frames,
-            perf.missed,
-            if connected.stats.holding.load(Ordering::Relaxed) {
-                " · holding for a keyframe"
-            } else {
-                ""
-            },
-        )];
+        let mut present = pf_l10n::console::console_overlay_present_frames(perf.frames, perf.missed);
+        if connected.stats.holding.load(Ordering::Relaxed) {
+            present.push_str(" · ");
+            present.push_str(pf_l10n::console::console_overlay_holding_keyframe());
+        }
+        hud.local = vec![present];
         let dt = last_frame.elapsed().as_secs_f64();
         last_frame = Instant::now();
         // Stats off and the dial out of sight draw nothing: the layer is skipped, not blended.
@@ -452,7 +448,9 @@ fn stream(
             Ok(report) => perf.note(&report),
             Err(e) => {
                 tracing::error!("present: {e:#}");
-                break Next::End(StreamOutcome::ReturnToMenu(Some("The picture stopped.".into())));
+                break Next::End(StreamOutcome::ReturnToMenu(Some(
+                    pf_l10n::client::ended_unexpected().into(),
+                )));
             }
         }
 

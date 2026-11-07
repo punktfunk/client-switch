@@ -103,6 +103,7 @@ pub fn run(platform: Platform) -> ! {
     // Without a log there is nothing to diagnose a failure from; the title still runs.
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();
     install_panic_hook();
+    let language = pf_l10n::set_languages(&device.languages);
     tracing::info!(
         "punktfunk-switch {} on {} ({} firmware {}), gpu {}, ui {}{}",
         crate::core::build_id(),
@@ -113,6 +114,7 @@ pub fn run(platform: Platform) -> ! {
         device.ui,
         if device.applet_mode { ", applet mode" } else { "" },
     );
+    tracing::info!("language {language} for the system's {:?}", device.languages);
     punktfunk_core::client::set_client_label(&client_label(&device));
     crate::core::caps::install(video.caps());
     // ureq's agents resolve their provider from the process default and panic without one.
@@ -157,13 +159,15 @@ pub fn run(platform: Platform) -> ! {
     lifecycle.exit()
 }
 
-/// What the first menu says when the title runs as an applet (plan D13).
-const APPLET_MODE_NOTICE: &str =
-    "Opened from the Album, punktfunk has little memory and may close — hold R while starting a game to open it with full memory.";
+/// What the first menu says when the title runs as an applet (plan D13). Holding `R` at
+/// launch starts it with full memory.
+fn applet_mode_notice() -> String {
+    pf_l10n::console::console_switch_applet_mode("R")
+}
 
 /// The menu and the stream in turn, until one of them quits.
 fn alternate(app: &mut App) -> Option<ExitPlan> {
-    let mut notice = app.device.applet_mode.then(|| APPLET_MODE_NOTICE.to_string());
+    let mut notice = app.device.applet_mode.then(applet_mode_notice);
     loop {
         let outcome = match menu::run(app, notice.take()) {
             Ok(outcome) => outcome,

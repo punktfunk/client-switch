@@ -348,6 +348,7 @@ pub fn platform(opts: &Options) -> Result<Platform> {
             gpu,
             ui,
             applet_mode: false,
+            languages: Vec::new(),
         },
     })
 }

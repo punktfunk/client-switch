@@ -27,6 +27,7 @@ pub mod nvk;
 pub mod random;
 #[cfg(target_os = "horizon")]
 pub mod rt;
+pub mod set;
 pub mod setsys;
 pub mod socket;
 pub mod swkbd;

@@ -45,6 +45,8 @@ pub struct DeviceInfo {
     pub ui: String,
     /// Launched as an applet (from the album), with a fraction of the title's memory (plan D13).
     pub applet_mode: bool,
+    /// The system's UI language as BCP-47 tags, most preferred first. Empty reads as English.
+    pub languages: Vec<String>,
 }
 
 /// Refresh rate of the scan-out, in millihertz (60 000, 59 940).
