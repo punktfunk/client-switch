@@ -122,7 +122,7 @@ jobs:
       - name: Title
         env:
           PKG_VERSION: ${{ inputs.version }}
-        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx && scripts/package-nro.sh pf-nx punktfunk'
+        run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx && scripts/package-nro.sh pf-nx punktfunk Punktfunk'
       # Check 6 reads these from the SD card next to the NRO.
       - name: NVDEC streams
         run: sudo apt-get update && sudo apt-get install -y ffmpeg && scripts/nvdec-streams.sh

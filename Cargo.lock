@@ -1158,7 +1158,7 @@ source = "git+https://git.unom.io/unom/punktfunk?rev=b58dc3cfe152c48c584c8e2f77d
 
 [[package]]
 name = "pf-nx"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "pf-nx-app",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "pf-nx-app"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "image",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "pf-nx-host"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "ash",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "pf-nx-platform"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "pf-nx-app",
@@ -1219,7 +1219,7 @@ dependencies = [
 
 [[package]]
 name = "pf-nx-probe"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "ash",
  "libc",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "pf-nx-sys"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "ash",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "pf-nx-vk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "ash",

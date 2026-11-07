@@ -27,7 +27,7 @@ Menu (no applet mode), uses the Switch's own video decoder, and works handheld o
 
 1. Download **`punktfunk.nro`** from the [latest release](https://github.com/punktfunk/client-switch/releases/latest).
 2. Copy it to **`/switch/punktfunk/`** on your SD card.
-3. **Hold R while opening any game**, then pick punktfunk in the Homebrew Menu. Run from Sphaira is recommended. Applet mode does not work. 
+3. **Hold R while opening any game**, then pick Punktfunk in the Homebrew Menu. Run from Sphaira is recommended. Applet mode does not work. 
 
 > **Don't open it from the Album.** The Album gives homebrew too little memory, and punktfunk
 > crashes there.

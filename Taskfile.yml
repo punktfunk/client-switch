@@ -35,4 +35,4 @@ tasks:
     desc: The title's NRO in dist/ (punktfunk.nro), built in the image
     deps: [docker:build]
     cmds:
-      - bash scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx && scripts/package-nro.sh pf-nx punktfunk'
+      - bash scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx && scripts/package-nro.sh pf-nx punktfunk Punktfunk'
