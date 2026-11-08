@@ -13,6 +13,10 @@
     title's `vkGetInstanceProcAddr` (`pyrowave_create_device`), so nothing is ever loaded.
   - `horizon/pf_nx_time.h` (new): `clock_nanosleep`, which newlib lacks, as `nanosleep` on the
     time left. Granite's `Timer::sleep_until` is its one caller.
+  - `build.rs` renames volk's global `vk*` function-pointer variables to `pf_volk_*` in every
+    archive of the crate (`objcopy --redefine-syms`). NVK, linked statically, defines the same
+    names as functions, and the title's `vkGetInstanceProcAddr` bound to volk's variable: the
+    first launch aborted jumping into it (Atmosphère report `01794143733`, 2026-11-08).
   - `vendor/pyrowave/Granite/third_party/renderdoc/renderdoc_app.h` names `__SWITCH__` beside
     `__APPLE__` for its calling convention; it stopped the build with "Unknown platform".
   - `Cargo.toml` spells out the workspace fields it inherited and keeps only the `sie` cfg lint.
