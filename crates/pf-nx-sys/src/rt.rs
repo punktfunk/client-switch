@@ -28,6 +28,7 @@ extern "C" {
     fn __libnx_free(p: *mut c_void);
     fn svcWaitSynchronization(index: *mut i32, handles: *const u32, count: i32, timeout_ns: u64) -> u32;
     fn svcSleepThread(nano: i64);
+    fn memalign(align: usize, size: usize) -> *mut c_void;
 }
 
 /// libnx `ThreadFunc`.
@@ -38,6 +39,8 @@ const ENOSYS: c_int = 88;
 const EFAULT: c_int = 14;
 const EEXIST: c_int = 17;
 const ENOBUFS: c_int = 105;
+const EINVAL: c_int = 22;
+const ENOMEM: c_int = 12;
 
 /// newlib's `SOL_SOCKET` and `SO_RCVBUF`.
 const SOL_SOCKET: c_int = 0xffff;
@@ -47,7 +50,7 @@ const SO_RCVBUF: c_int = 0x1002;
 /// linker extracts the member that defines them.
 #[inline(never)]
 pub fn link_guard() {
-    let keep: [*const (); 12] = [
+    let keep: [*const (); 17] = [
         userAppInit as *const (),
         __wrap_threadCreate as *const (),
         __syscall_thread_detach as *const (),
@@ -60,6 +63,11 @@ pub fn link_guard() {
         sysconf as *const (),
         getrandom as *const (),
         _getentropy_r as *const (),
+        posix_memalign as *const (),
+        dlopen as *const (),
+        dlsym as *const (),
+        dlclose as *const (),
+        dlerror as *const (),
     ];
     std::hint::black_box(keep);
 }
@@ -433,4 +441,47 @@ pub unsafe extern "C" fn _getentropy_r(reent: *mut c_int, buf: *mut c_void, len:
     // SAFETY: the caller's buffer, writable for `len` bytes.
     crate::random::fill(unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), len) });
     0
+}
+
+/// newlib declares `posix_memalign` and devkitA64's libc does not define it; Granite's aligned
+/// allocator (the `PyroWave` lane) calls it. newlib's `free` takes what `memalign` returns.
+///
+/// # Safety
+/// `out` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
+    if !align.is_power_of_two() || align % core::mem::size_of::<*mut c_void>() != 0 {
+        return EINVAL;
+    }
+    // SAFETY: newlib's allocator; `align` is a power of two.
+    let p = unsafe { memalign(align, size) };
+    if p.is_null() {
+        return ENOMEM;
+    }
+    // SAFETY: the caller's pointer, writable.
+    unsafe { *out = p };
+    0
+}
+
+/// Horizon has no dynamic loader. libloading, which the `PyroWave` lane's dependencies link, names
+/// these; every load fails, so nothing is ever looked up or closed.
+#[no_mangle]
+pub extern "C" fn dlopen(_file: *const c_char, _mode: c_int) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn dlsym(_handle: *mut c_void, _name: *const c_char) -> *mut c_void {
+    core::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn dlclose(_handle: *mut c_void) -> c_int {
+    0
+}
+
+/// The reason for the last failed `dlopen` or `dlsym`, which is always the same.
+#[no_mangle]
+pub extern "C" fn dlerror() -> *const c_char {
+    c"no dynamic loader on Horizon".as_ptr()
 }
