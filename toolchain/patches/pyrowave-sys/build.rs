@@ -19,7 +19,8 @@
 //! for bindgen is required on the build machine.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=wrapper.h");
@@ -75,6 +76,9 @@ fn main() {
     }
     let dst = cfg.build();
     let build = dst.join("build");
+    if horizon {
+        rename_volk(&build);
+    }
 
     // Static link closure, dependents before dependencies (GNU ld is order-sensitive).
     println!("cargo:rustc-link-search=native={}", build.display());
@@ -143,4 +147,48 @@ fn main() {
     bindings
         .write_to_file(&bindings_path)
         .expect("write the pyrowave bindings");
+}
+
+/// The title links NVK statically, whose `vk*` entry points are global functions, and volk
+/// defines a global function-pointer variable under each of the same names. The first archive
+/// wins: the title's `vkGetInstanceProcAddr` bound to volk's variable, and the first call jumped
+/// into it (an instruction abort on the console). Every archive of this crate renames volk's
+/// globals to `pf_volk_*` alike, so its own references still meet and NVK keeps the `vk*` names.
+/// A second run finds nothing left to rename.
+fn rename_volk(build: &Path) {
+    let archives = [
+        build.join("libpyrowave-capi.a"),
+        build.join("pyrowave/libpyrowave.a"),
+        build.join("Granite/vulkan/libgranite-vulkan.a"),
+        build.join("Granite/util/libgranite-util.a"),
+        build.join("Granite/math/libgranite-math.a"),
+        build.join("Granite/third_party/libgranite-volk.a"),
+    ];
+    let volk = &archives[5];
+    let out = Command::new("aarch64-none-elf-nm")
+        .args(["--defined-only", "-g", "--format=posix"])
+        .arg(volk)
+        .output()
+        .expect("run aarch64-none-elf-nm on libgranite-volk.a");
+    assert!(out.status.success(), "aarch64-none-elf-nm failed on {}", volk.display());
+    let mut map = String::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let name = line.split_whitespace().next().unwrap_or("");
+        if name.len() > 2 && name.starts_with("vk") && name.as_bytes()[2].is_ascii_uppercase() {
+            map.push_str(&format!("{name} pf_volk_{name}\n"));
+        }
+    }
+    if map.is_empty() {
+        return;
+    }
+    let map_path = build.join("pf-volk-rename.txt");
+    std::fs::write(&map_path, map).expect("write the volk rename map");
+    for archive in &archives {
+        let status = Command::new("aarch64-none-elf-objcopy")
+            .arg(format!("--redefine-syms={}", map_path.display()))
+            .arg(archive)
+            .status()
+            .expect("run aarch64-none-elf-objcopy");
+        assert!(status.success(), "aarch64-none-elf-objcopy failed on {}", archive.display());
+    }
 }
