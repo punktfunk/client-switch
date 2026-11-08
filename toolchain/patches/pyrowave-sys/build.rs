@@ -69,9 +69,14 @@ fn main() {
     if horizon {
         // A <dlfcn.h> whose lookups all fail (volk's, unused: Granite takes the title's
         // GetInstanceProcAddr) and the clock_nanosleep newlib lacks (Granite's timer).
+        //
+        // `thread_local` as devkitPro's Switch.cmake builds it, whose flags cmake-rs replaces:
+        // without -ftls-model=local-exec, -fPIC and -mtp=soft left Granite's first thread-local
+        // store as `bl __aarch64_read_tp; str x1, [x0, x0]`, the variable's offset lost to the
+        // thread pointer, and the store faulted on the console.
         let shim = manifest_dir.join("horizon");
         println!("cargo:rerun-if-changed=horizon");
-        let flags = format!("-I{0} -include {0}/pf_nx_time.h", shim.display());
+        let flags = format!("-I{0} -include {0}/pf_nx_time.h -ftls-model=local-exec", shim.display());
         cfg.cflag(&flags).cxxflag(&flags);
     }
     let dst = cfg.build();

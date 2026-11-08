@@ -7,8 +7,11 @@
   PS5 (`8880bcd5e`); on Horizon its build script writes empty bindings, and `pf-client-video`'s
   `video_pyrowave`, which already builds for Horizon, finds no C API.
 - **Changes:**
-  - `build.rs` builds on Horizon, with `-I horizon -include horizon/pf_nx_time.h` on the C and
-    C++ flags. The C++ runtime comes from the title's link (`pf-nx-sys`), as on the PS5.
+  - `build.rs` builds on Horizon, with `-I horizon -include horizon/pf_nx_time.h
+    -ftls-model=local-exec` on the C and C++ flags. The C++ runtime comes from the title's link
+    (`pf-nx-sys`), as on the PS5. The TLS model is devkitPro's own (`Switch.cmake`), whose flags
+    cmake-rs replaces; without it Granite's first `thread_local` store faulted when a PyroWave
+    stream opened (Atmosphère report `01794144931`, 2026-11-08).
   - `horizon/dlfcn.h` (new): every lookup fails. Only volk includes it, and Granite takes the
     title's `vkGetInstanceProcAddr` (`pyrowave_create_device`), so nothing is ever loaded.
   - `horizon/pf_nx_time.h` (new): `clock_nanosleep`, which newlib lacks, as `nanosleep` on the
