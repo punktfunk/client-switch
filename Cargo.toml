@@ -18,7 +18,9 @@ tracing.workspace = true
 pf-nx-app = { path = "crates/pf-nx-app" }
 
 [target.'cfg(target_os = "horizon")'.dependencies]
-pf-nx-platform = { path = "crates/pf-nx-platform" }
+# PyroWave rides beside NVDEC while it is measured on the console (plan §10); the host picks it
+# only when the player asks for it.
+pf-nx-platform = { path = "crates/pf-nx-platform", features = ["pyrowave"] }
 # For `rt::link_guard`, which keeps the runtime shims in the title's link.
 pf-nx-sys = { path = "crates/pf-nx-sys" }
 
