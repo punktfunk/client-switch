@@ -1,0 +1,20 @@
+# pyrowave-sys leg
+
+- **Upstream:** `crates/codec/pyrowave-sys` of the monorepo at `PUNKTFUNK_REV`
+  (`b58dc3cfe152c48c584c8e2f77dc05d08f6aeb12`), version 0.46.0. The vendored PyroWave, Granite,
+  volk and Vulkan-Headers pins are in `vendor/pyrowave/PUNKTFUNK-VENDOR.txt`.
+- **Origin:** punktfunk. The monorepo builds this crate for Linux, Windows, 64-bit Android and the
+  PS5 (`8880bcd5e`); on Horizon its build script writes empty bindings, and `pf-client-video`'s
+  `video_pyrowave`, which already builds for Horizon, finds no C API.
+- **Changes:**
+  - `build.rs` builds on Horizon, with `-I horizon -include horizon/pf_nx_time.h` on the C and
+    C++ flags. The C++ runtime comes from the title's link (`pf-nx-sys`), as on the PS5.
+  - `horizon/dlfcn.h` (new): every lookup fails. Only volk includes it, and Granite takes the
+    title's `vkGetInstanceProcAddr` (`pyrowave_create_device`), so nothing is ever loaded.
+  - `horizon/pf_nx_time.h` (new): `clock_nanosleep`, which newlib lacks, as `nanosleep` on the
+    time left. Granite's `Timer::sleep_until` is its one caller.
+  - `vendor/pyrowave/Granite/third_party/renderdoc/renderdoc_app.h` names `__SWITCH__` beside
+    `__APPLE__` for its calling convention; it stopped the build with "Unknown platform".
+  - `Cargo.toml` spells out the workspace fields it inherited and keeps only the `sie` cfg lint.
+- **Unproven:** the decoder on NVK on the console. The leg goes once the monorepo builds this
+  crate for Horizon.

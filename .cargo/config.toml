@@ -21,3 +21,7 @@ getrandom02 = { path = "toolchain/patches/getrandom-0.2", package = "getrandom" 
 mio = { path = "toolchain/patches/mio" }
 quinn-udp = { path = "toolchain/patches/quinn-udp" }
 tokio = { path = "toolchain/patches/tokio" }
+
+# The monorepo's PyroWave C API, built for Horizon too (toolchain/patches/pyrowave-sys/LEG.md).
+[patch."https://git.unom.io/unom/punktfunk"]
+pyrowave-sys = { path = "toolchain/patches/pyrowave-sys" }
