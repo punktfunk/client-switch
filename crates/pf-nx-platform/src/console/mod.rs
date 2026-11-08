@@ -5,6 +5,8 @@ mod display_fb;
 mod display_nvk;
 mod lifecycle;
 mod pads;
+#[cfg(feature = "pyrowave")]
+mod pyro;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -104,17 +106,17 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let gpu = format!("NVK {MESA_PIN} ({})", dev.name);
             let ui = presenter.ui();
             let marker = |name: &str| Path::new(DATA_DIR).join(name).exists();
-            (
-                Box::new(display_nvk::NvkDisplay::new(presenter, mode)),
-                Arc::new(
-                    crate::video::NxVideo::gpu(dev, slot)
-                        .straight(marker(STRAIGHT_MARKER))
-                        .in_place(!marker(VIC_MARKER))
-                        .top_clock(docked),
-                ),
-                gpu,
-                ui,
-            )
+            #[cfg(feature = "pyrowave")]
+            let pyro = pf_nx_vk::PyroLane::new(dev.clone(), slot.clone());
+            let nvdec = crate::video::NxVideo::gpu(dev, slot)
+                .straight(marker(STRAIGHT_MARKER))
+                .in_place(!marker(VIC_MARKER))
+                .top_clock(docked);
+            #[cfg(feature = "pyrowave")]
+            let video: Arc<dyn VideoDecoders> = Arc::new(pyro::WithPyro::new(nvdec, pyro));
+            #[cfg(not(feature = "pyrowave"))]
+            let video: Arc<dyn VideoDecoders> = Arc::new(nvdec);
+            (Box::new(display_nvk::NvkDisplay::new(presenter, mode)), video, gpu, ui)
         }
         DisplayKind::Fb => {
             let fb = display_fb::FbDisplay::new()?;
