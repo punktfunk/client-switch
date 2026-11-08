@@ -326,8 +326,12 @@ pub const BITRATE_MAX_KBPS: u32 = 650_000;
 pub const NVDEC_BITRATE_MAX_KBPS: u32 = 20_000;
 
 /// Automatic bitrate's ceiling for a title whose video lane can or cannot decode `PyroWave`.
+/// On the console the receive path bounds every codec, and the ceiling is read once at start,
+/// before a codec is negotiated: a `PyroWave` lane there must not lift HEVC's ceiling. How core
+/// weighs this ceiling against `PyroWave`'s quality floor is unchecked, so the console measures
+/// `PyroWave` at a pinned rate, which the ceiling does not bind.
 pub const fn bitrate_max_kbps(pyrowave: bool) -> u32 {
-    if pyrowave {
+    if pyrowave && !cfg!(target_os = "horizon") {
         BITRATE_MAX_KBPS
     } else {
         NVDEC_BITRATE_MAX_KBPS

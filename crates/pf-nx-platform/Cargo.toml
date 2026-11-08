@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# The PyroWave lane beside NVDEC on the console (plan D14, §10).
+pyrowave = ["pf-nx-vk/pyrowave"]
+
 # The pure maps need only core's wire constants; everything else is the console's.
 [dependencies]
 punktfunk-core.workspace = true
