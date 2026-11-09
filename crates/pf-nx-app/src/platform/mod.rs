@@ -336,10 +336,53 @@ pub trait Lifecycle {
         None
     }
 
+    /// Holds the clocks for `stage`. [`Self::exit`] hands them back.
+    fn set_clock_stage(&mut self, _stage: ClockStage) {}
+
+    /// Hands the clocks back from any thread, for a panic, which never reaches [`Self::exit`].
+    fn clock_release(&self) -> Option<fn()> {
+        None
+    }
+
     /// Shows the system's keyboard over the title and blocks until the player closes it: the
     /// text they confirmed, or `None` when they cancelled or there is no such keyboard.
     fn keyboard(&mut self) -> Option<String> {
         None
+    }
+}
+
+/// What the title is doing, for the clocks it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockStage {
+    Menu,
+    Stream,
+}
+
+/// The rates a stage holds, in Hz. `None` leaves that clock to the system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockTargets {
+    pub cpu_hz: Option<u32>,
+    pub gpu_hz: Option<u32>,
+    pub emc_hz: Option<u32>,
+}
+
+impl ClockStage {
+    /// The menu's rates keep it near 60 fps for under a watt. The stream needs the CPU: it cuts
+    /// the receive path and the VIC transfer, and the GPU adds little there. Docked, the system's
+    /// GPU rate is already above the menu's, so the GPU stays the system's.
+    pub fn targets(self, mode: OperationMode) -> ClockTargets {
+        match self {
+            Self::Menu => ClockTargets {
+                cpu_hz: Some(1_428_000_000),
+                gpu_hz: (mode == OperationMode::Handheld).then_some(422_400_000),
+                emc_hz: Some(1_600_000_000),
+            },
+            Self::Stream => ClockTargets {
+                cpu_hz: Some(1_785_000_000),
+                gpu_hz: None,
+                emc_hz: Some(1_600_000_000),
+            },
+        }
     }
 }
 
@@ -361,5 +404,29 @@ impl std::fmt::Display for Clocks {
             mhz(self.cpu_hz),
             mhz(self.emc_hz)
         )
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::{ClockStage, OperationMode};
+
+    #[test]
+    fn the_menu_raises_the_gpu_only_in_handheld() {
+        assert_eq!(
+            ClockStage::Menu.targets(OperationMode::Handheld).gpu_hz,
+            Some(422_400_000)
+        );
+        assert_eq!(ClockStage::Menu.targets(OperationMode::Docked).gpu_hz, None);
+    }
+
+    #[test]
+    fn the_stream_leaves_the_gpu_and_stays_in_the_official_limits() {
+        for mode in [OperationMode::Handheld, OperationMode::Docked] {
+            let stream = ClockStage::Stream.targets(mode);
+            assert_eq!(stream.cpu_hz, Some(1_785_000_000));
+            assert_eq!(stream.gpu_hz, None);
+            assert_eq!(stream.emc_hz, Some(1_600_000_000));
+        }
     }
 }

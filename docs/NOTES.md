@@ -207,3 +207,18 @@ record their clocks; the numbers below are under that profile unless an item say
   (title at `be98e16`, 2026-10-31).
 - With the accelerometer's sign flipped, a pad lying still reads [0, 1, 0] g on the wire, as
   SDL's frame has it (title at `8a18316`, 2026-10-31).
+- With Horizon OC 2.5.1 on (`hoc:clk`, API 2) and no profile, clkrst alone falls back to 1020 in
+  100-300 ms, and the module's override (command 8) holds 1785 with no help from the title. The
+  hold comes back on its own within 0.2 s of a wake, and a wake without one reads 1020. Clearing
+  it takes about 0.3 s, and clearing with nothing held answers ok. The hold outlives the title:
+  1785 was still there on the next run, 12 s after leaving. With the module off, sm's HasService
+  answers without blocking and clkrst holds until sleep. Dock changes, plain sys-clk and GPU or
+  memory holds are not proven (probe at `c5b5088`, 2026-11-06).
+- The title holds menu clocks of CPU 1428, GPU 422.4 handheld and memory 1600 MHz (422.4 is a
+  table rate, read back as asked), and CPU 1785 with memory 1600 through a stream. It does so
+  through `hoc:clk` with Horizon OC on and through clkrst with no module; without one, the system
+  moves the clocks on wake and on a return from HOME, and the title asks again within a second.
+  Docked, the menu leaves the GPU at the system's 768. Leaving through the menu or HOME's close
+  puts the stock clocks back, read on the overlay. The clocks read at a performance-mode message
+  are the system's stock ones before a hold returns, so the overlay, not that line, shows a dock
+  change. A dock change mid-stream is not in the logs (title at `cebd83b`, 2026-11-07).

@@ -29,6 +29,7 @@ mod ffi {
         pub fn clkrstOpenSession(session_out: *mut ClkrstSession, module_id: u32, unk: u32) -> u32;
         pub fn clkrstCloseSession(session: *mut ClkrstSession);
         pub fn clkrstGetClockRate(session: *mut ClkrstSession, out_hz: *mut u32) -> u32;
+        pub fn clkrstSetClockRate(session: *mut ClkrstSession, hz: u32) -> u32;
     }
 }
 
@@ -64,4 +65,30 @@ pub fn clocks() -> Option<Clocks> {
     // SAFETY: balances the clkrstInitialize above.
     unsafe { ffi::clkrstExit() };
     c
+}
+
+/// Asks for `hz` on `module`, a `MODULE_*`. `Err` is the libnx result of the step that failed.
+#[cfg(target_os = "horizon")]
+pub fn set_rate(module: u32, hz: u32) -> Result<(), u32> {
+    // SAFETY: no arguments; balanced by clkrstExit.
+    let rc = unsafe { ffi::clkrstInitialize() };
+    if rc != 0 {
+        return Err(rc);
+    }
+    let mut s = ClkrstSession::default();
+    // SAFETY: clkrst is open; `s` receives the session.
+    let mut rc = unsafe { ffi::clkrstOpenSession(&mut s, module, 3) };
+    if rc == 0 {
+        // SAFETY: `s` is the session just opened; closed right after.
+        rc = unsafe { ffi::clkrstSetClockRate(&mut s, hz) };
+        // SAFETY: closes the session opened above.
+        unsafe { ffi::clkrstCloseSession(&mut s) };
+    }
+    // SAFETY: balances the clkrstInitialize above.
+    unsafe { ffi::clkrstExit() };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(rc)
+    }
 }
