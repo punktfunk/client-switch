@@ -17,10 +17,12 @@ pub(super) struct StatsOverlay {
     pub tier: StatsVerbosity,
     advanced: bool,
     lines: Vec<HudLine>,
+    /// Lines this client adds: the lane, pacing misses, the audio ring.
+    local: Vec<String>,
+    /// The widest line at a scale, measured once per change of lines.
+    widest: Option<(f32, f32)>,
     taken: Option<Instant>,
     logged: Instant,
-    /// Lines this client adds: the lane, pacing misses, the audio ring.
-    pub local: Vec<String>,
 }
 
 impl StatsOverlay {
@@ -29,9 +31,10 @@ impl StatsOverlay {
             tier,
             advanced,
             lines: Vec::new(),
+            local: Vec::new(),
+            widest: None,
             taken: None,
             logged: Instant::now(),
-            local: Vec::new(),
         }
     }
 
@@ -41,15 +44,21 @@ impl StatsOverlay {
         self.taken = None;
     }
 
+    /// Whether [`Self::refresh`] takes a new window this frame.
+    pub fn due(&self) -> bool {
+        !self.taken.is_some_and(|t| t.elapsed() < REFRESH)
+    }
+
     /// Takes a new window when one is due. Every [`LOG_EVERY`] it returns that window's lines at
     /// the detailed tier, joined, for the log.
     pub fn refresh(&mut self, connected: &Connected, decoder: &str) -> Option<String> {
-        if self.taken.is_some_and(|t| t.elapsed() < REFRESH) {
+        if !self.due() {
             return None;
         }
         self.taken = Some(Instant::now());
         let snap = connected.hud_snapshot(decoder);
         self.lines = hud::format(&snap, self.tier, self.advanced);
+        self.widest = None;
         if self.logged.elapsed() < LOG_EVERY {
             return None;
         }
@@ -58,29 +67,42 @@ impl StatsOverlay {
         Some(lines.into_iter().map(|l| l.text).collect::<Vec<_>>().join(" | "))
     }
 
-    pub fn draw(&self, canvas: &Canvas, fonts: &Fonts, scale: f32) {
+    pub fn set_local(&mut self, local: Vec<String>) {
+        if local != self.local {
+            self.local = local;
+            self.widest = None;
+        }
+    }
+
+    fn texts(&self) -> impl Iterator<Item = (&str, Role)> {
+        let local = self.local.iter().map(|t| (t.as_str(), Role::Muted));
+        self.lines.iter().map(|l| (l.text.as_str(), l.role)).chain(local)
+    }
+
+    pub fn draw(&mut self, canvas: &Canvas, fonts: &Fonts, scale: f32) {
         if self.tier == StatsVerbosity::Off {
             return;
         }
         let size = f64::from(13.0 * scale);
         let line_h = (size * 1.3) as f32;
         let pad = 10.0 * scale;
-        let texts: Vec<(&str, Role)> = self
-            .lines
-            .iter()
-            .map(|l| (l.text.as_str(), l.role))
-            .chain(self.local.iter().map(|t| (t.as_str(), Role::Muted)))
-            .collect();
-        let width = texts
-            .iter()
-            .map(|(t, _)| fonts.measure(t, W::Medium, size))
-            .fold(0.0f32, f32::max);
-        let height = line_h * texts.len() as f32;
+        let width = match self.widest.filter(|&(at, _)| at == scale) {
+            Some((_, width)) => width,
+            None => {
+                let width = self
+                    .texts()
+                    .map(|(t, _)| fonts.measure(t, W::Medium, size))
+                    .fold(0.0f32, f32::max);
+                self.widest = Some((scale, width));
+                width
+            }
+        };
+        let height = line_h * (self.lines.len() + self.local.len()) as f32;
         let plate = Rect::from_xywh(pad, pad, width + pad * 2.0, height + pad * 2.0);
         let mut paint = Paint::new(Color4f::new(0.0, 0.0, 0.0, 0.62), None);
         paint.set_anti_alias(true);
         canvas.draw_rrect(RRect::new_rect_xy(plate, 8.0 * scale, 8.0 * scale), &paint);
-        for (i, (text, role)) in texts.iter().enumerate() {
+        for (i, (text, role)) in self.texts().enumerate() {
             let baseline = f64::from(pad * 2.0 + line_h * (i as f32 + 0.8));
             fonts.draw(
                 canvas,
@@ -89,7 +111,7 @@ impl StatsOverlay {
                 baseline,
                 W::Medium,
                 size,
-                colour(*role),
+                colour(role),
             );
         }
     }
