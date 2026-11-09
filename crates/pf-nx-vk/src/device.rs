@@ -18,15 +18,28 @@ use pf_client_video::video_vk::{QueueLock, VulkanDecodeDevice};
 /// version it is handed, and a device's own newer one fails that check.
 pub const INSTANCE_API_VERSION: u32 = vk::API_VERSION_1_3;
 
+/// The display's vblank, as the platform hands it over.
+#[derive(Clone, Copy, Debug)]
+pub struct Vsync {
+    /// Drops a vblank already signalled, so the next `wait` is for one after the call.
+    pub clear: fn(),
+    /// Blocks until a vblank, at most the nanoseconds given; `false` on a timeout.
+    pub wait: fn(u64) -> bool,
+}
+
 /// What the device presents to.
 #[derive(Clone, Copy, Debug)]
 pub enum Target {
     /// `VK_NN_vi_surface` on a libnx `NWindow`. `size` is the swapchain extent asked for; the
     /// surface takes the window's size, so `resize` sizes the window before each surface is made.
+    /// `vsync` is the display's vblank, where vi gave one; `queued` says whether the last present
+    /// found an earlier frame still waiting for the panel.
     Vi {
         window: *mut c_void,
         size: (u32, u32),
         resize: fn(*mut c_void, u32, u32) -> bool,
+        vsync: Option<Vsync>,
+        queued: fn() -> bool,
     },
     /// Images this crate owns, read back for tests. A developer box without a window.
     Offscreen { width: u32, height: u32 },

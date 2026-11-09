@@ -140,6 +140,8 @@ impl VideoDecoders for NxVideo {
                 decoder,
                 top_clock: self.top_clock,
                 needs_flush: false,
+                #[cfg(target_os = "horizon")]
+                raised: false,
                 timing: Timing::new(),
                 started,
                 dues: VecDeque::with_capacity(DUES_KEPT + 1),
@@ -226,6 +228,9 @@ struct Lane {
     top_clock: fn() -> bool,
     /// The last feed failed; flush before the next one.
     needs_flush: bool,
+    /// The thread that feeds the lane is the decode thread: its first access unit raises it.
+    #[cfg(target_os = "horizon")]
+    raised: bool,
     timing: Timing,
     /// The sink's clock origin, which the session's due times count from.
     started: Instant,
@@ -235,6 +240,10 @@ struct Lane {
 
 impl Lane {
     fn feed(&mut self, au: &[u8], pts: u64, due_ns: u64) -> Result<()> {
+        #[cfg(target_os = "horizon")]
+        if !std::mem::replace(&mut self.raised, true) {
+            crate::console::threads::raise(crate::console::threads::HOT);
+        }
         self.decoder.set_top_clock((self.top_clock)());
         if std::mem::take(&mut self.needs_flush) {
             self.decoder.flush();

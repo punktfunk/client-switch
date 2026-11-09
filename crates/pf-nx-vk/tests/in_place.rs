@@ -192,6 +192,40 @@ fn tiled_pass_draws_what_the_upload_draws_scaled() {
     assert!(max_diff(&want, &got) <= 8, "differs by {}", max_diff(&want, &got));
 }
 
+/// The picture drawn in place onto a `width`×`height` output.
+fn draw_in_place(width: u32, height: u32) -> Option<Vec<u8>> {
+    let dev = device(width, height)?;
+    let slot = Arc::new(VideoSlot::default());
+    let mut presenter = Presenter::new(dev.clone(), slot.clone()).expect("presenter");
+    presenter.set_stream(true, Fit::Contain);
+    let mut lane = InPlace::new(dev, slot, &spec()).expect("in-place lane");
+    let surface = Surface::new(true);
+    lane.publish(&surface.tiled(), 0, None, Box::new(())).expect("publish");
+    let got = frame(&mut presenter);
+    presenter.set_stream(false, Fit::Contain);
+    drop(presenter);
+    drop(lane);
+    Some(got)
+}
+
+/// A picture the size of its output reads luma once a pixel. Two columns wider, the same picture
+/// sits one pixel in, its texels still on pixel centres, and goes through the filter: both draw
+/// the same pixels, up to the float rounding of the interpolated coordinate.
+#[test]
+fn one_to_one_reads_what_the_filter_reads() {
+    let (Some(exact), Some(wide)) = (draw_in_place(W, H), draw_in_place(W + 2, H)) else {
+        return;
+    };
+    let row = (W * 4) as usize;
+    let inner: Vec<u8> = wide
+        .chunks_exact(row + 8)
+        .flat_map(|r| r[4..4 + row].iter().copied())
+        .collect();
+    let differ = exact.iter().zip(&inner).filter(|(a, b)| a != b).count();
+    eprintln!("one to one: {differ} of {} bytes differ from the filter", exact.len());
+    assert!(max_diff(&exact, &inner) <= 1, "differs by {}", max_diff(&exact, &inner));
+}
+
 /// The check reads a tiled surface back as the VIC would have copied it, and finds one written
 /// pitch-linear wrong.
 #[test]

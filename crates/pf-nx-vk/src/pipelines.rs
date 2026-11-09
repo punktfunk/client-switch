@@ -11,7 +11,8 @@ use crate::device::GpuDevice;
 
 /// Three CSC rows plus the params vec4.
 pub const PUSH_BYTES: u32 = 16 * 4;
-/// [`PUSH_BYTES`] and the tiled surface's pitch, width and height, with one word spare.
+/// [`PUSH_BYTES`] and the tiled surface's pitch, width and height, and whether it fills the
+/// output one texel a pixel.
 pub const TILED_PUSH_BYTES: u32 = PUSH_BYTES + 4 * 4;
 
 const TILED_FRAG: &[u8] = include_bytes!("../shaders/nv12_tiled.frag.spv");

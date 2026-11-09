@@ -2,7 +2,7 @@ use std::{
     io::{self, IoSliceMut},
     sync::{
         Mutex,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::Instant,
 };
@@ -19,6 +19,8 @@ pub struct UdpSocketState {
     /// Horizon (punktfunk's leg): whether `recvmmsg` works here, [`BATCH_UNKNOWN`] until its
     /// first answer.
     batched: AtomicU8,
+    /// Horizon: each `recvmmsg` slot is the caller's whole buffer, not [`SLOT_BYTES`].
+    full_slots: AtomicBool,
 }
 
 const BATCH_UNKNOWN: u8 = 0;
@@ -32,6 +34,7 @@ impl UdpSocketState {
         Ok(Self {
             last_send_error: Mutex::new(now.checked_sub(2 * IO_ERROR_LOG_INTERVAL).unwrap_or(now)),
             batched: AtomicU8::new(BATCH_UNKNOWN),
+            full_slots: AtomicBool::new(false),
         })
     }
 
@@ -74,7 +77,7 @@ impl UdpSocketState {
     ) -> io::Result<usize> {
         #[cfg(target_os = "horizon")]
         if self.batched.load(Ordering::Relaxed) != BATCH_OFF {
-            match recv_batch(&socket, bufs, meta) {
+            match recv_batch(&socket, bufs, meta, &self.full_slots) {
                 Ok(n) => {
                     if self.batched.swap(BATCH_ON, Ordering::Relaxed) == BATCH_UNKNOWN {
                         crate::log::info!("recvmmsg: up to {BATCH_SIZE} datagrams a call, {n} in the first");
@@ -166,14 +169,24 @@ fn recv_one(
 /// Up to [`BATCH_SIZE`] datagrams, one per buffer, through libnx's `recvmmsg` (bsd's
 /// RecvMMsg, firmware 7.0.0). `MSG_DONTWAIT`: an empty socket is `WouldBlock`, and the call
 /// returns what is queued rather than waiting for a full batch.
+///
+/// libnx stages every slot of a call whole, so a slot offers [`SLOT_BYTES`] until a datagram
+/// fills one. That datagram is gone: it comes back empty, which every reader skips, and
+/// `full_slots` turns on for good.
 #[cfg(target_os = "horizon")]
 fn recv_batch(
     socket: &UdpSockRef<'_>,
     bufs: &mut [IoSliceMut<'_>],
     meta: &mut [RecvMeta],
+    full_slots: &AtomicBool,
 ) -> io::Result<usize> {
     use std::os::unix::io::AsRawFd;
     let n = bufs.len().min(meta.len()).min(BATCH_SIZE);
+    let cap = if full_slots.load(Ordering::Relaxed) || full_slots_forced() {
+        usize::MAX
+    } else {
+        SLOT_BYTES
+    };
     // Safety: all-zero is a valid value of these plain C structs.
     let mut names: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
     let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
@@ -181,11 +194,12 @@ fn recv_batch(
     for i in 0..n {
         iovs[i] = libc::iovec {
             iov_base: bufs[i].as_mut_ptr().cast(),
-            iov_len: bufs[i].len(),
+            iov_len: bufs[i].len().min(cap),
         };
         let h = &mut hdrs[i].msg_hdr;
         h.msg_name = (&mut names[i] as *mut libc::sockaddr_storage).cast();
-        h.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        // The largest address `socket_addr` reads; libnx stages this much a slot, not 128.
+        h.msg_namelen = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
         h.msg_iov = &mut iovs[i];
         h.msg_iovlen = 1;
     }
@@ -201,11 +215,26 @@ fn recv_batch(
         )
     };
     if got < 0 {
-        return Err(io::Error::last_os_error());
+        let e = io::Error::last_os_error();
+        // A dead socket polls readable at once, and its reader polls again straight away.
+        if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) {
+            std::thread::sleep(HARD_ERROR_PAUSE);
+        }
+        return Err(e);
     }
     let got = got as usize;
     for i in 0..got {
-        let len = hdrs[i].msg_len as usize;
+        let mut len = hdrs[i].msg_len as usize;
+        let slot = bufs[i].len().min(cap);
+        let truncated = len >= slot || hdrs[i].msg_hdr.msg_flags & libc::MSG_TRUNC != 0;
+        if slot < bufs[i].len() && truncated {
+            if !full_slots.swap(true, Ordering::Relaxed) {
+                crate::log::warn!(
+                    "recvmmsg: a datagram filled its {slot}-byte slot and is dropped; full-size slots from here"
+                );
+            }
+            len = 0;
+        }
         let addr = socket_addr(&names[i]).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "recvmmsg: an address of no known family")
         })?;
@@ -246,6 +275,23 @@ fn socket_addr(s: &libc::sockaddr_storage) -> Option<std::net::SocketAddr> {
         _ => None,
     }
 }
+
+/// What a `recvmmsg` slot offers: above 1472, the UDP payload of a 1500-byte MTU and the largest
+/// QUIC payload this client advertises. Media outgrows it only on a jumbo path.
+#[cfg(target_os = "horizon")]
+const SLOT_BYTES: usize = 2048;
+
+/// `sdmc:/switch/punktfunk/recv-cheio` gives every slot the caller's whole buffer, for an A/B
+/// of [`SLOT_BYTES`]. Read once.
+#[cfg(target_os = "horizon")]
+fn full_slots_forced() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| std::path::Path::new("sdmc:/switch/punktfunk/recv-cheio").exists())
+}
+
+/// How long a hard `recvmmsg` error holds its caller.
+#[cfg(target_os = "horizon")]
+const HARD_ERROR_PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// Datagrams one [`UdpSocketState::recv`] takes: one `recvmmsg` batch on Horizon.
 #[cfg(target_os = "horizon")]

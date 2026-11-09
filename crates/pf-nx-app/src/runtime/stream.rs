@@ -383,6 +383,7 @@ fn stream(
     let mut dial_was_open = false;
     let mut perf = StreamPerf::default();
     let mut last_frame = Instant::now();
+    let mut shown_holding = false;
 
     let next = loop {
         let events = app.system_events();
@@ -453,15 +454,21 @@ fn stream(
             };
         }
 
+        let due = hud.due();
         if let Some(core) = hud.refresh(connected, decoder) {
             tracing::info!("stats: {} | {core}{}", perf.take_window(), app.clocks_suffix());
         }
-        let mut present = pf_l10n::console::console_overlay_present_frames(perf.frames, perf.missed);
-        if connected.stats.holding.load(Ordering::Relaxed) {
-            present.push_str(" · ");
-            present.push_str(pf_l10n::console::console_overlay_holding_keyframe());
+        // The frame count steps with the overlay's window; the keyframe hold shows when it flips.
+        let holding = connected.stats.holding.load(Ordering::Relaxed);
+        if due || holding != shown_holding {
+            shown_holding = holding;
+            let mut present = pf_l10n::console::console_overlay_present_frames(perf.frames, perf.missed);
+            if holding {
+                present.push_str(" · ");
+                present.push_str(pf_l10n::console::console_overlay_holding_keyframe());
+            }
+            hud.set_local(vec![present]);
         }
-        hud.local = vec![present];
         let dt = last_frame.elapsed().as_secs_f64();
         last_frame = Instant::now();
         // Stats off and the dial out of sight draw nothing: the layer is skipped, not blended.

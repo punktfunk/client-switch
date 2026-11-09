@@ -13,7 +13,7 @@ use std::os::fd::RawFd;
 use std::os::hermit::io::RawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{cmp, fmt, io};
 
 use crate::sys::unix::waker::Waker as WakerInternal;
@@ -103,10 +103,13 @@ struct SelectorState {
     /// to the list of emitted events.
     pending_wake_token: Mutex<Option<Token>>,
 
-    /// Data is written to this to wake up the current instance of `wait`, which can occur when the
-    /// user notifies it (in which case `notified` would have been set) or when an operation needs
-    /// to occur (in which case `waiting_operations` would have been incremented).
+    /// Interrupts a `select` blocked in `poll`. [`SelectorState::notify`] writes to it only then.
     notify_waker: WakerInternal,
+
+    /// Lets an idle `select` sleep on `parked` while only the waker is registered, so a wake
+    /// costs no syscall (an IPC on Horizon).
+    sleep: Mutex<Sleep>,
+    parked: Condvar,
 
     /// The number of operations (`add`, `modify` or `delete`) that are currently waiting on the
     /// mutex to become free. When this is nonzero, `wait` must be suspended until it reaches zero
@@ -122,6 +125,15 @@ struct SelectorState {
     #[cfg(debug_assertions)]
     #[allow(dead_code)]
     id: usize,
+}
+
+/// What `select` is doing, as [`SelectorState::notify`] needs to know it.
+#[derive(Debug, Default)]
+struct Sleep {
+    /// A wake `select` has not consumed yet.
+    woken: bool,
+    /// `select` is in `poll` or about to enter it.
+    in_poll: bool,
 }
 
 /// The file descriptors to poll in a `Poller`.
@@ -184,6 +196,8 @@ impl SelectorState {
             pending_removal: Mutex::new(Vec::new()),
             pending_wake_token: Mutex::new(None),
             notify_waker,
+            sleep: Mutex::new(Sleep::default()),
+            parked: Condvar::new(),
             waiting_operations: AtomicUsize::new(0),
             operations_complete: Condvar::new(),
             #[cfg(debug_assertions)]
@@ -216,35 +230,59 @@ impl SelectorState {
                 timeout = Some(Duration::from_secs(0))
             }
 
-            // Perform the poll.
-            trace!("Polling on {:?}", &fds);
-            let num_events = poll(&mut fds.poll_fds, timeout)?;
-            trace!("Poll finished: {:?}", &fds);
-
-            if num_events == 0 {
+            // Only the waker to poll: sleep on `parked` instead. A wake that is not a token's
+            // (a registration) returns empty, so the caller's timeout never stretches.
+            if fds.fd_data.is_empty() && self.notify_waker.fd().is_some() {
+                if self.park(timeout) {
+                    if let Some(token) = self.pending_wake_token.lock().unwrap().take() {
+                        events.push(Event {
+                            token,
+                            events: libc::POLLIN,
+                        });
+                    }
+                }
                 return Ok(());
             }
 
-            let waker_events;
+            let poll_timeout = if self.enter_poll() {
+                Some(Duration::from_secs(0))
+            } else {
+                timeout
+            };
+
+            // Perform the poll.
+            trace!("Polling on {:?}", &fds);
+            let polled = poll(&mut fds.poll_fds, poll_timeout);
+            let woken = self.leave_poll();
+            let num_events = polled?;
+            trace!("Poll finished: {:?}", &fds);
+
+            // `wake` stores its token before it marks the wake, so a consumed wake sees it.
+            let pending_wake_token = if woken {
+                self.pending_wake_token.lock().unwrap().take()
+            } else {
+                None
+            };
+
+            if num_events == 0 && pending_wake_token.is_none() {
+                return Ok(());
+            }
+
             let notified;
             let mut num_fd_events;
             if self.notify_waker.fd().is_some() {
-                waker_events = fds.poll_fds[0].0.revents;
-                notified = waker_events != 0;
+                notified = fds.poll_fds[0].0.revents != 0;
                 num_fd_events = if notified { num_events - 1 } else { num_events }
             } else {
-                waker_events = 0;
                 notified = self.notify_waker.woken();
                 num_fd_events = num_events;
             };
 
-            let pending_wake_token = self.pending_wake_token.lock().unwrap().take();
-
             if notified {
                 self.notify_waker.ack_and_reset();
-                if pending_wake_token.is_some() {
-                    num_fd_events += 1;
-                }
+            }
+            if pending_wake_token.is_some() {
+                num_fd_events += 1;
             }
 
             // We now check whether this poll was performed with descriptors which were pending
@@ -263,7 +301,7 @@ impl SelectorState {
                 if let Some(pending_wake_token) = pending_wake_token {
                     events.push(Event {
                         token: pending_wake_token,
-                        events: waker_events,
+                        events: libc::POLLIN,
                     });
                 }
 
@@ -400,14 +438,9 @@ impl SelectorState {
         self.waiting_operations.fetch_add(1, Ordering::SeqCst);
 
         // Wake up the current caller of `wait` if there is one.
-        let sent_notification = self.notify_waker.wake().is_ok();
+        let _ = self.notify();
 
         let mut fds = self.fds.lock().unwrap();
-
-        // If there was no caller of `wait` our notification was not removed from the pipe.
-        if sent_notification {
-            self.notify_waker.ack_and_reset();
-        }
 
         let res = f(&mut *fds);
 
@@ -460,7 +493,58 @@ impl SelectorState {
     #[cfg(not(target_os = "wasi"))]
     pub fn wake(&self, token: Token) -> io::Result<()> {
         self.pending_wake_token.lock().unwrap().replace(token);
+        self.notify()
+    }
+
+    /// Interrupts `select`: through the waker's fd while it is in `poll`, else by a flag it reads
+    /// before it blocks and a signal on `parked`. A wake already pending covers this one.
+    fn notify(&self) -> io::Result<()> {
+        let mut sleep = self.sleep.lock().unwrap();
+        if sleep.woken {
+            return Ok(());
+        }
+        sleep.woken = true;
+        if !sleep.in_poll {
+            self.parked.notify_one();
+            return Ok(());
+        }
+        drop(sleep);
         self.notify_waker.wake()
+    }
+
+    /// Sleeps on `parked` until a wake, which it consumes, or until `timeout`: false then.
+    fn park(&self, timeout: Option<Duration>) -> bool {
+        let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+        let mut sleep = self.sleep.lock().unwrap();
+        while !sleep.woken {
+            sleep = match deadline {
+                None => self.parked.wait(sleep).unwrap(),
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return false;
+                    }
+                    self.parked.wait_timeout(sleep, left).unwrap().0
+                }
+            };
+        }
+        sleep.woken = false;
+        true
+    }
+
+    /// From here a wake writes to the waker's fd. True if one is already pending: poll without
+    /// blocking.
+    fn enter_poll(&self) -> bool {
+        let mut sleep = self.sleep.lock().unwrap();
+        sleep.in_poll = true;
+        sleep.woken
+    }
+
+    /// Takes the pending wake, if any, and turns wakes back into signals.
+    fn leave_poll(&self) -> bool {
+        let mut sleep = self.sleep.lock().unwrap();
+        sleep.in_poll = false;
+        std::mem::take(&mut sleep.woken)
     }
 }
 
@@ -674,4 +758,151 @@ use registered_io_source::RegistrationRecord;
 
 cfg_io_source! {
     pub(crate) use registered_io_source::IoSourceState;
+}
+
+// The wake paths of `select`. On a host: `RUSTFLAGS='--cfg mio_unsupported_force_poll_poll'
+// cargo test --lib --features os-poll,net` in a copy of this crate (see LEG.md).
+#[cfg(test)]
+mod tests {
+    use std::net::UdpSocket;
+    use std::os::fd::AsRawFd;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::{poll, Events, PollFd, SelectorState};
+    use crate::{Interest, Token};
+
+    const WAKE: Token = Token(1);
+    const SOCKET: Token = Token(2);
+    const LONG: Duration = Duration::from_secs(5);
+
+    fn tokens(events: &Events) -> Vec<Token> {
+        events.iter().map(|e| e.token).collect()
+    }
+
+    /// Whether a wake was written to the waker's fd and is still unread.
+    fn wake_written(state: &SelectorState) -> bool {
+        let fd = state.notify_waker.fd().unwrap();
+        let mut fds = [PollFd(libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })];
+        poll(&mut fds, Some(Duration::from_secs(0))).unwrap() == 1
+    }
+
+    /// `select` here, and `act` on another thread once `select` has had time to block.
+    fn select_while(
+        state: &Arc<SelectorState>,
+        act: impl FnOnce(&SelectorState) + Send + 'static,
+    ) -> Events {
+        let other = state.clone();
+        let actor = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            act(&other);
+        });
+        let mut events = Vec::new();
+        let start = Instant::now();
+        state.select(&mut events, Some(LONG)).unwrap();
+        assert!(start.elapsed() < LONG, "select slept through the wake");
+        actor.join().unwrap();
+        events
+    }
+
+    #[test]
+    fn a_wake_with_no_select_running_is_kept_without_a_write() {
+        let state = SelectorState::new().unwrap();
+        state.wake(WAKE).unwrap();
+        assert!(!wake_written(&state));
+        let mut events = Vec::new();
+        state.select(&mut events, Some(LONG)).unwrap();
+        assert_eq!(tokens(&events), [WAKE]);
+    }
+
+    #[test]
+    fn a_parked_select_wakes_without_a_write() {
+        let state = Arc::new(SelectorState::new().unwrap());
+        let events = select_while(&state, |s| {
+            assert!(!s.sleep.lock().unwrap().in_poll);
+            s.wake(WAKE).unwrap()
+        });
+        assert_eq!(tokens(&events), [WAKE]);
+        assert!(!wake_written(&state));
+    }
+
+    #[test]
+    fn a_parked_select_times_out_empty() {
+        let state = SelectorState::new().unwrap();
+        let mut events = Vec::new();
+        let start = Instant::now();
+        state
+            .select(&mut events, Some(Duration::from_millis(30)))
+            .unwrap();
+        assert!(events.is_empty());
+        assert!(start.elapsed() >= Duration::from_millis(30));
+    }
+
+    #[test]
+    fn a_registration_while_parked_is_polled() {
+        let state = Arc::new(SelectorState::new().unwrap());
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let (fd, to) = (socket.as_raw_fd(), socket.local_addr().unwrap());
+        let events = select_while(&state, move |s| {
+            s.register(fd, SOCKET, Interest::READABLE).unwrap()
+        });
+        assert!(events.is_empty(), "a registration returns empty");
+        let sender = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            UdpSocket::bind("127.0.0.1:0")
+                .unwrap()
+                .send_to(&[1], to)
+                .unwrap();
+        });
+        let mut events = Vec::new();
+        state.select(&mut events, Some(LONG)).unwrap();
+        sender.join().unwrap();
+        assert_eq!(tokens(&events), [SOCKET]);
+    }
+
+    #[test]
+    fn a_select_in_poll_wakes_through_the_fd() {
+        let state = Arc::new(SelectorState::new().unwrap());
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        state
+            .register(socket.as_raw_fd(), SOCKET, Interest::READABLE)
+            .unwrap();
+        let mut events = Vec::new();
+        state
+            .select(&mut events, Some(Duration::from_secs(0)))
+            .unwrap();
+        let events = select_while(&state, |s| s.wake(WAKE).unwrap());
+        assert_eq!(tokens(&events), [WAKE]);
+    }
+
+    /// Wakes that race `select` into both of its blocking states: none may be lost.
+    #[test]
+    fn racing_wakes_are_never_lost() {
+        let state = Arc::new(SelectorState::new().unwrap());
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        for round in 0..400u64 {
+            if round == 200 {
+                state
+                    .register(socket.as_raw_fd(), SOCKET, Interest::READABLE)
+                    .unwrap();
+            }
+            let other = state.clone();
+            let waker = thread::spawn(move || {
+                thread::sleep(Duration::from_micros(round % 7 * 20));
+                other.wake(WAKE).unwrap();
+            });
+            let start = Instant::now();
+            let mut events = Vec::new();
+            while !tokens(&events).contains(&WAKE) {
+                state.select(&mut events, Some(LONG)).unwrap();
+                assert!(start.elapsed() < LONG, "round {round}: the wake was lost");
+            }
+            waker.join().unwrap();
+        }
+    }
 }

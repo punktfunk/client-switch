@@ -25,6 +25,7 @@ impl AudioOut for NxAudio {
         Ok(Box::new(Port {
             out,
             pcm: vec![0; GRAIN_FRAMES * 2],
+            raised: false,
         }))
     }
 }
@@ -32,6 +33,8 @@ impl AudioOut for NxAudio {
 struct Port {
     out: audout::AudioOut,
     pcm: Vec<i16>,
+    /// The thread that writes a port is the audio thread: its first grain raises it.
+    raised: bool,
 }
 
 impl AudioPort for Port {
@@ -46,6 +49,9 @@ impl AudioPort for Port {
             pcm.len(),
             self.pcm.len()
         );
+        if !std::mem::replace(&mut self.raised, true) {
+            super::threads::raise(super::threads::AUDIO);
+        }
         for (dst, src) in self.pcm.iter_mut().zip(pcm) {
             *dst = (src.clamp(-1.0, 1.0) * 32767.0) as i16;
         }

@@ -1,6 +1,7 @@
 //! The presenter: the [`Display`] seam on the one device. Each frame clears to black, draws the
 //! newest stream picture into its fitted rectangle (when the stream layer is on), blends the UI
-//! layer over it (unless a stream switched that layer off), and presents at the next vblank.
+//! layer over it (unless a stream switched that layer off), and presents at the next vblank, one
+//! frame queued at most where the display has a vsync event ([`crate::pacing`]).
 //!
 //! Pictures arrive from the decode lanes through a [`VideoSlot`]: newest wins, and the last one
 //! shown is drawn again until a newer one arrives. A picture stays alive until the frame that
@@ -17,6 +18,7 @@ use pf_nx_app::platform::{Display, Fit, FrameReport, Refresh, Rgba};
 
 use crate::device::{GpuDevice, Target};
 use crate::output::Output;
+use crate::pacing::{Pace, Pacing};
 use crate::picture::{Picture, Planes, VideoSlot};
 use crate::pipelines::Pipelines;
 use crate::timer::GpuTimer;
@@ -73,6 +75,7 @@ pub struct Presenter {
     stale: bool,
     /// Each frame's command buffer on the GPU; `None` where the queue has no timestamps.
     timer: Option<GpuTimer>,
+    pace: Pace,
 }
 
 // SAFETY: the read-back pointer maps memory this struct owns; the presenter lives on the main
@@ -80,7 +83,8 @@ pub struct Presenter {
 unsafe impl Send for Presenter {}
 
 impl Presenter {
-    /// Builds the output, pipelines and UI layer on `dev`. `slot` is shared with the lanes.
+    /// Builds the output, pipelines and UI layer on `dev`. `slot` is shared with the lanes. A vi
+    /// target's vsync event, where it has one, paces the loop ([`Self::set_pacing`]).
     pub fn new(dev: Arc<GpuDevice>, slot: Arc<VideoSlot>) -> Result<Self> {
         let want = match dev.target {
             Target::Vi { size, .. } => vk::Extent2D {
@@ -154,6 +158,10 @@ impl Presenter {
         let readback_sets = alloc_sets(&dev, desc_pool, &pipes)?;
         let ui = UiLayer::new(&dev, output.extent)?;
         let timer = GpuTimer::new(&dev, FRAMES);
+        let pace = match dev.target {
+            Target::Vi { vsync, queued, .. } => Pace::new(vsync, Some(queued)),
+            Target::Offscreen { .. } => Pace::new(None, None),
+        };
         if timer.is_none() {
             tracing::info!("presenter: the queue has no timestamps, so no GPU time per frame");
         }
@@ -182,7 +190,13 @@ impl Presenter {
             want,
             stale: false,
             timer,
+            pace,
         })
+    }
+
+    /// How the loop meets the vblank; [`Pacing::Late`] until set.
+    pub fn set_pacing(&mut self, pacing: Pacing) {
+        self.pace.set(pacing);
     }
 
     /// Asks for a `size` swapchain (a dock change); a new size rebuilds the output before the
@@ -199,12 +213,13 @@ impl Presenter {
     }
 
     /// Swaps the output for one matching the window now, and everything drawn against it. A
-    /// new extent also rebuilds the UI layer at that size. A failed rebuild leaves the
-    /// presenter stale, and the next frame tries again.
+    /// new extent also rebuilds the UI layer at that size, and the late take forgets its GPU
+    /// readings. A failed rebuild leaves the presenter stale, and the next frame tries again.
     // TODO(verify): that NVK's WSI lets a vi surface be destroyed and made again on the same NWindow.
     fn rebuild(&mut self) -> Result<()> {
         self.wait_idle();
         self.stale = true;
+        self.pace.reset_gpu();
         let dev = self.dev.clone();
         // SAFETY: the device is idle; every handle below was created by this presenter, and
         // each destroy here is a no-op when a failed rebuild already ran it.
@@ -286,7 +301,8 @@ impl Presenter {
     }
 
     /// Records the composition into `fb`: clear, picture, and the UI layer while it is on. A
-    /// picture in place is preceded by a barrier: NVDEC wrote it outside Vulkan.
+    /// picture in place is preceded by a barrier: NVDEC wrote it outside Vulkan, and one the size
+    /// of the output has its luma read unfiltered, one texel a pixel.
     ///
     /// # Safety
     /// `cmd` is recording, `fb` belongs to `pass`, and `sets` are not read by work in flight.
@@ -345,10 +361,11 @@ impl Presenter {
                     }
                     Planes::Tiled { views, pitch } => {
                         self.write_texel_set(sets[3], views);
+                        let exact = (picture.width, picture.height) == (extent.width, extent.height);
                         (
                             &self.pipes.tiled,
                             sets[3],
-                            Some([*pitch, picture.width, picture.height, 0]),
+                            Some([*pitch, picture.width, picture.height, u32::from(exact)]),
                         )
                     }
                 };
@@ -527,6 +544,9 @@ impl Display for Presenter {
             .map_err(|e| anyhow!("wait_for_fences: {e}"))?;
         self.frames[f].in_use = None;
         let gpu_us = self.timer.as_ref().and_then(|t| t.read(&self.dev, f));
+        if let Some(us) = gpu_us {
+            self.pace.note_gpu(us);
+        }
         if self.stale {
             self.rebuild()?;
         }
@@ -534,16 +554,34 @@ impl Display for Presenter {
         if self.ui_on {
             self.ui.draw(ui);
         }
-        // The acquire blocks until the panel frees an image, just after a vblank: the picture is
-        // taken after it, so one that lands during the wait still makes this frame.
+        let period = Duration::from_nanos(self.refresh().period_ns());
+        let presents = self.output.presents();
+        if presents {
+            self.pace.announce();
+        }
+        // Paced on the vblank, the acquire follows one and finds an image free at once. Paced by
+        // the acquire, it blocks until the panel frees one, just after a vblank.
+        let vblank = self.pace.wait(period);
+        let asked = Instant::now();
         let index = self.acquire(ready)?;
+        let quick = !presents
+            || self
+                .pace
+                .acquired(asked.elapsed(), self.last_present.map(|t| asked - t), period);
         let mut report = FrameReport {
             gpu_us,
             ..FrameReport::default()
         };
         if self.stream.is_some() {
-            // What is presented now latches at the next vblank, a refresh from here.
-            let latch = Instant::now() + Duration::from_nanos(self.refresh().period_ns());
+            // The frame latches at the vblank after the one waited for. Without one, or after an
+            // acquire that blocked, at the vblank a refresh from here.
+            let latch = match vblank.filter(|_| quick) {
+                Some(at) => {
+                    self.pace.take(at, period);
+                    at + period
+                }
+                None => Instant::now() + period,
+            };
             if let Some(picture) = self.slot.take(latch) {
                 if let Some(turn) = picture.turn {
                     self.dev.vkd.queue_lock.begin_present_turn(turn);
@@ -581,7 +619,6 @@ impl Display for Presenter {
             }
             self.dev.device.end_command_buffer(cmd)?;
         }
-        let presents = self.output.presents();
         let waits = [ready];
         let stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signals = [self.done[index as usize]];
@@ -601,7 +638,12 @@ impl Display for Presenter {
                 self.dev.device.reset_fences(&[fence])?;
                 self.dev.device.queue_submit(self.dev.queue, &[submit], fence)?;
             }
-            if !self.output.present(self.dev.queue, index, signals[0])? {
+            let presenting = Instant::now();
+            let fresh = self.output.present(self.dev.queue, index, signals[0])?;
+            if presents {
+                self.pace.presented(presenting.elapsed());
+            }
+            if !fresh {
                 self.stale = true;
             }
         }
@@ -610,7 +652,6 @@ impl Display for Presenter {
         }
         if !presents {
             // Nothing paces an offscreen target: hold the loop to the nominal refresh.
-            let period = Duration::from_nanos(self.refresh().period_ns());
             if let Some(last) = self.last_present {
                 if let Some(rest) = period.checked_sub(last.elapsed()) {
                     std::thread::sleep(rest);
@@ -618,9 +659,11 @@ impl Display for Presenter {
             }
         }
         let now = Instant::now();
-        let period = Duration::from_nanos(self.refresh().period_ns());
         report.missed = self.last_present.is_some_and(|t| now - t > period + period / 2);
         self.last_present = Some(now);
+        if let Some(line) = self.pace.close(now).filter(|_| presents) {
+            tracing::info!("{line}");
+        }
         if report.new_picture {
             if let Some(p) = &self.current {
                 note_displayed(p);
@@ -632,6 +675,7 @@ impl Display for Presenter {
 
     fn set_stream(&mut self, on: bool, fit: Fit) {
         self.stream = on.then_some(fit);
+        self.pace.reset_gpu();
         if !on {
             self.slot.clear();
             self.current = None;
