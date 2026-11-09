@@ -69,6 +69,9 @@ adds a player-facing setting (`docs/settings.md`).
 
 ### Take the picture late in the refresh
 
+Built, with vblank pacing under it, and waiting for its console round: see [Present
+path](#present-path-what-changed-and-how-to-test).
+
 **Why.** `Presenter::frame` takes the picture right after `acquire` returns, which the code expects
 just after a vblank. A picture decoded moments later misses that take and waits a whole refresh,
 even with about 15 ms left before the next vblank. Composing takes about 2 ms, so most of that
@@ -168,6 +171,80 @@ network may want the second frame back.
   manual says to hold R over a game.
 - **Audio** plays 20 to 55 ms behind the picture, steady.
 - **The Homebrew App Store listing** and the **Switch 2** (plan §9).
+
+### Socket path: three cuts to test
+
+Each cut removes work from the bsd service on core 3. None has run on the console yet.
+
+- **A wake with no socket call.** While tokio's driver has nothing but its waker registered, as
+  during a stream, it sleeps on a condvar. A wake then costs no `send`, `recv` or `poll`, which
+  came to about 330, 560 and 320 calls a second of a stream's 1650 (`toolchain/patches/mio`).
+  With a socket registered, the loopback datagram still wakes it. **Test:** the count during a
+  stream, then the menu, a reconnect and a wake from sleep.
+- **Smaller read slots.** Each `recvmmsg` slot offers 2048 bytes rather than the whole 9217-byte
+  buffer, and a 28-byte address rather than 128. libnx stages about 66 KB a call rather than
+  300 KB. The first datagram that fills a slot is dropped and turns full slots back on for that
+  socket. A file `recv-cheio` in `/switch/punktfunk/` keeps full slots, for the A/B. **Test:** a
+  read's cost per datagram, against 330 microseconds on 2026-11-04.
+- **No spin on a dead socket.** A hard read error waits 10 ms, as core's reader would otherwise
+  poll and read again at once. **Test:** a wake from sleep mid-stream.
+
+### Present path: what changed and how to test
+
+None of this has run on the console yet.
+
+- **Pacing on the vblank.** NVK's vi swapchain has three images and its acquire returns as soon
+  as the panel frees any, so a loop paced by the acquire keeps two presented frames queued: a
+  picture taken after vblank N reaches the panel at N + 2, a refresh no stat counts. That is
+  reasoned from Mesa's `wsi_common_switch.c`, not measured. The presenter now takes the display's
+  vsync event (`viGetDisplayVsyncEvent`, on a second handle to the default display), clears it
+  after each present and acquires only after the next vblank, so at most one frame waits. A
+  present that still finds one queued (libnx's `consumer_running_behind`) makes the next frame
+  wait two vblanks; if one is still queued after that, the drains stop and the log says so. A
+  wait gives up after three refreshes and that frame paces on the acquire; eight in a row pace
+  every frame on the acquire. The menu paces the same way. The dev box's offscreen target is
+  unchanged.
+- **The late take.** While streaming, the presenter sleeps after the vblank until the GPU's
+  slowest of its last 32 frames plus 3 ms remain, at most 10 ms into the refresh, then takes
+  the picture. `latch` is the vblank after the one waited for, so `slot[10s]` counts the sleep
+  as time saved, not as lateness. No sleep until 32 GPU readings exist after a stream starts or
+  the swapchain changes.
+- **Luma read once at one to one.** A picture the size of the output reads one luma texel a
+  pixel in the tiled pass, five fetches instead of eight; chroma keeps its filter. Both paths
+  work out the block-linear offset as a row part plus a column part, two of each per 2x2
+  footprint. Where both map one to one, the lavapipe test `one_to_one_reads_what_the_filter_reads`
+  holds the two paths within 1 of 255; on lavapipe 7 of 96000 bytes differ, from the filter's
+  float rounding of the interpolated coordinate.
+
+**The probe line**, every 10 s: `present[10s]: N frames on the vblank, taken late; vblank wait
+…; acquire …, N under 1 ms; present …; N found a frame queued, N drained; picture taken … after
+the vblank; quick acquires after a stall 0:… 4+:…`.
+
+- `found a frame queued` reads the queue depth directly: nearly every frame if two wait, about
+  none if one does.
+- `quick acquires after a stall` counts only when paced by the acquire. After a gap of over two
+  refreshes the queue is empty, so the acquires that return in under 1 ms before one blocks are
+  the free images: two or three if the panel holds one image, one or two if it holds two.
+- Paced on the vblank, `acquire` stays under 1 ms; a p50 near a refresh means the queue filled
+  anyway. `picture taken` says how far into the refresh the take lands.
+
+**Markers** in `/switch/punktfunk/`: `fila-antiga` paces by the acquire, as v1.0.0 did;
+`sem-espera` paces on the vblank without the late sleep. The first `presenter: paced …` line
+in the log names the mode, and says so when vi gave no vsync event.
+
+**The test.** Handheld at stock clocks, the same game, Smooth 1: one round each with
+`fila-antiga`, with `sem-espera` and with no marker, then the three again docked at 1080p.
+Compare `found a frame queued`, the missed vblanks and decode to present in `stats:`,
+`slot[10s]`'s late mean, end to end, `compose on the gpu` and the tester's feel. Then a sleep
+and a dock change mid-stream with no marker: the picture must come back, with no `paced by the
+acquire from here` line.
+
+**Unknown until then:** whether vi hands out the vsync event to a second display handle;
+whether docked it follows the TV; whether 3 ms covers the CPU and the present's IPC; and when
+the compositor takes its frame for the next vblank. If it takes it soon after the event, a late
+present waits a refresh more and the late take loses one. No stat shows that, as decode to
+present and end to end stop at the present: only the tester's feel tells `sem-espera` from no
+marker there.
 
 ## 3. Already done in this client
 
