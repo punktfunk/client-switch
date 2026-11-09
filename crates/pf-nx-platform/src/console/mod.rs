@@ -5,6 +5,7 @@ mod display_fb;
 mod display_nvk;
 mod lifecycle;
 mod pads;
+pub(crate) mod threads;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{Context, Result};
 use pf_nx_app::platform::{DeviceInfo, Display, OperationMode, Platform, Storage, VideoDecoders};
 use pf_nx_sys::{applet, nvk, set, setsys, socket, vi};
-use pf_nx_vk::{GpuDevice, Presenter, Target, VideoSlot};
+use pf_nx_vk::{GpuDevice, Pacing, Presenter, Target, VideoSlot, Vsync};
 
 /// Identity, settings, logs and bundles; the NRO itself lives here too (plan D18).
 const DATA_DIR: &str = "sdmc:/switch/punktfunk";
@@ -23,6 +24,11 @@ const DATA_DIR: &str = "sdmc:/switch/punktfunk";
 const STRAIGHT_MARKER: &str = "vic-direto";
 /// A file of this name keeps pictures on the VIC route instead of in place, for the same A/B.
 const VIC_MARKER: &str = "vic-copia";
+/// A file of this name paces the presenter by the acquire, two frames queued, for the A/B of the
+/// vblank pacing.
+const ACQUIRE_MARKER: &str = "fila-antiga";
+/// A file of this name paces on the vblank but takes the picture at once, for the same A/B.
+const NO_LATE_MARKER: &str = "sem-espera";
 
 /// The Mesa pin NVK was built from, for the log and the About screen.
 const MESA_PIN: &str = match option_env!("PF_MESA_PIN") {
@@ -82,9 +88,10 @@ fn nxlink() -> Option<Box<dyn Write + Send>> {
     up.then(|| Box::new(std::io::stdout()) as Box<dyn Write + Send>)
 }
 
-/// Builds the console platform. Sockets and nxlink come first, so a display that fails to come
-/// up is reported; the display comes next, as the step most likely to fail.
+/// Builds the console platform. Core's thread boost, sockets and nxlink come first, so a display
+/// that fails to come up is reported; the display comes next, as the step most likely to fail.
 pub fn platform(kind: DisplayKind) -> Result<Platform> {
+    threads::install();
     let log = nxlink();
     std::fs::create_dir_all(DATA_DIR).with_context(|| format!("create {DATA_DIR}"))?;
     let (display, video, gpu, ui): (Box<dyn Display>, Arc<dyn VideoDecoders>, String, String) = match kind {
@@ -93,17 +100,36 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let mode = operation_mode();
             // No logger yet: nxlink's stdout is the only witness.
             println!("punktfunk: vi window {:?}, {mode:?}", vi::window_size(window));
+            let vsync = match vi::open_vsync() {
+                Ok(()) => Some(Vsync {
+                    clear: vi::clear_vsync,
+                    wait: vi::wait_vsync,
+                }),
+                Err(e) => {
+                    println!("punktfunk: no vsync event: {e:#}");
+                    None
+                }
+            };
             let target = Target::Vi {
                 window,
                 size: mode_size(mode),
                 resize: vi::set_window_size,
+                vsync,
+                queued: vi::queue_behind,
             };
             let dev = Arc::new(GpuDevice::new(nvk::entry(), target).context("bring up the GPU")?);
             let slot = Arc::new(VideoSlot::default());
-            let presenter = Presenter::new(dev.clone(), slot.clone()).context("bring up the display")?;
+            let mut presenter = Presenter::new(dev.clone(), slot.clone()).context("bring up the display")?;
             let gpu = format!("NVK {MESA_PIN} ({})", dev.name);
             let ui = presenter.ui();
             let marker = |name: &str| Path::new(DATA_DIR).join(name).exists();
+            presenter.set_pacing(if marker(ACQUIRE_MARKER) {
+                Pacing::Acquire
+            } else if marker(NO_LATE_MARKER) {
+                Pacing::Vblank
+            } else {
+                Pacing::Late
+            });
             (
                 Box::new(display_nvk::NvkDisplay::new(presenter, mode)),
                 Arc::new(

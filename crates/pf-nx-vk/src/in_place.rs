@@ -46,7 +46,8 @@ pub struct TiledSurface {
 }
 
 /// The byte at column `x`, row `y` of a 16Bx2 block-linear plane `pitch` bytes wide with two
-/// GOBs (16 rows) to a block. `shaders/nv12_tiled.frag` has the same function.
+/// GOBs (16 rows) to a block. `shaders/nv12_tiled.frag` sums the same terms, its row and column
+/// parts apart.
 pub fn block_linear(x: u32, y: u32, pitch: u32) -> u32 {
     (y >> 4) * (pitch << 4)
         + (x >> 6) * 1024

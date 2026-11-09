@@ -9,6 +9,7 @@
 pub mod device;
 pub mod in_place;
 pub mod output;
+pub mod pacing;
 pub mod picture;
 pub mod pipelines;
 pub mod presenter;
@@ -18,8 +19,9 @@ mod timer;
 pub mod ui;
 pub mod util;
 
-pub use device::{GpuDevice, Target};
+pub use device::{GpuDevice, Target, Vsync};
 pub use in_place::{Check, InPlace, TiledSurface};
+pub use pacing::Pacing;
 pub use picture::{Drops, Nv12Upload, Picture, Planes, StagingPlanes, VideoSlot};
 pub use presenter::Presenter;
 #[cfg(feature = "pyrowave")]
