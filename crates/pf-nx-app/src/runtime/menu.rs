@@ -49,9 +49,7 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         pyrowave_ok: caps.pyrowave,
         av1_ok: false,
         store: Some(store.clone()),
-        // TODO(core): `Platform::Switch`. The PS5's is the nearest: a console title that quits,
-        // no touch, no window.
-        platform: Platform::Ps5,
+        platform: Platform::Switch,
         gpu_cache_bytes: pf_console_ui::DEFAULT_GPU_CACHE_BYTES,
         screen: None,
         profiles: false,
@@ -260,7 +258,7 @@ fn shown_kind(stored: GamepadType, batch: &[PadSample]) -> GamepadType {
 
 /// The legend's pad family. The shell's Nintendo legend puts confirm on south; here A confirms
 /// on east, so the letters legend is the one that names the engraved buttons.
-// TODO(core): a `Platform::Switch` shell draws Nintendo glyphs with A on east.
+// TODO(core): `Platform::Switch` still draws the Nintendo legend's confirm on south.
 fn legend_pref(pref: GamepadPref) -> GamepadPref {
     match pf_console_ui::glyphs::GlyphStyle::from_pref(Some(pref)) {
         pf_console_ui::glyphs::GlyphStyle::Nintendo => GamepadPref::XboxOne,
@@ -280,6 +278,7 @@ fn pad_infos(batch: &[PadSample], stored: GamepadType) -> impl Iterator<Item = P
         detail: pf_l10n::console::console_pad_player(s.slot + 1),
         forwarded: true,
         rumble: true,
+        audio: false,
     })
 }
 

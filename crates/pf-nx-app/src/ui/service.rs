@@ -1317,6 +1317,7 @@ fn to_model(games: &[GameEntry]) -> Vec<LibraryGame> {
             developer: None,
             year: None,
             genres: Vec::new(),
+            overrides: None,
             // Host state, and this client never asks for it — see `ConsoleCmd::RefreshRunning`.
             running: false,
             endable: false,
