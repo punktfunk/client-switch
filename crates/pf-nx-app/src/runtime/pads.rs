@@ -1,12 +1,14 @@
-//! Pad samples into what the loops act on: wire input for the host, menu events for the console,
-//! the dial's own presses, and the shortcuts. Pure: samples in, events out.
+//! Pad samples into what the loops act on: wire input for the host, menu events or input test
+//! readings for the console, the dial's own presses, and the shortcuts. Pure: samples in, events
+//! out.
 
 use std::time::Instant;
 
-use pf_client_core::menu_nav::{MenuEvent, MenuSample};
+use pf_client_core::menu_nav::{MenuEvent, MenuNav, MenuSample};
 use pf_client_core::overlay_actions::{OverlayConfig, SlotId};
 use pf_client_core::ring::RingCommand;
 use pf_client_core::shortcuts::{Action, Binding, Device, Engine, Event, Out, Phase, Shortcuts};
+use pf_console_ui::PadTestState;
 use punktfunk_core::input::{gamepad, key_vk, InputEvent, InputKind};
 
 use crate::core::dial::{PadDial, PadRoute};
@@ -364,6 +366,110 @@ pub fn menu_sample(batch: &[PadSample]) -> MenuSample {
     out
 }
 
+/// The console's input test names for the wire bits. Its Nintendo legend shows `B` as A.
+const TEST_NAMES: [(u32, &str); 20] = [
+    (gamepad::BTN_A, "A"),
+    (gamepad::BTN_B, "B"),
+    (gamepad::BTN_X, "X"),
+    (gamepad::BTN_Y, "Y"),
+    (gamepad::BTN_LB, "LB"),
+    (gamepad::BTN_RB, "RB"),
+    (gamepad::BTN_BACK, "Back"),
+    (gamepad::BTN_START, "Start"),
+    (gamepad::BTN_GUIDE, "Guide"),
+    (gamepad::BTN_LS_CLICK, "LS"),
+    (gamepad::BTN_RS_CLICK, "RS"),
+    (gamepad::BTN_DPAD_UP, "Up"),
+    (gamepad::BTN_DPAD_DOWN, "Down"),
+    (gamepad::BTN_DPAD_LEFT, "Left"),
+    (gamepad::BTN_DPAD_RIGHT, "Right"),
+    (gamepad::BTN_MISC1, "Misc"),
+    (gamepad::BTN_PADDLE1, "R4"),
+    (gamepad::BTN_PADDLE2, "L4"),
+    (gamepad::BTN_PADDLE3, "R5"),
+    (gamepad::BTN_PADDLE4, "L5"),
+];
+
+/// The pads as the console's input test reads them: buttons held on any pad except `hide`, a
+/// trigger past half travel as held, and the axes of the pad pushed furthest (+y down).
+pub fn pad_test_state(batch: &[PadSample], hide: u32) -> PadTestState {
+    let buttons = batch.iter().fold(0, |b, s| b | s.buttons) & !hide;
+    let mut held: Vec<String> = (TEST_NAMES.iter())
+        .filter(|(bit, _)| buttons & bit != 0)
+        .map(|(_, name)| (*name).to_string())
+        .collect();
+    for (name, down) in [
+        ("LT", batch.iter().any(|s| s.lt > 127)),
+        ("RT", batch.iter().any(|s| s.rt > 127)),
+    ] {
+        if down {
+            held.push(name.to_string());
+        }
+    }
+    let stick = |v: i16| (f32::from(v) / 32767.0).clamp(-1.0, 1.0);
+    let trigger = |v: u8| f32::from(v) / 255.0;
+    let reach = |a: &[f32; 6]| a.iter().map(|v| v * v).sum::<f32>();
+    let axes = (batch.iter())
+        .map(|s| {
+            [
+                stick(s.lx),
+                -stick(s.ly),
+                stick(s.rx),
+                -stick(s.ry),
+                trigger(s.lt),
+                trigger(s.rt),
+            ]
+        })
+        .max_by(|a, b| reach(a).total_cmp(&reach(b)))
+        .unwrap_or_default();
+    let axes = (["LX", "LY", "RX", "RY", "LT", "RT"].iter())
+        .zip(axes)
+        .map(|(name, v)| ((*name).to_string(), v))
+        .collect();
+    PadTestState { held, axes }
+}
+
+/// The console's pads: menu events, or while its input test runs, readings for that instead.
+#[derive(Default)]
+pub struct MenuPads {
+    nav: MenuNav,
+    /// The last reading sent; `None` while the test is off.
+    test_last: Option<PadTestState>,
+    /// Held as the test began, kept out of it until let go. The A that opened it is the east
+    /// button, which the console's own check for that press (a south A) misses.
+    test_hide: u32,
+}
+
+impl MenuPads {
+    /// One poll. While `testing` nothing moves the menu and a changed reading comes back; what is
+    /// still held as the test ends counts as down, not pressed.
+    pub fn poll(
+        &mut self,
+        batch: &[PadSample],
+        testing: bool,
+        now: Instant,
+        out: &mut Vec<MenuEvent>,
+    ) -> Option<PadTestState> {
+        if !testing {
+            self.test_last = None;
+            self.nav.poll(&menu_sample(batch), now, out);
+            return None;
+        }
+        self.nav.reset();
+        let held = batch.iter().fold(0, |b, s| b | s.buttons);
+        if self.test_last.is_none() {
+            self.test_hide = held;
+        }
+        self.test_hide &= held;
+        let state = pad_test_state(batch, self.test_hide);
+        if self.test_last.as_ref() == Some(&state) {
+            return None;
+        }
+        self.test_last = Some(state.clone());
+        Some(state)
+    }
+}
+
 pub fn bit_event(bit: u32, pressed: bool, pad: u8) -> InputEvent {
     InputEvent {
         kind: InputKind::GamepadButton,
@@ -682,6 +788,54 @@ mod tests {
         nav.poll(&menu_sample(&[pad(0)]), t, &mut out);
         nav.poll(&menu_sample(&[pad(gamepad::BTN_A)]), t, &mut out);
         assert_eq!(out, [MenuEvent::Confirm, MenuEvent::Back]);
+    }
+
+    /// Wire names (east is `B`), a trigger past half travel held, +y down from the furthest pad.
+    #[test]
+    fn the_input_test_reads_wire_names_triggers_and_y_down() {
+        let a = PadSample {
+            ly: 32767,
+            rt: 255,
+            ..pad(gamepad::BTN_B | gamepad::BTN_PADDLE1)
+        };
+        let b = PadSample {
+            slot: 1,
+            lx: 100,
+            lt: 100,
+            ..pad(gamepad::BTN_DPAD_UP)
+        };
+        let s = pad_test_state(&[a, b], 0);
+        assert_eq!(s.held, ["B", "Up", "R4", "RT"]);
+        let axis = |n: &str| s.axes.iter().find(|(k, _)| k == n).map(|(_, v)| *v);
+        assert_eq!(axis("LY"), Some(-1.0), "the wire's up is the test's -y");
+        assert_eq!(axis("RT"), Some(1.0));
+        assert_eq!(axis("LX"), Some(0.0), "from the pad pushed furthest");
+        assert_eq!(pad_test_state(&[a], gamepad::BTN_B).held, ["R4", "RT"], "hidden");
+    }
+
+    #[test]
+    fn the_input_test_takes_the_pads_off_the_menu() {
+        let mut pads = MenuPads::default();
+        let t = Instant::now();
+        let mut out = Vec::new();
+        let [a, b, ..] = FACE;
+        pads.poll(&[pad(0)], false, t, &mut out);
+        pads.poll(&[pad(a)], false, t, &mut out);
+        assert_eq!(out, [MenuEvent::Confirm]);
+        out.clear();
+        let first = pads.poll(&[pad(a)], true, t, &mut out).expect("a first reading");
+        assert!(first.held.is_empty(), "the A that opened the test stays out of it");
+        assert!(
+            pads.poll(&[pad(a)], true, t, &mut out).is_none(),
+            "an unchanged reading"
+        );
+        pads.poll(&[pad(0)], true, t, &mut out);
+        let lit = pads.poll(&[pad(b | gamepad::BTN_DPAD_DOWN)], true, t, &mut out);
+        assert_eq!(lit.expect("B lights").held, ["A", "Down"]);
+        assert!(out.is_empty(), "no menu moves while the test runs");
+        pads.poll(&[pad(b)], false, t, &mut out);
+        pads.poll(&[pad(0)], false, t, &mut out);
+        assert!(out.is_empty(), "the B that left the test does not back out too");
     }
 
     #[test]
