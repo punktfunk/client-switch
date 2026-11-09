@@ -114,6 +114,8 @@ pub(crate) struct Service {
     pair: Option<Receiver<PairOutcome>>,
     /// Set for the wake worker to see; taking it is how a cancel or a second wake stops it.
     wake_cancel: Option<Arc<AtomicBool>>,
+    /// The console's input test is on: the menu loop feeds it the pads instead of moving the menu.
+    pub(crate) pad_test: bool,
 }
 
 impl Service {
@@ -139,6 +141,7 @@ impl Service {
             art: None,
             pair: None,
             wake_cancel: None,
+            pad_test: false,
         }
     }
 
@@ -434,12 +437,12 @@ impl Service {
             } => self.bind_host_profile(&key, profile_id),
             // Presentation only: which profiles ride as cards behind the host's tile.
             ConsoleCmd::SetPin { key, preset_id, pin } => self.set_pin(&key, preset_id, pin),
-            // Nothing to do: no status client (Resume badges stay off), no clipboard, no pad test
-            // or prompt here, no title is endable or installable (`to_model`), and the profile
-            // picker is off (`ConsoleOptions::profiles`).
+            ConsoleCmd::PadTest { on } => self.pad_test = on,
+            // Nothing to do: no status client (Resume badges stay off), no clipboard, no prompt
+            // here, no title is endable or installable (`to_model`), and the profile picker is
+            // off (`ConsoleOptions::profiles`).
             ConsoleCmd::RefreshRunning { .. }
             | ConsoleCmd::SetClipboard { .. }
-            | ConsoleCmd::PadTest { .. }
             | ConsoleCmd::PromptAnswer { .. }
             | ConsoleCmd::EndGame { .. }
             | ConsoleCmd::Install { .. }
@@ -1317,6 +1320,7 @@ fn to_model(games: &[GameEntry]) -> Vec<LibraryGame> {
             developer: None,
             year: None,
             genres: Vec::new(),
+            overrides: None,
             // Host state, and this client never asks for it — see `ConsoleCmd::RefreshRunning`.
             running: false,
             endable: false,

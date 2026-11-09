@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use pf_client_core::console::{OverlayAction, SessionPhase};
-use pf_client_core::menu_nav::{MenuEvent, MenuNav, PadInfo};
+use pf_client_core::menu_nav::{MenuEvent, PadInfo};
 use pf_console_ui::{Console, ConsoleEntry, ConsoleHandles, ConsoleOptions, InputSource, Platform, Viewport};
 use punktfunk_core::config::{GamepadPref, Mode};
 
 use super::connect::{self, ConnectOutcome, Launch, Started};
-use super::pads::{menu_sample, resolve_kind};
+use super::pads::{resolve_kind, MenuPads};
 use super::{testrun, App, UiOutcome, SUSPENDED};
 use crate::core::model::GamepadType;
 use crate::core::perf::{ArtSnapshot, Perf};
@@ -49,9 +49,7 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         pyrowave_ok: caps.pyrowave,
         av1_ok: false,
         store: Some(store.clone()),
-        // TODO(core): `Platform::Switch`. The PS5's is the nearest: a console title that quits,
-        // no touch, no window.
-        platform: Platform::Ps5,
+        platform: Platform::Switch,
         gpu_cache_bytes: pf_console_ui::DEFAULT_GPU_CACHE_BYTES,
         screen: None,
         profiles: false,
@@ -102,7 +100,7 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
     app.display.set_stream(false, crate::platform::Fit::Contain);
 
     let mut perf = Perf::new();
-    let mut nav = MenuNav::new();
+    let mut menu_pads = MenuPads::default();
     let mut batch: Vec<PadSample> = Vec::new();
     let mut infos: Vec<PadInfo> = Vec::new();
     let mut menu_out: Vec<MenuEvent> = Vec::new();
@@ -128,7 +126,9 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
             batch.insert(0, scripted);
         }
         menu_out.clear();
-        nav.poll(&menu_sample(&batch), Instant::now(), &mut menu_out);
+        if let Some(state) = menu_pads.poll(&batch, service.pad_test, Instant::now(), &mut menu_out) {
+            handles.console.set_pad_test(state);
+        }
         for ev in menu_out.drain(..) {
             console.menu(ev, InputSource::Pad);
         }
@@ -260,7 +260,7 @@ fn shown_kind(stored: GamepadType, batch: &[PadSample]) -> GamepadType {
 
 /// The legend's pad family. The shell's Nintendo legend puts confirm on south; here A confirms
 /// on east, so the letters legend is the one that names the engraved buttons.
-// TODO(core): a `Platform::Switch` shell draws Nintendo glyphs with A on east.
+// TODO(core): `Platform::Switch` still draws the Nintendo legend's confirm on south.
 fn legend_pref(pref: GamepadPref) -> GamepadPref {
     match pf_console_ui::glyphs::GlyphStyle::from_pref(Some(pref)) {
         pf_console_ui::glyphs::GlyphStyle::Nintendo => GamepadPref::XboxOne,
@@ -280,6 +280,7 @@ fn pad_infos(batch: &[PadSample], stored: GamepadType) -> impl Iterator<Item = P
         detail: pf_l10n::console::console_pad_player(s.slot + 1),
         forwarded: true,
         rumble: true,
+        audio: false,
     })
 }
 

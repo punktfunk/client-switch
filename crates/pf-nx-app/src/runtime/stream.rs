@@ -3,15 +3,17 @@
 //!
 //! The main thread presents at the display's rate. The input thread polls the pads, their
 //! motion and the touch screen at 250 Hz, sends their input straight to the host, applies the
-//! host's rumble, and hands the main thread only what it must act on (the dial, the escape
-//! chord).
+//! host's rumble, and hands the main thread only what it must act on (the dial, and what the
+//! shortcuts fire).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use pf_client_core::overlay_actions::{OverlayConfig, RingPlatform, SlotId};
 use pf_client_core::ring::{RingCommand, RingFacts, RingInput};
+use pf_client_core::shortcuts::{resolve, Action, Client, Device};
 use pf_console_ui::theme;
 use punktfunk_core::client::{NativeClient, PunktfunkEndReason};
 use punktfunk_core::hud::StatsVerbosity;
@@ -20,7 +22,7 @@ use punktfunk_core::input::PadMouseMode;
 use super::connect::{self, ConnectOutcome};
 use super::hud::StatsOverlay;
 use super::motion::MotionRouter;
-use super::pads::{resolve_kind, PadRouter, Routed, SLOTS};
+use super::pads::{key_event, resolve_kind, PadRouter, Routed, SLOTS};
 use super::testrun::Scenario;
 use super::touch::{Screen, TouchRouter};
 use super::{App, StreamOutcome};
@@ -56,14 +58,20 @@ struct InputThread {
 }
 
 impl InputThread {
-    fn start(pads: Box<dyn Pads>, input: InputSender, kind: GamepadType, output: (u32, u32)) -> Self {
+    fn start(
+        pads: Box<dyn Pads>,
+        router: PadRouter,
+        input: InputSender,
+        kind: GamepadType,
+        output: (u32, u32),
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let (to, rx) = mpsc::channel();
         let (tx, from) = mpsc::channel();
         let thread_stop = stop.clone();
         let handle = std::thread::Builder::new()
             .name("pf-input".into())
-            .spawn(move || input_loop(pads, &input, kind, output, &thread_stop, &rx, &tx))
+            .spawn(move || input_loop(pads, router, &input, kind, output, &thread_stop, &rx, &tx))
             .expect("spawn the input thread");
         Self { stop, to, from, handle }
     }
@@ -75,8 +83,10 @@ impl InputThread {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn input_loop(
     mut pads: Box<dyn Pads>,
+    mut router: PadRouter,
     input: &InputSender,
     mut kind: GamepadType,
     mut output: (u32, u32),
@@ -84,7 +94,6 @@ fn input_loop(
     rx: &Receiver<ToInput>,
     tx: &Sender<Routed>,
 ) -> Box<dyn Pads> {
-    let mut router = PadRouter::default();
     let mut motion = MotionRouter::default();
     let mut touch = TouchRouter::default();
     let mut batch: Vec<PadSample> = Vec::new();
@@ -308,7 +317,22 @@ fn stream(
     // The dial's Controller type steps it for this stream; the next connect reads the setting.
     let mut pad_type = settings.gamepad_type();
     let mut plugged = pad_type;
-    let input = InputThread::start(pads, connected.input(), pad_type, app.display.size());
+    let shortcuts = resolve(&settings.shortcuts, Client::Switch, false, "");
+    let hint = |action| {
+        shortcuts
+            .hint_for(&action, Device::Pad, Client::Switch)
+            .unwrap_or_default()
+    };
+    tracing::info!(
+        dial = %hint(Action::Ring),
+        end = %hint(Action::Slot(SlotId::EndStream)),
+        "pad shortcuts"
+    );
+    let router = PadRouter::new(
+        &shortcuts,
+        &OverlayConfig::parse(&settings.overlay_actions, RingPlatform::Desktop),
+    );
+    let input = InputThread::start(pads, router, connected.input(), pad_type, app.display.size());
     let fonts = match pf_console_ui::theme::build_fonts() {
         Ok(f) => Some(f),
         Err(e) => {
@@ -379,9 +403,7 @@ fn stream(
             let _ = input.to.send(ToInput::Output(fitted));
             follow_output(app, connected, settings);
         }
-        if let Some(n) = take_routed(&input, &mut ring, width, height) {
-            break n;
-        }
+        let fired = take_routed(&input, &mut ring, width, height);
         // What the dial shows follows what its slots changed.
         let tier = hud.tier.label();
         let kind = pad_type.to_core();
@@ -392,7 +414,14 @@ fn stream(
         }
         ring.tick();
         let mut keyboard = false;
-        if let Some(n) = take_ring_commands(&mut ring, &mut hud, connected.client(), &mut pad_type, &mut keyboard) {
+        if let Some(n) = take_ring_commands(
+            &mut ring,
+            fired,
+            &mut hud,
+            connected.client(),
+            &mut pad_type,
+            &mut keyboard,
+        ) {
             break n;
         }
         for cmd in ring.take_cmds() {
@@ -497,8 +526,9 @@ fn follow_output(app: &App, connected: &Connected, settings: &crate::services::s
     }
 }
 
-/// The input thread's hand-offs: the dial and the escape chord.
-fn take_routed(input: &InputThread, ring: &mut pf_console_ui::Ring, width: u32, height: u32) -> Option<Next> {
+/// The input thread's hand-offs: the dial's presses, and the quick actions the shortcuts fired.
+fn take_routed(input: &InputThread, ring: &mut pf_console_ui::Ring, width: u32, height: u32) -> Vec<RingCommand> {
+    let mut fired = Vec::new();
     for routed in input.from.try_iter() {
         match routed {
             Routed::ToggleDial => ring.input(RingInput::Toggle {
@@ -508,23 +538,25 @@ fn take_routed(input: &InputThread, ring: &mut pf_console_ui::Ring, width: u32, 
             Routed::Dial(ev) => {
                 ring.menu(ev);
             }
-            Routed::Chord => {
-                tracing::info!("escape chord held — ending the stream");
-                return Some(Next::End(StreamOutcome::ReturnToMenu(None)));
+            Routed::Command(cmd) => {
+                tracing::info!(?cmd, "shortcut fired");
+                fired.push(cmd);
             }
         }
     }
-    None
+    fired
 }
 
+/// Runs what the shortcuts `fired`, then what the dial sent.
 fn take_ring_commands(
     ring: &mut pf_console_ui::Ring,
+    fired: Vec<RingCommand>,
     hud: &mut StatsOverlay,
     client: &NativeClient,
     pad_type: &mut GamepadType,
     keyboard: &mut bool,
 ) -> Option<Next> {
-    while let Some(cmd) = ring.take_command() {
+    for cmd in fired.into_iter().chain(std::iter::from_fn(|| ring.take_command())) {
         match cmd {
             RingCommand::EndStream | RingCommand::DisconnectLinger => {
                 return Some(Next::End(StreamOutcome::ReturnToMenu(None)));
@@ -547,24 +579,16 @@ fn take_ring_commands(
 /// A dial shortcut, typed on the host: every key down in order, then up in reverse, as the
 /// desktop client does. A name this build does not know fires nothing.
 fn send_chord(client: &NativeClient, keys: &[String]) {
-    use punktfunk_core::input::{key_vk, InputEvent, InputKind};
+    use punktfunk_core::input::{key_vk, InputKind};
     let Some(vks) = keys.iter().map(|k| key_vk(k)).collect::<Option<Vec<u8>>>() else {
         tracing::info!("dial: shortcut {keys:?} names a key this build does not know");
         return;
     };
-    let key = |kind, vk: u8| InputEvent {
-        kind,
-        _pad: [0; 3],
-        code: u32::from(vk),
-        x: 0,
-        y: 0,
-        flags: 0,
-    };
     for &vk in &vks {
-        let _ = client.send_input(&key(InputKind::KeyDown, vk));
+        let _ = client.send_input(&key_event(InputKind::KeyDown, vk));
     }
     for &vk in vks.iter().rev() {
-        let _ = client.send_input(&key(InputKind::KeyUp, vk));
+        let _ = client.send_input(&key_event(InputKind::KeyUp, vk));
     }
     tracing::info!("dial: shortcut {} sent", keys.join("+"));
 }
