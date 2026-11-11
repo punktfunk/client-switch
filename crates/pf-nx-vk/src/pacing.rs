@@ -56,6 +56,8 @@ pub(crate) struct Pace {
     vsync: Option<Vsync>,
     queued: Option<fn() -> bool>,
     announced: bool,
+    /// Why the platform has no vsync event, for the announcement.
+    refused: Option<String>,
     /// The last [`GPU_FRAMES`] command buffers' GPU time, µs.
     gpu: [u32; GPU_FRAMES],
     gpu_n: usize,
@@ -96,6 +98,7 @@ impl Pace {
             vsync,
             queued,
             announced: false,
+            refused: None,
             gpu: [0; GPU_FRAMES],
             gpu_n: 0,
             drain: false,
@@ -117,6 +120,11 @@ impl Pace {
         self.pacing = pacing;
     }
 
+    /// Why the platform could hand over no vsync event.
+    pub fn set_refused(&mut self, why: String) {
+        self.refused = Some(why);
+    }
+
     fn vsync(&self) -> Option<Vsync> {
         self.vsync.filter(|_| self.pacing != Pacing::Acquire)
     }
@@ -132,7 +140,10 @@ impl Pace {
             (Pacing::Vblank, true) => "paced on the vblank, one frame queued at most",
             (Pacing::Late, true) => "paced on the vblank, one frame queued at most, the picture taken late",
         };
-        tracing::info!("presenter: {how}");
+        match &self.refused {
+            Some(why) if self.vsync.is_none() => tracing::warn!("presenter: {how}: {why}"),
+            _ => tracing::info!("presenter: {how}"),
+        }
     }
 
     /// One command buffer's GPU time, for the late take's budget.

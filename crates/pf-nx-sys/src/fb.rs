@@ -16,7 +16,6 @@ mod ffi {
     use core::ffi::c_void;
 
     extern "C" {
-        pub fn nwindowGetDefault() -> *mut c_void;
         pub fn framebufferCreate(
             fb: *mut RawFramebuffer,
             win: *mut c_void,
@@ -51,7 +50,7 @@ impl Framebuffer {
         let rc = unsafe {
             ffi::framebufferCreate(
                 &mut *fb.raw,
-                ffi::nwindowGetDefault(),
+                crate::vi::default_window(),
                 width,
                 height,
                 PIXEL_FORMAT_RGBA_8888,

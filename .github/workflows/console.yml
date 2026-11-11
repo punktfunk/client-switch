@@ -123,8 +123,11 @@ jobs:
         env:
           PKG_VERSION: ${{ inputs.version }}
         run: scripts/docker.sh bash -c 'scripts/cargo-nx.sh build -p pf-nx && scripts/package-nro.sh pf-nx punktfunk Punktfunk'
-      # Check 6 reads these from the SD card next to the NRO.
+      # Check 6 reads these from the SD card next to the NRO. A runner that can't reach its
+      # package mirror must not hold the title back: the probe then ships without them.
       - name: NVDEC streams
+        timeout-minutes: 10
+        continue-on-error: true
         run: sudo apt-get update && sudo apt-get install -y ffmpeg && scripts/nvdec-streams.sh
       - uses: actions/upload-artifact@v4
         # A storage quota must not red the build; the title is proven by the link above.

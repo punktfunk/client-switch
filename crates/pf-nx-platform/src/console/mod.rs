@@ -100,15 +100,16 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let mode = operation_mode();
             // No logger yet: nxlink's stdout is the only witness.
             println!("punktfunk: vi window {:?}, {mode:?}", vi::window_size(window));
-            let vsync = match vi::open_vsync() {
-                Ok(()) => Some(Vsync {
-                    clear: vi::clear_vsync,
-                    wait: vi::wait_vsync,
-                }),
-                Err(e) => {
-                    println!("punktfunk: no vsync event: {e:#}");
-                    None
-                }
+            // No logger yet: a refusal rides with the presenter to its first log line.
+            let (vsync, refused) = match vi::open_vsync() {
+                Ok(()) => (
+                    Some(Vsync {
+                        clear: vi::clear_vsync,
+                        wait: vi::wait_vsync,
+                    }),
+                    None,
+                ),
+                Err(e) => (None, Some(format!("{e:#}"))),
             };
             let target = Target::Vi {
                 window,
@@ -122,6 +123,9 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
             let mut presenter = Presenter::new(dev.clone(), slot.clone()).context("bring up the display")?;
             let gpu = format!("NVK {MESA_PIN} ({})", dev.name);
             let ui = presenter.ui();
+            if let Some(why) = refused {
+                presenter.vsync_refused(why);
+            }
             let marker = |name: &str| Path::new(DATA_DIR).join(name).exists();
             presenter.set_pacing(if marker(ACQUIRE_MARKER) {
                 Pacing::Acquire
