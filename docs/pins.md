@@ -39,7 +39,7 @@ vulkan 22 748 757 bytes, sha256 `6a670e066df15b39…`. The tar carries mtimes, s
 
 `scripts/build-nvk.sh` (`task nvk`) builds `libvulkan_bh.a` into the archives volume at
 `/opt/pf-nx/nvk/lib`: bevy-horizon's `build_nvk.sh` and `localize_nvk.sh` at `BEVY_HORIZON_REV`,
-in bevy-horizon's toolchain image from the `devkitpro/devkita64` digest above.
+in bevy-horizon's toolchain image built on `NX_IMAGE`, so it never calls devkitPro's pacman.
 
 | What | Value |
 | --- | --- |
