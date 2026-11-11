@@ -199,6 +199,11 @@ impl Presenter {
         self.pace.set(pacing);
     }
 
+    /// Why the platform has no vsync event; the first `presenter: paced …` line carries it.
+    pub fn vsync_refused(&mut self, why: String) {
+        self.pace.set_refused(why);
+    }
+
     /// Asks for a `size` swapchain (a dock change); a new size rebuilds the output before the
     /// next frame. A surface that fixes its own extent keeps it.
     pub fn resize(&mut self, size: (u32, u32)) {

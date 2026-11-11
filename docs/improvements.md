@@ -197,7 +197,7 @@ None of this has run on the console yet.
   as the panel frees any, so a loop paced by the acquire keeps two presented frames queued: a
   picture taken after vblank N reaches the panel at N + 2, a refresh no stat counts. That is
   reasoned from Mesa's `wsi_common_switch.c`, not measured. The presenter now takes the display's
-  vsync event (`viGetDisplayVsyncEvent`, on a second handle to the default display), clears it
+  vsync event (`viGetDisplayVsyncEvent`, on the default display `pf-nx-sys` opens), clears it
   after each present and acquires only after the next vblank, so at most one frame waits. A
   present that still finds one queued (libnx's `consumer_running_behind`) makes the next frame
   wait two vblanks; if one is still queued after that, the drains stop and the log says so. A
@@ -230,7 +230,7 @@ the vblank; quick acquires after a stall 0:… 4+:…`.
 
 **Markers** in `/switch/punktfunk/`: `fila-antiga` paces by the acquire, as v1.0.0 did;
 `sem-espera` paces on the vblank without the late sleep. The first `presenter: paced …` line
-in the log names the mode, and says so when vi gave no vsync event.
+in the log names the mode, and when vi gave no vsync event says so with vi's result.
 
 **The test.** Handheld at stock clocks, the same game, Smooth 1: one round each with
 `fila-antiga`, with `sem-espera` and with no marker, then the three again docked at 1080p.
