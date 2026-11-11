@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds NVK for the console into the archives volume at /opt/pf-nx/nvk/lib/libvulkan_bh.a:
 #   [JOBS=n] [PF_NX_NVK_WORK=dir] scripts/build-nvk.sh
-# bevy-horizon's recipe at BEVY_HORIZON_REV: its toolchain image, build_nvk.sh at the pinned
-# mesa-switch commit with its patches, then localize_nvk.sh. docs/pins.md has the result.
+# bevy-horizon's recipe at BEVY_HORIZON_REV: its toolchain image on NX_IMAGE (build that first),
+# build_nvk.sh at the pinned mesa-switch commit with its patches, then localize_nvk.sh.
+# docs/pins.md has the result.
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -28,10 +29,11 @@ checkout() {
 checkout "$bh" "$BEVY_HORIZON_REPO" "$BEVY_HORIZON_REV"
 checkout "$work/mesa-switch" "$mesa_repo" "$mesa_rev"
 
-# The Containerfile from the pinned base. It names rustup's x86_64 toolchain directory; the
-# machine's own triple lets the image build natively on arm64 too.
+# The Containerfile on NX_IMAGE, less its dkp-pacman RUN: NX_IMAGE holds every package it names,
+# and devkitPro's server blocks CI. Its rustup names the x86_64 toolchain; uname -m fits arm64.
 # shellcheck disable=SC2016 # $(uname -m) expands in the image's RUN.
-sed -e "s|^FROM .*|FROM $DEVKITA64_IMAGE|" -e 's/x86_64-unknown-linux-gnu/$(uname -m)-unknown-linux-gnu/g' \
+sed -e "s|^FROM .*|FROM $NX_IMAGE|" -e '/^RUN dkp-pacman/,/-Scc/d' \
+    -e 's/x86_64-unknown-linux-gnu/$(uname -m)-unknown-linux-gnu/g' \
     "$bh/Containerfile" | docker build -t bevy-horizon-toolchain:local -
 "$bh/scripts/build_nvk.sh" "$work/mesa-switch"
 "$bh/scripts/localize_nvk.sh"
