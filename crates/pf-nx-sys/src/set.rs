@@ -49,12 +49,18 @@ mod tests {
         u64::from_le_bytes(bytes)
     }
 
+    /// Every `LanguageCode` a Switch 1 offers, `SetLanguage` 0 to 17. `zh-CN` and `zh-TW` predate
+    /// `zh-Hans` and `zh-Hant` (4.0.0); pf-l10n reads a `zh` tag with no script by its region.
+    const CODES: [&str; 18] = [
+        "ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru", "zh-TW", "en-GB", "fr-CA", "es-419",
+        "zh-Hans", "zh-Hant", "pt-BR",
+    ];
+
     #[test]
-    fn a_language_code_unpacks_to_its_tag() {
-        assert_eq!(language_tag(pack("en-US")).as_deref(), Some("en-US"));
-        assert_eq!(language_tag(pack("es-419")).as_deref(), Some("es-419"));
-        assert_eq!(language_tag(pack("zh-Hans")).as_deref(), Some("zh-Hans"));
-        assert_eq!(language_tag(pack("de")).as_deref(), Some("de"));
+    fn every_language_code_unpacks_to_its_tag() {
+        for code in CODES {
+            assert_eq!(language_tag(pack(code)).as_deref(), Some(code));
+        }
     }
 
     #[test]
