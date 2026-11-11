@@ -62,7 +62,8 @@ What builds, and how; nothing here has run on a console.
   archive (`task skia -- vulkan`). CI keeps that archive in its cache, as it does NVK's.
 - Either archive leaves one symbol to the title, `sysconf` (pf-nx-sys has it), and needs
   `-lstdc++`, which pf-nx-sys links only with `nvk`. `kN32` is RGBA: Linux's BGRA comes from
-  `is_linux` alone. `FontMgr::new()` is the empty manager; the title's fonts load from data.
+  `is_linux` alone. `FontMgr::new()` is the empty manager; the title's fonts load from data:
+  Geist from the kit, Han, kana and Hangul from pl:u's shared fonts (`pf_nx_sys::pl`).
 
 ## Proven on the console
 

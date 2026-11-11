@@ -24,6 +24,7 @@ pub mod hid;
 pub mod mem;
 #[cfg(all(target_os = "horizon", feature = "nvk"))]
 pub mod nvk;
+pub mod pl;
 pub mod random;
 #[cfg(target_os = "horizon")]
 pub mod rt;

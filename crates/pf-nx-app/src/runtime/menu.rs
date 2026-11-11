@@ -82,7 +82,17 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
             .selected_row()
             .map_or(ConsoleEntry::Home, |row| ConsoleEntry::Library(Box::new(row))),
     };
-    let mut console = Console::new(opts, entry, &handles).context("console shell")?;
+    let built = Instant::now();
+    let faces = app.lifecycle.fallback_fonts();
+    let mut console = Console::new(opts, entry, &handles)
+        .context("console shell")?
+        .with_fallback_fonts(faces)
+        .context("system fonts")?;
+    tracing::info!(
+        "console: built with {} system faces in {} ms",
+        faces.len(),
+        built.elapsed().as_millis()
+    );
     let ui_viewport = |app: &App| {
         let (w, h) = app.display.ui_size();
         Viewport::plain(w, h)

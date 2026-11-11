@@ -1,8 +1,8 @@
 //! The C symbols the target's link wraps (`--wrap=` in `toolchain/aarch64-nintendo-horizon.json`)
 //! or newlib expects and libnx leaves out. After bevy-horizon's `compat.rs` (MIT OR Apache-2.0).
 //!
-//! Every binary calls [`link_guard`] first: libnx references `userAppInit` weakly, and a weak
-//! reference never pulls an archive member into the link.
+//! Every binary calls [`link_guard`] first: libnx references `userAppInit` and `userAppExit`
+//! weakly, and a weak reference never pulls an archive member into the link.
 
 use core::arch::asm;
 use core::ffi::{c_char, c_int, c_long, c_void};
@@ -67,8 +67,9 @@ const SO_RCVBUF: c_int = 0x1002;
 /// linker extracts the member that defines them.
 #[inline(never)]
 pub fn link_guard() {
-    let keep: [*const (); 12] = [
+    let keep: [*const (); 13] = [
         userAppInit as *const (),
+        userAppExit as *const (),
         __wrap_threadCreate as *const (),
         __syscall_thread_detach as *const (),
         __wrap_fchmod as *const (),
@@ -105,6 +106,13 @@ fn set_thread_pointer() {
 #[no_mangle]
 pub extern "C" fn userAppInit() {
     set_thread_pointer();
+}
+
+/// libnx's first step in `__appExit`, after the title's last code: unmaps the shared fonts,
+/// whose slices [`crate::pl::shared_fonts`] hands out as `'static`.
+#[no_mangle]
+pub extern "C" fn userAppExit() {
+    crate::pl::close();
 }
 
 /// Every thread, std's included, is created here: the new thread starts in `thread_start`,

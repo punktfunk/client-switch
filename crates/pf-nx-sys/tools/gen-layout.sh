@@ -4,7 +4,7 @@
 # toolchain image: needs bindgen (bindgen-cli), libclang and devkitPro under $DEVKITPRO.
 set -euo pipefail
 DKP="${DEVKITPRO:-/opt/devkitpro}"
-TYPES='SocketInitConfig|PadState|HidAnalogStickState|HidTouchState|HidTouchScreenState|HidSixAxisSensorState|HidVibrationValue|AppletHookCookie|Framebuffer|NvMap|AudioOutBuffer|ClkrstSession|SetSysFirmwareVersion'
+TYPES='SocketInitConfig|PadState|HidAnalogStickState|HidTouchState|HidTouchScreenState|HidSixAxisSensorState|HidVibrationValue|AppletHookCookie|Framebuffer|NvMap|AudioOutBuffer|ClkrstSession|SetSysFirmwareVersion|PlFontData'
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

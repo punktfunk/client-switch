@@ -4,12 +4,13 @@
 //! The exit lock is held from the start, so HOME's close reaches [`Lifecycle::poll_events`]:
 //! the session gets one `Suspend` to end cleanly, and the next poll leaves.
 
+use std::cell::OnceCell;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use pf_nx_app::platform::{Clocks, Lifecycle, SocketCalls, SystemEvent};
 use pf_nx_sys::applet::{self, FocusState, HookEvent};
-use pf_nx_sys::{clk, mem, rt, socket, swkbd};
+use pf_nx_sys::{clk, mem, pl, rt, set, socket, swkbd};
 
 pub struct NxLifecycle {
     events: mpsc::Receiver<HookEvent>,
@@ -18,6 +19,8 @@ pub struct NxLifecycle {
     closing: bool,
     /// The first poll logs the applet type and mode: the logger starts after `new`.
     reported: bool,
+    /// The shared fonts, read at the first ask.
+    fonts: OnceCell<Vec<&'static [u8]>>,
 }
 
 impl NxLifecycle {
@@ -33,6 +36,7 @@ impl NxLifecycle {
             _hook: hook,
             closing: false,
             reported: false,
+            fonts: OnceCell::new(),
         }
     }
 }
@@ -115,6 +119,21 @@ impl Lifecycle for NxLifecycle {
                 None
             }
         }
+    }
+
+    /// pl:u's faces, ordered for the system's language. The console kit copies each face.
+    fn fallback_fonts(&self) -> &[&'static [u8]] {
+        self.fonts.get_or_init(|| {
+            let language = set::system_languages().into_iter().next().unwrap_or_default();
+            let faces = pl::shared_fonts(&language);
+            let bytes: usize = faces.iter().map(|f| f.len()).sum();
+            tracing::info!(
+                "fonts: {} shared faces, {:.1} MiB, for {language:?}",
+                faces.len(),
+                bytes as f64 / MIB
+            );
+            faces
+        })
     }
 
     /// Returns the socket driver's lent heap, closes the detached threads' stacks, and leaves
