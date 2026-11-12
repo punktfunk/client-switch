@@ -41,6 +41,7 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
     let caps = crate::core::caps::video_caps();
     let opts = ConsoleOptions {
         device_name: "Nintendo Switch".into(),
+        device_code: pf_client_core::trust::device_code(&app.identity),
         // The player reads the version; the pins stay in the log and the bundle.
         version: Some(crate::core::VERSION.into()),
         system_keyboard: false,
