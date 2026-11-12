@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, Result};
 use punktfunk_core::config::{CompositorPref, Mode};
+use punktfunk_core::quic::v2::hello::ScreenWish;
 
 use crate::core::model::ConnectTarget;
 use crate::core::settings::NxSettings;
@@ -125,6 +126,8 @@ pub(super) fn spawn(
                     cursor_capture: true,
                     pad_audio_caps: 0,
                     present_priority: settings.present_priority(),
+                    // A spelling the wire can't carry is no wish.
+                    screen_wish: ScreenWish::parse(&settings.host_screen),
                 },
                 &media,
                 &worker_attempt,

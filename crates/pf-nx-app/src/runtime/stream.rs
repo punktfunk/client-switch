@@ -18,6 +18,7 @@ use pf_console_ui::theme;
 use punktfunk_core::client::{NativeClient, PunktfunkEndReason};
 use punktfunk_core::hud::StatsVerbosity;
 use punktfunk_core::input::PadMouseMode;
+use punktfunk_core::quic::v2::hello::{RoleEcho, ScreenEcho, ScreenWish};
 
 use super::connect::{self, ConnectOutcome};
 use super::hud::StatsOverlay;
@@ -37,6 +38,8 @@ const INPUT_PERIOD: Duration = Duration::from_millis(4);
 const FEEDBACK_BUDGET: usize = 32;
 /// Redials after a lost link, and how long each may take.
 const RECONNECTS: u32 = 3;
+/// How long the stream-start notice shows: the console's toast time.
+const NOTICE_FOR: Duration = Duration::from_secs(4);
 
 /// What the main thread tells the input thread.
 enum ToInput {
@@ -373,6 +376,15 @@ fn stream(
         settings.stats_verbosity()
     };
     let mut hud = StatsOverlay::new(initial_tier, settings.advanced_stats);
+    let client = connected.client();
+    let mut notice = start_line(
+        client.screen() == Some(&ScreenEcho::Shared),
+        ScreenWish::parse(&settings.host_screen).as_ref(),
+        client.role(),
+    );
+    if let Some(line) = &notice {
+        tracing::info!("stream: start notice: {line}");
+    }
     connected.set_hud_enabled(true);
     let decoder = app.media.video.lane_name(connected.client().codec);
     let mut scale = overlay_scale(height);
@@ -475,12 +487,18 @@ fn stream(
         }
         let dt = last_frame.elapsed().as_secs_f64();
         last_frame = Instant::now();
-        // Stats off and the dial out of sight draw nothing: the layer is skipped, not blended.
+        if started.elapsed() >= NOTICE_FOR {
+            notice = None;
+        }
+        // Stats off, no notice and the dial out of sight draw nothing: the layer is skipped.
         app.display
-            .set_ui_layer(hud.tier != StatsVerbosity::Off || ring.damage() != 0);
+            .set_ui_layer(hud.tier != StatsVerbosity::Off || notice.is_some() || ring.damage() != 0);
         let result = app.display.frame(&mut |canvas| {
             if let Some(fonts) = &fonts {
                 hud.draw(canvas, fonts, scale);
+                if let Some(text) = &notice {
+                    super::hud::draw_notice(canvas, fonts, text, (width, height), scale);
+                }
                 ring.render(canvas, &ui, width, height, scale, fonts, dt);
             }
         });
@@ -508,6 +526,15 @@ fn stream(
         tracing::error!("the input thread panicked; pads are gone until relaunch");
     }
     next
+}
+
+/// The one line a session owes about its screen at start: that it is another device's, else
+/// why it is not the one the preset asked for. One, because one notice shows at a time.
+fn start_line(shared: bool, wish: Option<&ScreenWish>, echo: Option<RoleEcho>) -> Option<String> {
+    if shared {
+        return Some(pf_l10n::client::notice_shared_screen().into());
+    }
+    pf_client_core::host_text::screen_wish_line(wish, echo?.reason)
 }
 
 /// The overlay's size for a UI canvas `height` pixels tall.
@@ -805,4 +832,34 @@ fn fp_hex(fp: &[u8; 32]) -> String {
         let _ = write!(s, "{b:02x}");
         s
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use punktfunk_core::quic::v2::hello::{Role, RoleReason};
+
+    /// A shared screen wins the one slot; a lost wish says why; a wish as asked says nothing.
+    #[test]
+    fn a_shared_screen_wins_the_start_line() {
+        let wish = Some(ScreenWish::Second);
+        let lost = Some(RoleEcho {
+            role: Some(Role::Main),
+            reason: RoleReason::Unavailable,
+        });
+        let shared = pf_l10n::client::notice_shared_screen();
+        assert_eq!(start_line(true, wish.as_ref(), lost).as_deref(), Some(shared));
+        let why = start_line(false, wish.as_ref(), lost);
+        assert!(why.is_some());
+        assert_eq!(
+            why,
+            pf_client_core::host_text::screen_wish_line(wish.as_ref(), RoleReason::Unavailable)
+        );
+        let kept = Some(RoleEcho {
+            role: Some(Role::Second),
+            reason: RoleReason::AsAsked,
+        });
+        assert_eq!(start_line(false, wish.as_ref(), kept), None);
+        assert_eq!(start_line(false, wish.as_ref(), None), None);
+    }
 }

@@ -12,10 +12,11 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use pf_client_core::display_targets::{Pick, Targets};
 use pf_console_ui::{
     ConsoleCmd, ConsoleHandles, HostAction, HostRow, LibraryGame, LibraryPhase, PairPhase, PairStatus, RequestKey,
     SpeedPhase, Stale, WakeStatus,
@@ -27,6 +28,7 @@ use crate::services::discovery::{DiscoveredHost, Discovery};
 use crate::services::library::{self, GamesLoaded, LibraryError, DEFAULT_MGMT_PORT};
 use crate::services::logs::{upload_to_host, HostTarget};
 use crate::services::power::{self, PowerRights};
+use crate::services::screens;
 use crate::services::store::console::ConsoleStore;
 use crate::services::store::{self, shared, ExitAction};
 use crate::services::{budget, wol};
@@ -35,6 +37,10 @@ use crate::services::{budget, wol};
 /// cadence; this `SoC` probes sequentially on one thread rather than in parallel, so the sweep
 /// itself is the slow part, not the interval.
 const SWEEP_EVERY: Duration = Duration::from_secs(10);
+
+/// The floor between two asks for one host's screens, the desktop's: `in_use_by` moves as other
+/// devices stream, and each ask is a TLS handshake.
+const SCREENS_EVERY: Duration = Duration::from_secs(20);
 
 /// How often [`Service::tick`] does its work. The desktop's service loop runs at this cadence on
 /// its own thread; here it shares the render loop, and rebuilding the rows means cloning the
@@ -69,6 +75,7 @@ fn chip(p: &pf_client_core::presets::StreamPreset) -> pf_console_ui::PresetChip 
         // Speed test uses this; a pinned profile is the layer its host streams at,
         // so the shell must not write the global default instead.
         bitrate_kbps: p.overrides.bitrate_kbps,
+        host_screen: p.overrides.host_screen.clone(),
     }
 }
 
@@ -80,6 +87,8 @@ struct SweepTarget {
     port: u16,
     mgmt: u16,
     fingerprint: Option<[u8; 32]>,
+    /// Ask its screens too: paired, and past [`SCREENS_EVERY`].
+    screens: bool,
 }
 
 /// One host's sweep answer: is it up, and (for a paired one) what it lets this console do to it.
@@ -101,6 +110,12 @@ pub(crate) struct Service {
     /// does not blink off while the next round runs.
     reachable: HashMap<String, bool>,
     rights: HashMap<String, PowerRights>,
+    /// Paired row key → when its screens were last asked, and the answer. `None` is a host
+    /// without the route: no Screen section.
+    screens: HashMap<String, (Instant, Option<Targets>)>,
+    /// Where the sweep and a pick's read-back send a host's answer.
+    screens_tx: Sender<(String, Option<Targets>)>,
+    screens_rx: Receiver<(String, Option<Targets>)>,
     sweep: Option<Receiver<Swept>>,
     last_sweep: Option<Instant>,
     /// When [`Self::tick`] last did its work — see [`SERVICE_EVERY`].
@@ -124,6 +139,7 @@ impl Service {
         // `settings.json`, an address changed elsewhere — so its covers are reconciled on every
         // bring-up, not only when a host is forgotten here.
         store.with(|s| crate::services::art::reconcile_host_caches(&s.known_hosts));
+        let (screens_tx, screens_rx) = std::sync::mpsc::channel();
         Self {
             handles,
             store,
@@ -132,6 +148,9 @@ impl Service {
             discovered: Vec::new(),
             reachable: HashMap::new(),
             rights: HashMap::new(),
+            screens: HashMap::new(),
+            screens_tx,
+            screens_rx,
             sweep: None,
             last_sweep: None,
             last_tick: None,
@@ -173,6 +192,7 @@ impl Service {
             self.discovered.push(host);
         }
         self.drain_sweep();
+        self.drain_screens();
         self.drain_games();
         self.drain_art();
         self.drain_pair();
@@ -330,8 +350,8 @@ impl Service {
             game_presets: h.game_presets.clone(),
             profile: h.profile.clone(),
             running: String::new(),
-            // Not asked (`/display/targets`): no Screen section.
-            screens: None,
+            // What this host last said this device may stream; only paired hosts are asked.
+            screens: self.screens.get(&key).and_then(|(_, t)| t.clone()),
             key,
         }
     }
@@ -450,11 +470,18 @@ impl Service {
             // Presentation only: which profiles ride as cards behind the host's tile.
             ConsoleCmd::SetPin { key, preset_id, pin } => self.set_pin(&key, preset_id, pin),
             ConsoleCmd::PadTest { on } => self.pad_test = on,
+            ConsoleCmd::SetScreen {
+                addr,
+                mgmt,
+                fp_hex,
+                screen,
+                topology,
+                label,
+            } => self.set_screen(addr, mgmt, fp_hex, Pick { screen, topology }, label),
             // Nothing to do: no status client (Resume badges stay off), no clipboard, no prompt
-            // here, no title is endable or installable (`to_model`), the profile picker is
-            // off (`ConsoleOptions::profiles`), and no row has screens to pick.
+            // here, no title is endable or installable (`to_model`), and the profile picker is
+            // off (`ConsoleOptions::profiles`).
             ConsoleCmd::RefreshRunning { .. }
-            | ConsoleCmd::SetScreen { .. }
             | ConsoleCmd::SetClipboard { .. }
             | ConsoleCmd::PromptAnswer { .. }
             | ConsoleCmd::EndGame { .. }
@@ -550,6 +577,10 @@ impl Service {
     /// Answers under `req`: the model drops a list or phase for any fetch but the one the shell
     /// is on.
     fn fetch_library(&mut self, addr: &str, port: u16, mgmt: u16, fp_hex: &str, req: RequestKey) {
+        // A card opening asks its host's screens again once the floor allows, on the sweep.
+        if self.screens_due(fp_hex) {
+            self.last_sweep = None;
+        }
         // `Loading`, and the posters a superseded fetch left go.
         self.handles.library.begin_fetch();
         // Dropping the old receivers cancels them.
@@ -868,20 +899,29 @@ impl Service {
         let targets: Vec<SweepTarget> = state
             .known_hosts
             .iter()
-            .map(|h| SweepTarget {
-                key: shared::known_host_key(h),
-                addr: h.addr.clone(),
-                port: h.port,
-                mgmt: h.mgmt_port.unwrap_or(DEFAULT_MGMT_PORT),
-                fingerprint: h.fingerprint(),
+            .map(|h| {
+                let key = shared::known_host_key(h);
+                SweepTarget {
+                    screens: h.is_paired() && self.screens_due(&key),
+                    key,
+                    addr: h.addr.clone(),
+                    port: h.port,
+                    mgmt: h.mgmt_port.unwrap_or(DEFAULT_MGMT_PORT),
+                    fingerprint: h.fingerprint(),
+                }
             })
             .collect();
         if targets.is_empty() {
             return;
         }
-        self.last_sweep = Some(Instant::now());
+        let now = Instant::now();
+        self.last_sweep = Some(now);
+        for t in targets.iter().filter(|t| t.screens) {
+            self.screens.entry(t.key.clone()).or_insert((now, None)).0 = now;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         self.sweep = Some(rx);
+        let screens_tx = self.screens_tx.clone();
         let identity = self.identity.clone();
         // One thread for the whole sweep, probing sequentially: the host count is a handful,
         // and a thread per host would spike this SoC's three cores for a presence dot.
@@ -895,6 +935,10 @@ impl Service {
                     let rights = (online && t.fingerprint.is_some())
                         .then(|| power::probe_rights(&t.addr, t.mgmt, &identity, t.fingerprint).ok())
                         .flatten();
+                    if online && t.screens {
+                        let answer = screens::fetch(&t.addr, t.mgmt, &identity, t.fingerprint);
+                        let _ = screens_tx.send((t.key.clone(), answer));
+                    }
                     if tx
                         .send(Swept {
                             key: t.key,
@@ -934,6 +978,43 @@ impl Service {
         if done {
             self.sweep = None;
         }
+    }
+
+    /// Whether a host's screens are past [`SCREENS_EVERY`], or never asked.
+    fn screens_due(&self, key: &str) -> bool {
+        self.screens
+            .get(key)
+            .is_none_or(|(asked, _)| asked.elapsed() >= SCREENS_EVERY)
+    }
+
+    fn drain_screens(&mut self) {
+        for (key, answer) in self.screens_rx.try_iter() {
+            let slot = &mut self.screens.entry(key).or_insert((Instant::now(), None)).1;
+            self.rows_dirty |= *slot != answer;
+            *slot = answer;
+        }
+    }
+
+    /// Write a Screen row's pick on a worker, then read the host's rows back. Only a refusal
+    /// says anything: the pick itself shows on the card once the rows come back.
+    fn set_screen(&self, addr: String, mgmt: u16, fp_hex: String, pick: Pick, label: String) {
+        let identity = self.identity.clone();
+        let pin = shared::parse_fp(&fp_hex);
+        let console = self.handles.console.clone();
+        let tx = self.screens_tx.clone();
+        std::thread::Builder::new()
+            .name("pf-console-screen".into())
+            .spawn(move || {
+                if let Err(e) = screens::put_pick(&addr, mgmt, &identity, pin, &pick) {
+                    tracing::warn!(?pick, "console: screen pick refused: {e}");
+                    console.set_notice(pf_l10n::client::hostcard_action_failed(&label, e));
+                }
+                // The rows may have moved either way; a miss keeps the old ones up.
+                if let Some(rows) = screens::fetch(&addr, mgmt, &identity, pin) {
+                    let _ = tx.send((fp_hex, Some(rows)));
+                }
+            })
+            .ok();
     }
 
     /// Whether this host answered its last check. Unknown counts as down: a host that has never
