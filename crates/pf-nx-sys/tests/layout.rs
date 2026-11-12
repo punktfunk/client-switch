@@ -13,6 +13,7 @@ use pf_nx_sys::clk::ClkrstSession;
 use pf_nx_sys::fb::RawFramebuffer;
 use pf_nx_sys::hid::*;
 use pf_nx_sys::mem::MemoryInfo;
+use pf_nx_sys::pl::PlFontData;
 use pf_nx_sys::setsys::SetSysFirmwareVersion;
 use pf_nx_sys::socket::SocketInitConfig;
 
@@ -113,6 +114,14 @@ fn firmware_version() {
     assert_eq!(offset_of!(SetSysFirmwareVersion, platform), 8);
     assert_eq!(offset_of!(SetSysFirmwareVersion, display_version), 0x68);
     assert_eq!(offset_of!(SetSysFirmwareVersion, display_title), 0x80);
+}
+
+#[test]
+fn font_data() {
+    // u32 type, u32 offset, u32 size, (4) void* address → 24, align 8.
+    assert_eq!(layout::<PlFontData>(), (24, 8));
+    assert_eq!(offset_of!(PlFontData, size), 8);
+    assert_eq!(offset_of!(PlFontData, address), 16);
 }
 
 #[test]

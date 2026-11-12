@@ -347,6 +347,12 @@ pub trait Lifecycle {
     fn keyboard(&mut self) -> Option<String> {
         None
     }
+
+    /// The system's faces for the chars Geist lacks (Han, kana, Hangul), most preferred first,
+    /// where Skia has no system font manager. Empty where Skia finds the system's fonts itself.
+    fn fallback_fonts(&self) -> &[&'static [u8]] {
+        &[]
+    }
 }
 
 /// The console's socket calls since the title started.

@@ -333,7 +333,7 @@ fn stream(
         &OverlayConfig::parse(&settings.overlay_actions, RingPlatform::Desktop),
     );
     let input = InputThread::start(pads, router, connected.input(), pad_type, app.display.size());
-    let fonts = match pf_console_ui::theme::build_fonts() {
+    let fonts = match pf_console_ui::theme::build_fonts_with(app.lifecycle.fallback_fonts()) {
         Ok(f) => Some(f),
         Err(e) => {
             tracing::warn!("overlay fonts: {e:#}");
