@@ -359,7 +359,7 @@ impl Service {
                     .map_err(|e| crate::core::errors::pair_message(&e))
             }),
             // The host parks this console until its operator approves it, held to the advertised
-            // fingerprint. Never streams.
+            // fingerprint. The console offers a request only for a row with one. Never streams.
             ConsoleCmd::RequestAccess {
                 addr,
                 port,
@@ -367,10 +367,20 @@ impl Service {
                 device_name,
                 req,
             } => {
-                let pin = shared::parse_fp(&fp_hex);
+                let pin = shared::parse_fp(&fp_hex).ok_or(punktfunk_core::PunktfunkError::InvalidArg("fingerprint"));
                 self.start_pair(addr, port, req, move |addr, port, id| {
-                    NativeClient::request_access(addr, port, (&id.0, &id.1), pin, &device_name, budget::HOST_WAIT, None)
-                        .map_err(|e| crate::core::errors::access_message(&e))
+                    pin.and_then(|pin| {
+                        NativeClient::request_access(
+                            addr,
+                            port,
+                            (&id.0, &id.1),
+                            pin,
+                            &device_name,
+                            budget::HOST_WAIT,
+                            None,
+                        )
+                    })
+                    .map_err(|e| crate::core::errors::access_message(&e))
                 });
             }
             ConsoleCmd::SendLogs {
