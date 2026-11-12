@@ -1,6 +1,6 @@
 //! The stats overlay: core's own lines (`hud::format`) on a dark plate, top left, refreshed once
 //! a second. Core samples for the whole session, so every tenth second's window also goes to the
-//! log, whether the overlay shows or not.
+//! log, whether the overlay shows or not. The stream-start notice sits on the same plate.
 
 use std::time::{Duration, Instant};
 
@@ -98,10 +98,11 @@ impl StatsOverlay {
             }
         };
         let height = line_h * (self.lines.len() + self.local.len()) as f32;
-        let plate = Rect::from_xywh(pad, pad, width + pad * 2.0, height + pad * 2.0);
-        let mut paint = Paint::new(Color4f::new(0.0, 0.0, 0.0, 0.62), None);
-        paint.set_anti_alias(true);
-        canvas.draw_rrect(RRect::new_rect_xy(plate, 8.0 * scale, 8.0 * scale), &paint);
+        plate(
+            canvas,
+            Rect::from_xywh(pad, pad, width + pad * 2.0, height + pad * 2.0),
+            scale,
+        );
         for (i, (text, role)) in self.texts().enumerate() {
             let baseline = f64::from(pad * 2.0 + line_h * (i as f32 + 0.8));
             fonts.draw(
@@ -115,6 +116,26 @@ impl StatsOverlay {
             );
         }
     }
+}
+
+/// One sentence on the overlay's plate, centred near the bottom of a `width` × `height` canvas.
+pub(super) fn draw_notice(canvas: &Canvas, fonts: &Fonts, text: &str, (width, height): (u32, u32), scale: f32) {
+    let size = f64::from(16.0 * scale);
+    let line_h = (size * 1.3) as f32;
+    let pad = 12.0 * scale;
+    let w = fonts.measure(text, W::Medium, size) + pad * 2.0;
+    let h = line_h + pad * 2.0;
+    let rect = Rect::from_xywh((width as f32 - w) / 2.0, height as f32 - h - pad * 3.0, w, h);
+    plate(canvas, rect, scale);
+    let baseline = f64::from(rect.top + pad + line_h * 0.8);
+    let x = f64::from(rect.left + pad);
+    fonts.draw(canvas, text, x, baseline, W::Medium, size, colour(Role::Primary));
+}
+
+fn plate(canvas: &Canvas, rect: Rect, scale: f32) {
+    let mut paint = Paint::new(Color4f::new(0.0, 0.0, 0.0, 0.62), None);
+    paint.set_anti_alias(true);
+    canvas.draw_rrect(RRect::new_rect_xy(rect, 8.0 * scale, 8.0 * scale), &paint);
 }
 
 fn colour(role: Role) -> Color4f {

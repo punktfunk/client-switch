@@ -350,6 +350,21 @@ mod launch_tests {
         assert!(h.pinned_presets.is_empty());
     }
 
+    /// A preset's `host_screen` survives the document and reaches the launch; the global
+    /// settings never write it.
+    #[test]
+    fn a_presets_host_screen_reaches_the_launch() {
+        let mut profile = StreamPreset::new("Couch");
+        profile.overrides.host_screen = Some("second".into());
+        let pid = profile.id.clone();
+        let state = state_with(profile, |h| h.preset_id = Some(pid));
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json["settings"].get("host_screen").is_none());
+        let back: Persisted = serde_json::from_value(json).unwrap();
+        let settings = launch_settings(&back, "10.0.0.2", 47989, None, None);
+        assert_eq!(settings.host_screen, "second");
+    }
+
     /// A title binding beats the host's default; a dangling id falls through to it.
     #[test]
     fn launch_follows_the_shared_precedence() {

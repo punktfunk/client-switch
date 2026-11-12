@@ -115,6 +115,8 @@ pub struct ConnectParams {
     pub present_priority: pf_client_core::trust::PresentPriority,
     /// The host profile to play as; `None` lets the host choose.
     pub profile: Option<String>,
+    /// The role or monitor the preset pins (`host_screen`); `None` takes the host card's pick.
+    pub screen_wish: Option<quic::v2::hello::ScreenWish>,
 }
 
 /// One `quic::CODEC_*` bit, or 0 where the preference names no single codec.
@@ -206,6 +208,7 @@ fn dial(params: &ConnectParams, negotiated: &Negotiated) -> Result<NativeClient>
         pin: params.pin,
         identity: Some(params.identity.clone()),
         profile: params.profile.clone(),
+        screen_wish: params.screen_wish.clone(),
         // Uncancelable: the connect has its own thread and the caller joins it.
         ..punktfunk_core::client::ConnectParams::new(&params.host, params.port, params.mode, params.timeout)
     })
