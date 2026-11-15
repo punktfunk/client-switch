@@ -49,6 +49,8 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         fallback_ui: false,
         pyrowave_ok: caps.pyrowave,
         av1_ok: false,
+        // The console reports no headroom figure for its display.
+        hdr_no_headroom: false,
         store: Some(store.clone()),
         platform: Platform::Switch,
         gpu_cache_bytes: pf_console_ui::DEFAULT_GPU_CACHE_BYTES,
@@ -56,6 +58,8 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         profiles: false,
         // No profile picker, so a locked profile is dialled as it stands.
         prompts_unlock: false,
+        // Hide for me is a profile's own list, and the profile picker is off here.
+        hides: false,
         spatial: false,
         languages: app.device.languages.clone(),
     };

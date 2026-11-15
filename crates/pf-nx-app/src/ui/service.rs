@@ -480,7 +480,7 @@ impl Service {
             } => self.set_screen(addr, mgmt, fp_hex, Pick { screen, topology }, label),
             // Nothing to do: no status client (Resume badges stay off), no clipboard, no prompt
             // here, no title is endable or installable (`to_model`), and the profile picker is
-            // off (`ConsoleOptions::profiles`).
+            // off (`ConsoleOptions::profiles`), so nothing is hidden for a profile either.
             ConsoleCmd::RefreshRunning { .. }
             | ConsoleCmd::SetClipboard { .. }
             | ConsoleCmd::PromptAnswer { .. }
@@ -489,7 +489,9 @@ impl Service {
             | ConsoleCmd::FetchProfiles { .. }
             | ConsoleCmd::FetchAvatar { .. }
             | ConsoleCmd::WakeProfile { .. }
-            | ConsoleCmd::SetProfile { .. } => {}
+            | ConsoleCmd::SetProfile { .. }
+            | ConsoleCmd::SetHidden { .. }
+            | ConsoleCmd::FetchHidden { .. } => {}
         }
     }
 
