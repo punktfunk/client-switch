@@ -62,7 +62,6 @@ You can check more in punktfunk [quickstart](https://docs.punktfunk.unom.io/docs
 - Overlocking is necessary to better performance and latency. At stock clocks it works, but raising the CPU clock makes menus smoother and lowers the stream's latency.
 - No launching from the Album.
 - No USB keyboard or mouse yet.
-- Switch 2 is not supported yet.
 
 ## Found a problem?
 
