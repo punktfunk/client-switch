@@ -1,7 +1,8 @@
 # pyrowave-sys leg
 
 - **Upstream:** `crates/codec/pyrowave-sys` of the monorepo at `PUNKTFUNK_REV`
-  (`b58dc3cfe152c48c584c8e2f77dc05d08f6aeb12`), version 0.46.0. The vendored PyroWave, Granite,
+  (`0fc1b6c115519551031c51a20c9dc598fb1ea57d`), version 0.47.0; the crate is unchanged since
+  `b58dc3cfe`, the rev it was first taken at. The vendored PyroWave, Granite,
   volk and Vulkan-Headers pins are in `vendor/pyrowave/PUNKTFUNK-VENDOR.txt`.
 - **Origin:** punktfunk. The monorepo builds this crate for Linux, Windows, 64-bit Android and the
   PS5 (`8880bcd5e`); on Horizon its build script writes empty bindings, and `pf-client-video`'s
