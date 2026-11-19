@@ -2,7 +2,7 @@
 
 <img src="packaging/icon_large.png" alt="punktfunk" width="130">
 
-# punktfunk for Nintendo Switch
+# Punktfunk for Nintendo Switch
 
 **Play your PC games on your Switch, streamed over your home network.**
 
@@ -13,8 +13,17 @@
 
 ---
 
-punktfunk runs your games on your PC and sends the picture and sound to your Switch. It is a native homebrew app: it opens from the Homebrew
+Punktfunk runs your games on your PC and sends the picture and sound to your Switch. It is a native homebrew app: it opens from the Homebrew
 Menu (no applet mode), uses the Switch's own video decoder, and works handheld or docked. Handheld has been more tested and it's the recommended mode to play.
+
+<img width="1280" height="720" alt="2026111911232400-425E3B3556FDF2AD5FAEFF0579C0752B" src="https://github.com/user-attachments/assets/93c86239-d89a-4320-baca-5bdffb6d492c" />
+
+<img width="1280" height="720" alt="2026111911233700-425E3B3556FDF2AD5FAEFF0579C0752B" src="https://github.com/user-attachments/assets/1aa31630-a592-48a2-a521-f5eef239ab68" />
+
+<img width="1280" height="720" alt="2026111911240500-425E3B3556FDF2AD5FAEFF0579C0752B" src="https://github.com/user-attachments/assets/c4041550-ad1c-4f3a-9b30-59a6cd5d9388" />
+
+<img width="1280" height="720" alt="2026111911243000-425E3B3556FDF2AD5FAEFF0579C0752B" src="https://github.com/user-attachments/assets/a6266953-5f81-4d19-af9b-c5af5d59f81b" />
+
 
 ## What you need
 
