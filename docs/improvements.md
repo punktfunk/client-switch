@@ -202,7 +202,8 @@ None of this has run on the console yet.
   present that still finds one queued (libnx's `consumer_running_behind`) makes the next frame
   wait two vblanks; if one is still queued after that, the drains stop and the log says so. A
   wait gives up after three refreshes and that frame paces on the acquire; eight in a row pace
-  every frame on the acquire. The menu paces the same way. The dev box's offscreen target is
+  every frame on the acquire. The menu paces on the acquire, two frames queued as in v1.0.0:
+  with one queued, a frame a tab change draws past the refresh repeated one. The dev box's offscreen target is
   unchanged.
 - **The late take.** While streaming, the presenter sleeps after the vblank until the GPU's
   slowest of its last 32 frames plus 3 ms remain, at most 10 ms into the refresh, then takes

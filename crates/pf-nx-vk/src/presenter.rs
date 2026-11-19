@@ -680,6 +680,7 @@ impl Display for Presenter {
 
     fn set_stream(&mut self, on: bool, fit: Fit) {
         self.stream = on.then_some(fit);
+        self.pace.set_streaming(on);
         self.pace.reset_gpu();
         if !on {
             self.slot.clear();

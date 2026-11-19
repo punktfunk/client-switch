@@ -11,6 +11,10 @@
 //! [`Pacing::Late`] also sleeps into the refresh before the picture is taken, leaving the GPU's
 //! slowest recent frame plus `MARGIN` before the vblank.
 //!
+//! Only a stream paces on the vblank. The menu paces on the acquire: its frames carry no picture
+//! whose lateness counts, and the two frames queued hide the slow ones a tab change draws, which
+//! with one queued each repeat a refresh.
+//!
 //! `present[10s]` logs the waits, the acquires and the presents, how many presents found a frame
 //! queued, where in the refresh the picture was taken, and, paced by the acquire, how many
 //! acquires returned at once after a stall long enough to empty the queue: as many as it takes.
@@ -52,6 +56,8 @@ const BURST_MAX: usize = 4;
 
 pub(crate) struct Pace {
     pacing: Pacing,
+    /// A stream shows: `pacing` applies. Without one every frame paces on the acquire.
+    streaming: bool,
     /// `None` paces on the acquire: no event, or one that went quiet.
     vsync: Option<Vsync>,
     queued: Option<fn() -> bool>,
@@ -95,6 +101,7 @@ impl Pace {
         let samples = || Vec::with_capacity(SAMPLES);
         Self {
             pacing: Pacing::Late,
+            streaming: false,
             vsync,
             queued,
             announced: false,
@@ -120,13 +127,27 @@ impl Pace {
         self.pacing = pacing;
     }
 
+    /// Paces on `pacing` while a stream shows, on the acquire otherwise. A stream starts with no
+    /// stale vblank and no drain left from the menu's frames.
+    pub fn set_streaming(&mut self, on: bool) {
+        if on && !self.streaming {
+            self.drain = false;
+            self.drained = false;
+            self.burst = None;
+            if let Some(v) = self.vsync.filter(|_| self.pacing != Pacing::Acquire) {
+                (v.clear)();
+            }
+        }
+        self.streaming = on;
+    }
+
     /// Why the platform could hand over no vsync event.
     pub fn set_refused(&mut self, why: String) {
         self.refused = Some(why);
     }
 
     fn vsync(&self) -> Option<Vsync> {
-        self.vsync.filter(|_| self.pacing != Pacing::Acquire)
+        self.vsync.filter(|_| self.streaming && self.pacing != Pacing::Acquire)
     }
 
     /// Logs the mode the loop runs in, once.
@@ -137,8 +158,10 @@ impl Pace {
         let how = match (self.pacing, self.vsync.is_some()) {
             (Pacing::Acquire, _) => "paced by the acquire, as asked",
             (_, false) => "paced by the acquire: the display gave no vsync event",
-            (Pacing::Vblank, true) => "paced on the vblank, one frame queued at most",
-            (Pacing::Late, true) => "paced on the vblank, one frame queued at most, the picture taken late",
+            (Pacing::Vblank, true) => "a stream paced on the vblank, one frame queued at most; the menu by the acquire",
+            (Pacing::Late, true) => {
+                "a stream paced on the vblank, one frame queued at most, the picture taken late; the menu by the acquire"
+            }
         };
         match &self.refused {
             Some(why) if self.vsync.is_none() => tracing::warn!("presenter: {how}: {why}"),
@@ -347,6 +370,15 @@ mod tests {
         BEHIND.load(Ordering::Relaxed) != 0
     }
 
+    static MENU_WAITS: AtomicU32 = AtomicU32::new(0);
+    fn menu_wait(_: u64) -> bool {
+        MENU_WAITS.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+    fn menu_behind() -> bool {
+        true
+    }
+
     /// The take waits for the slowest of the last readings plus the margin, never past
     /// [`MAX_LATE`], and not at all until the readings fill or with no room left.
     #[test]
@@ -385,12 +417,31 @@ mod tests {
         assert_eq!(pace.window.bursts, [0, 0, 1, 0, 1]);
     }
 
+    /// The menu paces on the acquire: no vblank waits, no drain. A stream paces on the vblank,
+    /// and after it the menu is back on the acquire.
+    #[test]
+    fn only_a_stream_paces_on_the_vblank() {
+        let vsync = Vsync { clear, wait: menu_wait };
+        let mut pace = Pace::new(Some(vsync), Some(menu_behind));
+        assert_eq!(pace.wait(PERIOD), None);
+        pace.presented(Duration::ZERO);
+        assert!(!pace.drain);
+        assert_eq!(MENU_WAITS.load(Ordering::Relaxed), 0);
+        pace.set_streaming(true);
+        pace.wait(PERIOD);
+        assert_eq!(MENU_WAITS.load(Ordering::Relaxed), 1);
+        pace.set_streaming(false);
+        assert_eq!(pace.wait(PERIOD), None);
+        assert_eq!(MENU_WAITS.load(Ordering::Relaxed), 1);
+    }
+
     /// A present that finds a frame queued makes the next frame wait two vblanks; one that still
     /// does after that stops the draining.
     #[test]
     fn a_queued_frame_drains_once_then_stops_if_it_stays() {
         let vsync = Vsync { clear, wait };
         let mut pace = Pace::new(Some(vsync), Some(behind));
+        pace.set_streaming(true);
         BEHIND.store(1, Ordering::Relaxed);
         WAITS.store(0, Ordering::Relaxed);
         pace.wait(PERIOD);
