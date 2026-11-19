@@ -17,7 +17,7 @@ Punktfunk runs your games on your PC and sends the picture and sound to your Swi
 Menu (no applet mode), uses the Switch's own video decoder, and works handheld or docked. Handheld has been more tested and it's the recommended mode to play.
 
 <p align="center">
-  <img width="100%" alt="punktfunk on the Switch" src="https://github.com/user-attachments/assets/93c86239-d89a-4320-baca-5bdffb6d492c" />
+  <img width="97%" alt="punktfunk on the Switch" src="https://github.com/user-attachments/assets/93c86239-d89a-4320-baca-5bdffb6d492c" />
 </p>
 
 <p align="center">
