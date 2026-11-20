@@ -139,12 +139,13 @@ fn input_loop(
         }
         batch.clear();
         pads.poll(&mut batch);
-        router.step(&batch, Instant::now(), dial_open, kind, &mut wire, &mut routed);
+        let now = Instant::now();
+        router.step(&batch, now, dial_open, kind, &mut wire, &mut routed);
         if !dial_open {
             let client = input.client();
             for pad in 0..SLOTS as u8 {
                 let Some(sample) = batch.iter().find(|s| s.slot == pad) else {
-                    motion.step(pad, None);
+                    motion.step(pad, None, now);
                     continue;
                 };
                 if !motion_reaches(kind, sample, client) {
@@ -153,7 +154,7 @@ fn input_loop(
                     }
                     continue;
                 }
-                rich.extend(motion.step(pad, pads.motion(pad)));
+                rich.extend(motion.step(pad, pads.motion(pad), now));
             }
             pads.touches(&mut fingers);
             let mode = client.mode();
