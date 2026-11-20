@@ -4,9 +4,10 @@
 //! The host holds the last rate it got and stamps its own clock on the reports a game reads, so
 //! a moving pad sends every other tick and the turn stays the same. A pad at rest sends nothing.
 //!
-//! Every 10 s a moving pad logs two checks. The angle it read against the angle the host was
-//! given measures what the sending loses. The gyro's pitch between two steady poses against the
-//! tilt gravity measures between them pins the gyro's scale (hid names no unit): 1.00 is right.
+//! Every 10 s a moving pad logs, per wire axis, the turn it read and what the host was given
+//! (what the sending loses), the mean gravity (how the pad was held), and a gravity check: between
+//! two steady poses, the turn gravity sees against the gyro's. Each axis gravity saw turn gives
+//! the gyro's response to it, `(1.00, 0.00, 0.00)` for x when hid's unit and axes are right.
 
 use std::time::{Duration, Instant};
 
@@ -30,139 +31,185 @@ const LONGEST_TICK: Duration = Duration::from_millis(50);
 const SUMMARY_EVERY: Duration = Duration::from_secs(10);
 /// A window that turned less than this is not logged.
 const SUMMARY_MIN_DEG: f32 = 5.0;
-/// A steady pose for the scale check: under 5 °/s (a held hand's tremor is a few) and gravity
-/// within 3% of 1 g, so the accelerometer reads tilt and not a swing's push.
-const STEADY_RAD_S: f32 = 5.0 * std::f32::consts::PI / 180.0;
-const STEADY_G: f32 = 0.03;
+/// A steady pose: under 10 °/s (a held hand's tremor is a few) and gravity within 8% of 1 g,
+/// so the accelerometer reads mostly gravity and not a swing's push.
+const STEADY_RAD_S: f32 = 10.0 * std::f32::consts::PI / 180.0;
+const STEADY_G: f32 = 0.08;
 /// 40 ms of steady samples in a row make a pose.
 const STEADY_TICKS: u16 = 10;
-/// A tilt between two poses that the scale check counts: big enough that a degree of noise is
-/// a few percent.
-const SCALE_MIN_DEG: f32 = 10.0;
-/// Over this much gravity on x (about 15° of roll) the pitch is not a tilt about the pad's x.
-const SCALE_MAX_ROLL_G: f32 = 0.25;
+/// A turn between two poses the check counts: big enough that a degree of noise is a few
+/// percent. The same floor, squared, on an axis's share before its response is logged.
+const CHECK_MIN_RAD: f32 = 10.0 * std::f32::consts::PI / 180.0;
+
+type V3 = [f32; 3];
+
+fn dot(a: V3, b: V3) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: V3, b: V3) -> V3 {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn norm(a: V3) -> f32 {
+    dot(a, a).sqrt()
+}
 
 /// A sample in the wire's counts, `(gyro, accel)`.
 type Counts = ([i16; 3], [i16; 3]);
 
 fn counts(m: &Motion) -> Counts {
-    let scale = |v: [f32; 3], per: f32| v.map(|c| (c * per).clamp(-32768.0, 32767.0) as i16);
+    let scale = |v: V3, per: f32| v.map(|c| (c * per).clamp(-32768.0, 32767.0) as i16);
     (
         scale(m.gyro, GYRO_LSB_PER_RAD_S),
         scale(m.accel, MOTION_ACCEL_LSB_PER_G as f32),
     )
 }
 
-/// The pad's tilt about its x in degrees, from gravity: it grows at the gyro's x rate.
-fn tilt(accel: [f32; 3]) -> f32 {
-    (-accel[2]).atan2(accel[1]).to_degrees()
+/// The pad's turn from pose `up0` to pose `up1` as gravity sees it, a rotation vector in radians
+/// in the pad's frame: the share across gravity only, since a turn about it moves nothing.
+fn turn_by_gravity(up0: V3, up1: V3) -> Option<V3> {
+    let (a, b) = (up0.map(|c| c / norm(up0)), up1.map(|c| c / norm(up1)));
+    let c = cross(a, b);
+    let s = norm(c);
+    let angle = s.atan2(dot(a, b));
+    // The pad turns one way, gravity seen from it the other.
+    (angle >= CHECK_MIN_RAD).then(|| c.map(|v| -v / s * angle))
 }
 
-/// `a - b` in degrees, wrapped into -180..180.
-fn wrap_deg(d: f32) -> f32 {
-    (d + 180.0).rem_euclid(360.0) - 180.0
-}
-
-/// One pad's turn over a summary window, `[yaw, pitch]` in degrees.
+/// One pad's motion over a summary window. Angles in degrees, per wire axis.
 #[derive(Clone, Copy, Default)]
 struct Sums {
     time: Duration,
     ticks: u32,
     sends: u32,
     /// Total turn either way.
-    travel: [f32; 2],
+    travel: V3,
     /// Net turn read off the pad.
-    read: [f32; 2],
+    read: V3,
     /// Net turn the host was given: each tick at the rate it holds.
-    given: [f32; 2],
-    /// The scale check's least-squares sums over the tilts between poses: gyro × gravity and
-    /// gravity², so the scale is their ratio.
-    gyro_tilt: f32,
-    tilt_sq: f32,
-    tilts: u32,
+    given: V3,
+    /// Gravity summed over the ticks, and its length summed.
+    accel: V3,
+    g: f32,
+    /// Ticks under [`STEADY_RAD_S`], ticks within [`STEADY_G`] of 1 g.
+    calm: u32,
+    one_g: u32,
+    /// The gravity check: per axis gravity saw turn about, the gyro's turn weighted by it, and
+    /// its weight; their ratio is the gyro's response to that axis.
+    response: [V3; 3],
+    weight: V3,
+    pairs: u32,
 }
 
 impl Sums {
-    fn add(&mut self, dt: Duration, read: [f32; 3], held: [i16; 3], sent: bool) {
+    fn add(&mut self, dt: Duration, m: &Motion, held: [i16; 3], sent: bool) {
         let s = dt.as_secs_f32();
         let per = MOTION_GYRO_LSB_PER_DEG_S as f32;
-        // [yaw, pitch] are the wire's y and x.
-        for (i, axis) in [1, 0].into_iter().enumerate() {
-            let r = read[axis].to_degrees() * s;
+        for i in 0..3 {
+            let r = m.gyro[i].to_degrees() * s;
             self.travel[i] += r.abs();
             self.read[i] += r;
-            self.given[i] += f32::from(held[axis]) / per * s;
+            self.given[i] += f32::from(held[i]) / per * s;
+            self.accel[i] += m.accel[i];
         }
+        let g = norm(m.accel);
+        self.g += g;
+        self.calm += u32::from(norm(m.gyro) < STEADY_RAD_S);
+        self.one_g += u32::from((g - 1.0).abs() < STEADY_G);
         self.time += dt;
         self.ticks += 1;
         self.sends += u32::from(sent);
     }
 
-    fn scale(&self) -> Option<f32> {
-        (self.tilts > 0).then(|| self.gyro_tilt / self.tilt_sq)
+    fn pair(&mut self, by_gravity: V3, by_gyro: V3) {
+        for (axis, w) in by_gravity.into_iter().enumerate() {
+            for (r, g) in self.response[axis].iter_mut().zip(by_gyro) {
+                *r += g * w;
+            }
+            self.weight[axis] += w * w;
+        }
+        self.pairs += 1;
+    }
+
+    /// The gyro's response to a turn about `axis`, once gravity saw enough of one.
+    fn response(&self, axis: usize) -> Option<V3> {
+        let w = self.weight[axis];
+        (w >= CHECK_MIN_RAD * CHECK_MIN_RAD).then(|| self.response[axis].map(|r| r / w))
     }
 
     fn log(&self, pad: u8) {
-        let [ty, tp] = self.travel;
-        if ty.max(tp) < SUMMARY_MIN_DEG {
+        if self.travel.iter().all(|t| *t < SUMMARY_MIN_DEG) {
             return;
         }
-        let ([ry, rp], [gy, gp]) = (self.read, self.given);
-        let scale = match self.scale() {
-            Some(s) => format!("gyro scale {s:.2} over {} tilts", self.tilts),
-            None => "no tilt to check the scale".to_string(),
-        };
+        let n = self.ticks.max(1) as f32;
+        let pct = |c: u32| c as f32 * 100.0 / n;
+        let [tx, ty, tz] = self.travel;
+        let [rx, ry, rz] = self.read;
+        let [lx, ly, lz] = std::array::from_fn::<f32, 3, _>(|i| self.given[i] - self.read[i]);
+        let [ax, ay, az] = self.accel.map(|a| a / n);
+        let check = (0..3)
+            .map(|axis| match self.response(axis) {
+                Some([x, y, z]) => format!("{}→({x:.2}, {y:.2}, {z:.2})", ["x", "y", "z"][axis]),
+                None => format!("{}→—", ["x", "y", "z"][axis]),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         tracing::info!(
-            "pad {pad}: gyro over {:.1}s, yaw {ty:.0}° turned, net {ry:+.1}° read {gy:+.1}° given ({:+.1}°); \
-             pitch {tp:.0}° turned, net {rp:+.1}° read {gp:+.1}° given ({:+.1}°); {} of {} ticks sent; {scale}",
+            "pad {pad}: gyro over {:.1}s; turned x {tx:.0}° y {ty:.0}° z {tz:.0}°; net x {rx:+.1}° y {ry:+.1}° \
+             z {rz:+.1}°, lost x {lx:+.1}° y {ly:+.1}° z {lz:+.1}°; gravity ({ax:+.2}, {ay:+.2}, {az:+.2}) \
+             |g| {:.3}; calm {:.0}% 1g {:.0}%; {} poses paired, {check}; {} of {} ticks sent",
             self.time.as_secs_f32(),
-            gy - ry,
-            gp - rp,
+            self.g / n,
+            pct(self.calm),
+            pct(self.one_g),
+            self.pairs,
             self.sends,
             self.ticks,
         );
     }
 }
 
-/// The scale check's running state: the gyro's x integrated, and the last steady pose.
+/// The gravity check's running state: the gyro integrated, and the last steady pose.
 #[derive(Clone, Copy, Default)]
-struct ScaleCheck {
-    /// Degrees about x since the pad came, by the gyro.
-    pitch: f32,
+struct GravityCheck {
+    /// Radians about each axis since the pad came, by the gyro.
+    turned: V3,
     steady: u16,
-    /// `(tilt by gravity, pitch by the gyro)` at the last steady sample, in degrees.
-    pose: Option<(f32, f32)>,
+    /// `(gravity, turned)` at the last steady sample.
+    pose: Option<(V3, V3)>,
 }
 
-impl ScaleCheck {
-    /// Pairs each new pose with the one before it: a tilt over [`SCALE_MIN_DEG`] between them,
-    /// the pad not rolled at either, goes into `sums`.
+impl GravityCheck {
+    /// Pairs each new pose with the one before it: a turn over [`CHECK_MIN_RAD`] across gravity
+    /// goes into `sums`, the gyro's turn taken across gravity the same way.
     fn step(&mut self, m: &Motion, dt: Duration, sums: &mut Sums) {
-        self.pitch += m.gyro[0].to_degrees() * dt.as_secs_f32();
-        let rate = m.gyro.iter().map(|c| c * c).sum::<f32>().sqrt();
-        let g = m.accel.iter().map(|c| c * c).sum::<f32>().sqrt();
-        let level = m.accel[0].abs() < SCALE_MAX_ROLL_G;
-        if rate >= STEADY_RAD_S || (g - 1.0).abs() >= STEADY_G || !level {
+        let s = dt.as_secs_f32();
+        for (t, w) in self.turned.iter_mut().zip(m.gyro) {
+            *t += w * s;
+        }
+        if norm(m.gyro) >= STEADY_RAD_S || (norm(m.accel) - 1.0).abs() >= STEADY_G {
             self.steady = 0;
-            if !level {
-                self.pose = None;
-            }
             return;
         }
         self.steady = self.steady.saturating_add(1);
         if self.steady < STEADY_TICKS {
             return;
         }
-        let now = (tilt(m.accel), self.pitch);
-        if let (STEADY_TICKS, Some((t0, p0))) = (self.steady, self.pose) {
-            let by_gravity = wrap_deg(now.0 - t0);
-            if by_gravity.abs() >= SCALE_MIN_DEG {
-                sums.gyro_tilt += (now.1 - p0) * by_gravity;
-                sums.tilt_sq += by_gravity * by_gravity;
-                sums.tilts += 1;
+        if let (STEADY_TICKS, Some((up0, t0))) = (self.steady, self.pose) {
+            if let Some(by_gravity) = turn_by_gravity(up0, m.accel) {
+                let mid = std::array::from_fn(|i| up0[i] / norm(up0) + m.accel[i] / norm(m.accel));
+                let mid = mid.map(|c: f32| c / norm(mid));
+                let by_gyro: V3 = std::array::from_fn(|i| self.turned[i] - t0[i]);
+                let along = dot(by_gyro, mid);
+                sums.pair(by_gravity, std::array::from_fn(|i| by_gyro[i] - mid[i] * along));
             }
         }
-        self.pose = Some(now);
+        self.pose = Some((m.accel, self.turned));
     }
 }
 
@@ -176,7 +223,7 @@ struct PadMotion {
     just_sent: bool,
     last_tick: Option<Instant>,
     sums: Sums,
-    scale: ScaleCheck,
+    check: GravityCheck,
 }
 
 #[derive(Default)]
@@ -222,8 +269,8 @@ impl MotionRouter {
             .last_tick
             .map_or(Duration::ZERO, |t| now.saturating_duration_since(t).min(LONGEST_TICK));
         p.last_tick = Some(now);
-        p.sums.add(dt, m.gyro, p.sent.map_or([0; 3], |(g, _)| g), send);
-        p.scale.step(&m, dt, &mut p.sums);
+        p.sums.add(dt, &m, p.sent.map_or([0; 3], |(g, _)| g), send);
+        p.check.step(&m, dt, &mut p.sums);
         if p.sums.time >= SUMMARY_EVERY {
             p.sums.log(pad);
             p.sums = Sums::default();
@@ -297,6 +344,10 @@ mod tests {
         /// Each tick's output for `samples` on pad 0.
         fn run(&mut self, samples: impl IntoIterator<Item = Motion>) -> Vec<Option<RichInput>> {
             samples.into_iter().map(|m| self.step(0, Some(m))).collect()
+        }
+
+        fn sums(&self) -> Sums {
+            self.r.pads[0].sums
         }
     }
 
@@ -404,76 +455,98 @@ mod tests {
                 .chain(swing(90.0, 125))
                 .chain(std::iter::repeat_n(still(), 50)),
         );
-        let s = r.r.pads[0].sums;
-        assert!((s.travel[0] - 180.0).abs() < 1.0, "travel {}", s.travel[0]);
-        assert!(s.read[0].abs() < 0.1, "read {}", s.read[0]);
+        let s = r.sums();
+        assert!((s.travel[1] - 180.0).abs() < 1.0, "travel {}", s.travel[1]);
+        assert!(s.read[1].abs() < 0.1, "read {}", s.read[1]);
         // Each rate goes out a tick late and the host holds it a tick long: under a degree.
-        assert!(s.given[0].abs() < 1.0, "given {}", s.given[0]);
+        assert!(s.given[1].abs() < 1.0, "given {}", s.given[1]);
     }
 
-    /// Steady, then tipped about x by `deg` at 90 °/s with the gyro reading `scale` of the true
-    /// rate, then steady again; `tilt0` is where it starts.
-    fn tip(tilt0: f32, deg: f32, scale: f32) -> Vec<Motion> {
-        let up = |t: f32| {
-            let (s, c) = t.to_radians().sin_cos();
-            [0.0, c, -s]
-        };
-        let steady = |t: f32| {
+    /// `v` turned by `deg` about the unit `axis` (Rodrigues).
+    fn rotate(v: V3, axis: V3, deg: f32) -> V3 {
+        let (s, c) = deg.to_radians().sin_cos();
+        let k = cross(axis, v);
+        let d = dot(axis, v) * (1.0 - c);
+        std::array::from_fn(|i| v[i] * c + k[i] * s + axis[i] * d)
+    }
+
+    /// Steady at gravity `up`, then turned by `deg` about the unit `axis` at 90 °/s while the gyro
+    /// reads `gyro_of(rate vector)`, then steady again. Returns the samples and the gravity after.
+    fn turn(up: V3, axis: V3, deg: f32, gyro_of: impl Fn(V3) -> V3) -> (Vec<Motion>, V3) {
+        let steady = |up: V3| {
             std::iter::repeat_n(
                 Motion {
                     gyro: [0.0; 3],
-                    accel: up(t),
+                    accel: up,
                 },
                 20,
             )
         };
         let ticks = (deg.abs() / 90.0 / TICK.as_secs_f32()).round() as usize;
-        let step = deg / ticks as f32;
-        let moving = (1..=ticks).map(move |i| Motion {
-            gyro: [(90f32 * deg.signum() * scale).to_radians(), 0.0, 0.0],
-            accel: up(tilt0 + step * i as f32),
+        let rate = axis.map(|a| (90f32 * deg.signum() * a).to_radians());
+        // Seen from the pad, gravity turns the other way.
+        let moving = (1..=ticks).map(|i| Motion {
+            gyro: gyro_of(rate),
+            accel: rotate(up, axis, -deg * i as f32 / ticks as f32),
         });
-        steady(tilt0).chain(moving).chain(steady(tilt0 + deg)).collect()
+        let end = rotate(up, axis, -deg);
+        (steady(up).chain(moving).chain(steady(end)).collect(), end)
+    }
+
+    fn near(a: V3, b: V3) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.03)
     }
 
     #[test]
-    fn tilt_follows_the_gyro_x() {
-        assert!(tilt([0.0, 1.0, 0.0]).abs() < 1e-4);
-        let (s, c) = 30f32.to_radians().sin_cos();
-        assert!((tilt([0.0, c, -s]) - 30.0).abs() < 1e-3);
-        assert!((wrap_deg(350.0) + 10.0).abs() < 1e-3);
+    fn gravity_sees_a_tilt_about_x_and_a_roll_about_z() {
+        let level = [0.0, 1.0, 0.0];
+        let tilt = turn_by_gravity(level, rotate(level, [1.0, 0.0, 0.0], -30.0)).unwrap();
+        assert!(near(tilt, [30f32.to_radians(), 0.0, 0.0]), "{tilt:?}");
+        let roll = turn_by_gravity(level, rotate(level, [0.0, 0.0, 1.0], -30.0)).unwrap();
+        assert!(near(roll, [0.0, 0.0, 30f32.to_radians()]), "{roll:?}");
+        assert!(turn_by_gravity(level, rotate(level, [1.0, 0.0, 0.0], 5.0)).is_none());
     }
 
     #[test]
-    fn a_true_gyro_reads_scale_one() {
+    fn a_true_gyro_responds_one_to_one() {
         let mut r = Rig::new();
-        r.run(tip(0.0, 45.0, 1.0).into_iter().chain(tip(45.0, -60.0, 1.0)));
-        let s = r.r.pads[0].sums;
-        assert_eq!(s.tilts, 2);
-        let k = s.scale().unwrap();
-        assert!((k - 1.0).abs() < 0.03, "scale {k}");
+        let upright = [0.0, 0.0, -1.0];
+        // Upright: up and down about x, then a wheel turn about y.
+        let (a, up) = turn(upright, [1.0, 0.0, 0.0], 40.0, |w| w);
+        let (b, up) = turn(up, [1.0, 0.0, 0.0], -40.0, |w| w);
+        let (c, _) = turn(up, [0.0, 1.0, 0.0], 45.0, |w| w);
+        r.run(a.into_iter().chain(b).chain(c));
+        let s = r.sums();
+        assert_eq!(s.pairs, 3);
+        assert!(near(s.response(0).unwrap(), [1.0, 0.0, 0.0]), "{:?}", s.response(0));
+        assert!(near(s.response(1).unwrap(), [0.0, 1.0, 0.0]), "{:?}", s.response(1));
+        assert!(s.response(2).is_none(), "nothing turned about z across gravity");
     }
 
     #[test]
-    fn a_weak_gyro_reads_its_scale() {
+    fn a_weak_or_crossed_gyro_shows_in_its_response() {
         let mut r = Rig::new();
-        r.run(tip(-20.0, 50.0, 0.6));
-        let k = r.r.pads[0].sums.scale().unwrap();
-        assert!((k - 0.6).abs() < 0.03, "scale {k}");
+        // A gyro at 60% on x that also leaks a third of x onto y.
+        let (a, _) = turn([0.0, 0.0, -1.0], [1.0, 0.0, 0.0], 45.0, |[x, y, z]| {
+            [0.6 * x, y + 0.3 * x, z]
+        });
+        r.run(a);
+        let k = r.sums().response(0).unwrap();
+        // The leak's share along gravity is unseen, so y shows most but not all of it.
+        assert!((k[0] - 0.6).abs() < 0.03 && k[1] > 0.2, "{k:?}");
     }
 
     #[test]
-    fn small_or_rolled_tilts_are_left_out() {
+    fn a_swing_is_no_pose() {
         let mut r = Rig::new();
-        r.run(tip(0.0, 5.0, 1.0));
-        assert_eq!(r.r.pads[0].sums.tilts, 0, "5° is under the check");
-        let rolled = Motion {
-            gyro: [0.0; 3],
-            accel: [0.5, 0.866, 0.0],
-        };
-        r.run(std::iter::repeat_n(rolled, 20));
-        r.run(tip(0.0, 40.0, 1.0));
-        assert_eq!(r.r.pads[0].sums.tilts, 1, "only the pose after the roll pairs");
+        // Gravity at 1.2 g: a push, not a pose, so nothing pairs.
+        let push = |up: V3| up.map(|c| c * 1.2);
+        let (a, _) = turn([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 45.0, |w| w);
+        r.run(a.into_iter().map(|m| Motion {
+            accel: push(m.accel),
+            ..m
+        }));
+        assert_eq!(r.sums().pairs, 0);
     }
 
     #[test]
