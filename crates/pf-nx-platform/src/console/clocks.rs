@@ -107,6 +107,14 @@ impl ClockHold {
 
     pub fn set_stage(&mut self, stage: ClockStage) {
         tracing::info!("clocks: {stage:?}");
+        if stage == ClockStage::System {
+            // Found first, so a module's hold from a crash is let go too; with no stage the
+            // title stops asking again.
+            module();
+            release();
+            self.stage = None;
+            return;
+        }
         self.stage = Some(stage);
         self.apply();
     }

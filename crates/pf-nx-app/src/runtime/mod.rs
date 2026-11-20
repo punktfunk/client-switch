@@ -33,9 +33,23 @@ pub(crate) struct App {
     /// A scripted run from `test-run.json`, taken at start-up.
     pub test_run: Option<testrun::TestRun>,
     pub device: crate::platform::DeviceInfo,
+    /// The player's Save Battery, as the menu last read it.
+    pub save_battery: bool,
+    /// The stage last handed to the lifecycle.
+    pub clock_stage: ClockStage,
 }
 
 impl App {
+    /// Holds the clocks for `stage`, or leaves them to the system while Save Battery is on.
+    /// Asks the lifecycle only on a change.
+    fn hold_clocks(&mut self, stage: ClockStage) {
+        let stage = if self.save_battery { ClockStage::System } else { stage };
+        if stage != self.clock_stage {
+            self.clock_stage = stage;
+            self.lifecycle.set_clock_stage(stage);
+        }
+    }
+
     /// System events since the last call. `Suspend` also sets [`SUSPENDED`].
     fn system_events(&mut self) -> Vec<SystemEvent> {
         let mut events = Vec::new();
@@ -132,7 +146,16 @@ pub fn run(platform: Platform) -> ! {
     );
     tracing::info!("language {language} for the system's {:?}", device.languages);
     punktfunk_core::client::set_client_label(&client_label(&device));
-    lifecycle.set_clock_stage(ClockStage::Menu);
+    let save_battery = {
+        use crate::core::settings::NxSettings;
+        store::load().settings.save_battery()
+    };
+    let clock_stage = if save_battery {
+        ClockStage::System
+    } else {
+        ClockStage::Menu
+    };
+    lifecycle.set_clock_stage(clock_stage);
     crate::core::caps::install(video.caps());
     // ureq's agents resolve their provider from the process default and panic without one.
     punktfunk_core::tls::install_default_provider();
@@ -144,6 +167,8 @@ pub fn run(platform: Platform) -> ! {
         identity: (String::new(), String::new()),
         test_run: testrun::take(),
         device,
+        save_battery,
+        clock_stage,
     };
     let plan = match store::load_or_create_identity() {
         Ok(identity) => {
@@ -196,10 +221,10 @@ fn alternate(app: &mut App) -> Option<ExitPlan> {
         match outcome {
             UiOutcome::Quit(plan) => return plan,
             UiOutcome::Launch(launch) => {
-                app.lifecycle.set_clock_stage(ClockStage::Stream);
+                app.hold_clocks(ClockStage::Stream);
                 match stream::run(app, *launch) {
                     StreamOutcome::ReturnToMenu(why) => {
-                        app.lifecycle.set_clock_stage(ClockStage::Menu);
+                        app.hold_clocks(ClockStage::Menu);
                         notice = why;
                     }
                     StreamOutcome::Quit(plan) => return plan,

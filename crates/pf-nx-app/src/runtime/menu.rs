@@ -149,6 +149,9 @@ pub(super) fn run(app: &mut App, notice: Option<String>) -> Result<UiOutcome> {
         }
 
         service.tick();
+        // Save Battery takes effect as the player flips it.
+        app.save_battery = store.with(|s| s.settings.save_battery());
+        app.hold_clocks(crate::platform::ClockStage::Menu);
 
         while let Some(action) = console.take_action() {
             match action {

@@ -414,6 +414,8 @@ impl SocketCalls {
 pub enum ClockStage {
     Menu,
     Stream,
+    /// Save Battery: the system's own clocks, the title holds none.
+    System,
 }
 
 /// The rates a stage holds, in Hz. `None` leaves that clock to the system.
@@ -439,6 +441,11 @@ impl ClockStage {
                 cpu_hz: Some(1_785_000_000),
                 gpu_hz: None,
                 emc_hz: Some(1_600_000_000),
+            },
+            Self::System => ClockTargets {
+                cpu_hz: None,
+                gpu_hz: None,
+                emc_hz: None,
             },
         }
     }
@@ -485,6 +492,14 @@ mod clock_tests {
             assert_eq!(stream.cpu_hz, Some(1_785_000_000));
             assert_eq!(stream.gpu_hz, None);
             assert_eq!(stream.emc_hz, Some(1_600_000_000));
+        }
+    }
+
+    #[test]
+    fn save_battery_holds_nothing() {
+        for mode in [OperationMode::Handheld, OperationMode::Docked] {
+            let system = ClockStage::System.targets(mode);
+            assert_eq!((system.cpu_hz, system.gpu_hz, system.emc_hz), (None, None, None));
         }
     }
 }
