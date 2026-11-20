@@ -75,7 +75,20 @@ impl VideoSlot {
     /// Queues `picture`; under the latency intent it replaces whatever was not taken yet.
     pub fn publish(&self, picture: Picture) {
         let due = picture.due;
-        self.lock().push(due, Arc::new(picture));
+        let mut q = self.lock();
+        if q.arrivals.len() < MAX_ARRIVALS {
+            q.arrivals.push(Instant::now());
+        }
+        q.push(due, Arc::new(picture));
+    }
+
+    /// Moves into `out` when each picture since the last call reached the slot. `true` under the
+    /// latency intent.
+    pub fn drain_arrivals(&self, out: &mut Vec<Instant>) -> bool {
+        out.clear();
+        let mut q = self.lock();
+        out.append(&mut q.arrivals);
+        q.smoothing == 0
     }
 
     /// The picture for the vblank at `latch`, if a new one is due by then.
@@ -117,6 +130,8 @@ const SMOOTHING_SLACK: usize = 2;
 const STANDING_TAKES: u32 = 30;
 /// The most pictures the slot ever holds.
 const MAX_QUEUED: usize = MAX_SMOOTHING + SMOOTHING_SLACK;
+/// Arrival times the slot keeps between takes; a stall past this many keeps the first.
+const MAX_ARRIVALS: usize = 64;
 
 /// Pictures the slot dropped without showing them, the figure the smoothness intent exists to
 /// keep at zero.
@@ -213,11 +228,14 @@ struct Queue<T> {
     standing: u32,
     /// Smoothing only: the takes since the last report.
     window: Window,
+    /// When each picture since the presenter last looked reached the slot.
+    arrivals: Vec<Instant>,
 }
 
 impl<T> Default for Queue<T> {
     fn default() -> Self {
         Self {
+            arrivals: Vec::with_capacity(MAX_ARRIVALS),
             items: VecDeque::with_capacity(MAX_QUEUED + 1),
             smoothing: 0,
             drops: Drops::default(),
@@ -281,6 +299,7 @@ impl<T> Queue<T> {
 
     fn clear(&mut self) {
         self.items.clear();
+        self.arrivals.clear();
         self.standing = 0;
     }
 

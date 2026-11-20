@@ -64,6 +64,8 @@ pub struct Presenter {
     /// The UI layer is drawn and blended; a stream with an empty overlay turns it off.
     ui_on: bool,
     slot: Arc<VideoSlot>,
+    /// The slot's arrival times, drained at each take.
+    arrivals: Vec<Instant>,
     current: Option<Arc<Picture>>,
     stream: Option<Fit>,
     last_present: Option<Instant>,
@@ -182,6 +184,7 @@ impl Presenter {
             ui,
             ui_on: true,
             slot,
+            arrivals: Vec::with_capacity(64),
             current: None,
             stream: None,
             last_present: None,
@@ -582,6 +585,8 @@ impl Display for Presenter {
             // acquire that blocked, at the vblank a refresh from here.
             let latch = match vblank.filter(|_| quick) {
                 Some(at) => {
+                    let latency = self.slot.drain_arrivals(&mut self.arrivals);
+                    self.pace.arrived(at, period, &self.arrivals, latency);
                     self.pace.take(at, period);
                     at + period
                 }

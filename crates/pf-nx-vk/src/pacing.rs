@@ -9,7 +9,9 @@
 //! of them, every frame after.
 //!
 //! [`Pacing::Late`] also sleeps into the refresh before the picture is taken, leaving the GPU's
-//! slowest recent frame plus `MARGIN` before the vblank.
+//! slowest recent frame plus `MARGIN` before the vblank. Under the latency intent the take
+//! follows the pictures' arrivals within that budget (`steer`), so the band of arrivals never
+//! straddles it.
 //!
 //! Only a stream paces on the vblank. The menu paces on the acquire: its frames carry no picture
 //! whose lateness counts, and the two frames queued hide the slow ones a tab change draws, which
@@ -22,6 +24,7 @@
 use std::time::{Duration, Instant};
 
 use crate::device::Vsync;
+use crate::steer::Steer;
 
 /// How the loop meets the vblank. Without a vsync event every mode paces on the acquire.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +78,10 @@ pub(crate) struct Pace {
     quiet: u32,
     /// Quick acquires since a stall emptied the queue, while the run lasts.
     burst: Option<usize>,
+    /// Where the latency intent takes its picture.
+    steer: Steer,
+    /// The slot runs the latency intent: the take follows the arrivals.
+    steering: bool,
     window: Window,
 }
 
@@ -113,6 +120,8 @@ impl Pace {
             drains: true,
             quiet: 0,
             burst: None,
+            steer: Steer::new(),
+            steering: false,
             window: Window {
                 wait: samples(),
                 acquire: samples(),
@@ -134,6 +143,7 @@ impl Pace {
             self.drain = false;
             self.drained = false;
             self.burst = None;
+            self.steer.reset();
             if let Some(v) = self.vsync.filter(|_| self.pacing != Pacing::Acquire) {
                 (v.clear)();
             }
@@ -234,14 +244,28 @@ impl Pace {
         quick
     }
 
-    /// Late pacing: sleeps until the composition's budget before the vblank after `vblank`. Notes
-    /// where in the refresh the picture is taken either way.
+    /// The pictures that reached the slot since the last take, against the vblank at `vblank`.
+    /// `latency`: the slot runs newest wins, and the take follows them.
+    pub fn arrived(&mut self, vblank: Instant, period: Duration, arrivals: &[Instant], latency: bool) {
+        self.steering = latency;
+        if latency {
+            self.steer.note(vblank, period, arrivals);
+        }
+    }
+
+    /// Late pacing: sleeps until the composition's budget before the vblank after `vblank`, or,
+    /// under the latency intent, to where the steer puts the take within it. Notes where in the
+    /// refresh the picture is taken either way.
     pub fn take(&mut self, vblank: Instant, period: Duration) {
         if self.pacing == Pacing::Late {
-            if let Some(rest) = self
-                .late_offset(period)
-                .and_then(|at| (vblank + at).checked_duration_since(Instant::now()))
-            {
+            let at = self.late_offset(period).map(|max| {
+                if self.steering {
+                    self.steer.offset(max, period)
+                } else {
+                    max
+                }
+            });
+            if let Some(rest) = at.and_then(|at| (vblank + at).checked_duration_since(Instant::now())) {
                 std::thread::sleep(rest);
             }
         }
@@ -289,12 +313,17 @@ impl Pace {
             (Some(_), Pacing::Late) => "on the vblank, taken late",
             (Some(_), _) => "on the vblank",
         };
+        let steered = self
+            .steering
+            .then(|| self.steer.summary())
+            .flatten()
+            .map_or_else(String::new, |s| format!("; steered: {s}"));
         let w = &mut self.window;
         let b = w.bursts;
         let line = format!(
             "present[{}s]: {} frames {mode}; vblank wait {}, {} timed out; acquire {}, {} under 1 ms; present {}; \
              {} found a frame queued, {} drained; picture taken {} after the vblank; quick acquires after a stall \
-             0:{} 1:{} 2:{} 3:{} {}+:{}",
+             0:{} 1:{} 2:{} 3:{} {}+:{}{steered}",
             WINDOW.as_secs(),
             w.frames,
             spread(&mut w.wait),

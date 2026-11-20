@@ -160,6 +160,18 @@ network agrees: issue 30's tester saw Automatic swing between about 23 and 36 ms
 one frame held 21 to 25 ms, with the same pictures presented. **Open:** a busier network may want
 the second frame back, which the player can still pick.
 
+### Lowest latency: the take follows the arrivals
+
+Issue 30's logs (run2, 11:25 to 11:34) show the arrivals walking through the refresh at about
+0.8 ms a minute, with a band of 1 to 2 ms. Once the band reached the fixed take at 10 ms after
+the vblank, newest wins dropped up to 150 pictures a window. Under the latency intent the take
+now sits 2 ms past the latest usual arrival (98 of 100 over the last two seconds), inside the GPU
+budget. It moves at once when the band comes within 1 ms of it and moves earlier when that saves
+over 3 ms; a band past the budget is taken at the start of the next refresh (`pf-nx-vk`
+`steer.rs`). Smoothness keeps its fixed late take. **Test:** Lowest latency for ten minutes or
+more, handheld. `present[10s]` adds `steered: arrivals at … ms in a … ms band, take at … ms,
+… moves`; `unseen (replaced)` should stay near zero through the whole run.
+
 ### Other later work
 
 - **PyroWave on NVK.** The lane is lifted but off. A 256-core Maxwell GPU at 307 to 460 MHz has
