@@ -2,7 +2,7 @@
 //! the one settings type it stores and edits. Every row here is a shared field but Save Battery,
 //! which only the console has and which lives in `extra` under an `nx.` prefix.
 
-use pf_client_core::trust::Settings;
+use pf_client_core::trust::{PresentPriority, Settings};
 use punktfunk_core::config::GamepadPref;
 
 use crate::core::model::{CodecPref, GamepadType};
@@ -36,6 +36,9 @@ pub trait NxSettings {
     /// the player turns it on.
     fn save_battery(&self) -> bool;
     fn set_save_battery(&mut self, on: bool);
+    /// The shared rule but for Automatic smoothness, which takes one frame here, not two: on the
+    /// console one frame presents as many pictures as two, a refresh sooner.
+    fn nx_present_priority(&self) -> PresentPriority;
     fn codec_pref(&self) -> CodecPref;
     fn set_codec_pref(&mut self, codec: CodecPref);
     fn gamepad_type(&self) -> GamepadType;
@@ -57,6 +60,13 @@ impl NxSettings for Settings {
 
     fn set_save_battery(&mut self, on: bool) {
         self.extra.insert(SAVE_BATTERY_KEY.into(), serde_json::Value::Bool(on));
+    }
+
+    fn nx_present_priority(&self) -> PresentPriority {
+        match self.present_priority() {
+            PresentPriority::Smooth { .. } if self.smooth_buffer == 0 => PresentPriority::Smooth { buffer: 1 },
+            shared => shared,
+        }
     }
 
     fn codec_pref(&self) -> CodecPref {
@@ -126,6 +136,21 @@ mod tests {
         let back: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
         assert!(back.save_battery());
         assert_eq!(back.extra[SAVE_BATTERY_KEY], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn automatic_smoothness_takes_one_frame() {
+        let mut s = default_document();
+        s.present_priority = "smooth".into();
+        s.smooth_buffer = 0;
+        assert_eq!(s.nx_present_priority(), PresentPriority::Smooth { buffer: 1 });
+        for buffer in 1..=3 {
+            s.smooth_buffer = buffer;
+            assert_eq!(s.nx_present_priority(), PresentPriority::Smooth { buffer });
+        }
+        s.present_priority = "latency".into();
+        s.smooth_buffer = 0;
+        assert_eq!(s.nx_present_priority(), PresentPriority::Latency);
     }
 
     #[test]
