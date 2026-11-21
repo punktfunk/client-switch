@@ -8,13 +8,16 @@ use std::cell::OnceCell;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use pf_nx_app::platform::{Clocks, Lifecycle, SocketCalls, SystemEvent};
+use pf_nx_app::platform::{ClockStage, Clocks, Lifecycle, SocketCalls, SystemEvent};
 use pf_nx_sys::applet::{self, FocusState, HookEvent};
 use pf_nx_sys::{clk, mem, pl, rt, set, socket, swkbd};
+
+use super::clocks::{self, ClockHold};
 
 pub struct NxLifecycle {
     events: mpsc::Receiver<HookEvent>,
     _hook: applet::Hook,
+    hold: ClockHold,
     /// The system asked the title to close; the next poll leaves.
     closing: bool,
     /// The first poll logs the applet type and mode: the logger starts after `new`.
@@ -34,6 +37,7 @@ impl NxLifecycle {
         Self {
             events,
             _hook: hook,
+            hold: ClockHold::new(super::operation_mode()),
             closing: false,
             reported: false,
             fonts: OnceCell::new(),
@@ -58,6 +62,7 @@ impl Lifecycle for NxLifecycle {
                     .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
             );
         }
+        self.hold.tick();
         // `appletMainLoop` in its halves, so every message is logged: no hook event and no
         // operation-mode change has reached a log yet, the dock change included.
         if let Some(msg) = applet::take_message() {
@@ -72,18 +77,31 @@ impl Lifecycle for NxLifecycle {
         for event in self.events.try_iter() {
             match event {
                 HookEvent::FocusState => out.push(match applet::focus_state() {
-                    FocusState::InFocus => SystemEvent::FocusGained,
+                    FocusState::InFocus => {
+                        self.hold.system_moved("back in focus");
+                        SystemEvent::FocusGained
+                    }
                     FocusState::OutOfFocus => SystemEvent::FocusLost,
                     FocusState::Background => SystemEvent::Suspend,
                 }),
-                HookEvent::Resume => out.push(SystemEvent::Resume),
-                HookEvent::OperationMode => out.push(SystemEvent::OperationMode(super::operation_mode())),
+                HookEvent::Resume => {
+                    self.hold.system_moved("awake");
+                    out.push(SystemEvent::Resume);
+                }
+                HookEvent::OperationMode => {
+                    let mode = super::operation_mode();
+                    self.hold.mode_changed(mode);
+                    out.push(SystemEvent::OperationMode(mode));
+                }
                 // The system moved the title to another clock configuration (WP5's question).
-                HookEvent::PerformanceMode => tracing::info!(
-                    "lifecycle: performance mode changed, clocks {}",
-                    self.clocks()
-                        .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
-                ),
+                HookEvent::PerformanceMode => {
+                    tracing::info!(
+                        "lifecycle: performance mode changed, clocks {}",
+                        self.clocks()
+                            .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
+                    );
+                    self.hold.system_moved("new performance mode");
+                }
                 HookEvent::Exit => {}
             }
         }
@@ -109,6 +127,14 @@ impl Lifecycle for NxLifecycle {
             sends: c.sends,
             send_tos: c.send_tos,
         })
+    }
+
+    fn set_clock_stage(&mut self, stage: ClockStage) {
+        self.hold.set_stage(stage);
+    }
+
+    fn clock_release(&self) -> Option<fn()> {
+        Some(clocks::release)
     }
 
     fn keyboard(&mut self) -> Option<String> {
@@ -138,7 +164,9 @@ impl Lifecycle for NxLifecycle {
 
     /// Returns the socket driver's lent heap, closes the detached threads' stacks, and leaves
     /// through libnx's `__appExit`: back to hbl when the heap is clean, else through AM to HOME.
+    /// HOME's close comes straight here from [`Lifecycle::poll_events`], so the clocks go back here.
     fn exit(&self) -> ! {
+        clocks::release();
         applet::unlock_exit();
         socket::exit();
         release_heap();

@@ -13,10 +13,11 @@ pub mod testrun;
 mod touch;
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::core::model::bitrate_max_kbps;
-use crate::platform::{Display, Lifecycle, Pads, Platform, SocketCalls, SystemEvent};
+use crate::platform::{ClockStage, Display, Lifecycle, Pads, Platform, SocketCalls, SystemEvent};
 use crate::services::power::ExitPlan;
 use crate::services::store;
 use crate::session::{self, Media};
@@ -32,9 +33,23 @@ pub(crate) struct App {
     /// A scripted run from `test-run.json`, taken at start-up.
     pub test_run: Option<testrun::TestRun>,
     pub device: crate::platform::DeviceInfo,
+    /// The player's Save Battery, as the menu last read it.
+    pub save_battery: bool,
+    /// The stage last handed to the lifecycle.
+    pub clock_stage: ClockStage,
 }
 
 impl App {
+    /// Holds the clocks for `stage`, or leaves them to the system while Save Battery is on.
+    /// Asks the lifecycle only on a change.
+    fn hold_clocks(&mut self, stage: ClockStage) {
+        let stage = if self.save_battery { ClockStage::System } else { stage };
+        if stage != self.clock_stage {
+            self.clock_stage = stage;
+            self.lifecycle.set_clock_stage(stage);
+        }
+    }
+
     /// System events since the last call. `Suspend` also sets [`SUSPENDED`].
     fn system_events(&mut self) -> Vec<SystemEvent> {
         let mut events = Vec::new();
@@ -107,13 +122,16 @@ pub fn run(platform: Platform) -> ! {
         audio,
         pads,
         storage,
-        lifecycle,
+        mut lifecycle,
         log,
         device,
     } = platform;
     crate::services::paths::install(storage.data_dir());
     // Without a log there is nothing to diagnose a failure from; the title still runs.
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();
+    if let Some(release) = lifecycle.clock_release() {
+        let _ = CLOCK_RELEASE.set(release);
+    }
     install_panic_hook();
     let language = pf_l10n::set_languages(&device.languages);
     tracing::info!(
@@ -128,6 +146,16 @@ pub fn run(platform: Platform) -> ! {
     );
     tracing::info!("language {language} for the system's {:?}", device.languages);
     punktfunk_core::client::set_client_label(&client_label(&device));
+    let save_battery = {
+        use crate::core::settings::NxSettings;
+        store::load().settings.save_battery()
+    };
+    let clock_stage = if save_battery {
+        ClockStage::System
+    } else {
+        ClockStage::Menu
+    };
+    lifecycle.set_clock_stage(clock_stage);
     crate::core::caps::install(video.caps());
     // ureq's agents resolve their provider from the process default and panic without one.
     punktfunk_core::tls::install_default_provider();
@@ -139,6 +167,8 @@ pub fn run(platform: Platform) -> ! {
         identity: (String::new(), String::new()),
         test_run: testrun::take(),
         device,
+        save_battery,
+        clock_stage,
     };
     let plan = match store::load_or_create_identity() {
         Ok(identity) => {
@@ -190,10 +220,16 @@ fn alternate(app: &mut App) -> Option<ExitPlan> {
         };
         match outcome {
             UiOutcome::Quit(plan) => return plan,
-            UiOutcome::Launch(launch) => match stream::run(app, *launch) {
-                StreamOutcome::ReturnToMenu(why) => notice = why,
-                StreamOutcome::Quit(plan) => return plan,
-            },
+            UiOutcome::Launch(launch) => {
+                app.hold_clocks(ClockStage::Stream);
+                match stream::run(app, *launch) {
+                    StreamOutcome::ReturnToMenu(why) => {
+                        app.hold_clocks(ClockStage::Menu);
+                        notice = why;
+                    }
+                    StreamOutcome::Quit(plan) => return plan,
+                }
+            }
         }
     }
 }
@@ -203,15 +239,21 @@ fn client_label(device: &crate::platform::DeviceInfo) -> String {
     format!("Switch {}", device.firmware).trim_end().to_string()
 }
 
+/// The platform's way to hand the clocks back, for the panic hook.
+static CLOCK_RELEASE: OnceLock<fn()> = OnceLock::new();
+
 /// A panic on any thread goes to the log, then its frames where the target can walk them, then
-/// the process aborts. The message is flushed before the walk: on the console, which builds
-/// without unwind tables, the walk itself aborts.
+/// the process aborts. The message is flushed and the clocks go back before the walk: on the
+/// console, which builds without unwind tables, the walk itself aborts.
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let thread = std::thread::current();
         let name = thread.name().unwrap_or("unnamed");
         tracing::error!("PANIC on thread {name:?}: {info}");
         crate::logger::flush();
+        if let Some(release) = CLOCK_RELEASE.get() {
+            release();
+        }
         let backtrace = std::backtrace::Backtrace::force_capture();
         tracing::error!("PANIC on thread {name:?}, frames:\n{backtrace}");
         crate::logger::flush();

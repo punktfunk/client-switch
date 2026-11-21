@@ -125,7 +125,7 @@ pub(super) fn spawn(
                     // Pad-only: the host draws the cursor.
                     cursor_capture: true,
                     pad_audio_caps: 0,
-                    present_priority: settings.present_priority(),
+                    present_priority: settings.nx_present_priority(),
                     // A spelling the wire can't carry is no wish.
                     screen_wish: ScreenWish::parse(&settings.host_screen),
                 },

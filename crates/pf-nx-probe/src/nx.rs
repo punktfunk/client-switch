@@ -73,3 +73,11 @@ pub fn finish() {
     }
     socket::exit();
 }
+
+/// Tears down at once, for check 7: its last lines were read while it ran.
+pub fn leave() {
+    if SCREEN.load(Ordering::Relaxed) {
+        console::exit();
+    }
+    socket::exit();
+}

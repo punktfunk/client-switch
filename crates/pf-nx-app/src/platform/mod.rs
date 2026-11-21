@@ -342,6 +342,14 @@ pub trait Lifecycle {
         None
     }
 
+    /// Holds the clocks for `stage`. [`Self::exit`] hands them back.
+    fn set_clock_stage(&mut self, _stage: ClockStage) {}
+
+    /// Hands the clocks back from any thread, for a panic, which never reaches [`Self::exit`].
+    fn clock_release(&self) -> Option<fn()> {
+        None
+    }
+
     /// Shows the system's keyboard over the title and blocks until the player closes it: the
     /// text they confirmed, or `None` when they cancelled or there is no such keyboard.
     fn keyboard(&mut self) -> Option<String> {
@@ -401,6 +409,82 @@ impl SocketCalls {
     }
 }
 
+/// What the title is doing, for the clocks it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockStage {
+    Menu,
+    Stream,
+    /// Save Battery: the system's own clocks, the title holds none.
+    System,
+}
+
+/// The rates a stage holds, in Hz. `None` leaves that clock to the system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockTargets {
+    pub cpu_hz: Option<u32>,
+    pub gpu_hz: Option<u32>,
+    pub emc_hz: Option<u32>,
+}
+
+impl ClockStage {
+    /// The menu's rates keep it near 60 fps for under a watt. The stream needs the CPU: it cuts
+    /// the receive path and the VIC transfer, and the GPU adds little there. Docked, the system's
+    /// GPU rate is already above the menu's, so the GPU stays the system's.
+    pub fn targets(self, mode: OperationMode) -> ClockTargets {
+        match self {
+            Self::Menu => ClockTargets {
+                cpu_hz: Some(1_428_000_000),
+                gpu_hz: (mode == OperationMode::Handheld).then_some(422_400_000),
+                emc_hz: Some(1_600_000_000),
+            },
+            Self::Stream => ClockTargets {
+                cpu_hz: Some(1_785_000_000),
+                gpu_hz: None,
+                emc_hz: Some(1_600_000_000),
+            },
+            Self::System => ClockTargets {
+                cpu_hz: None,
+                gpu_hz: None,
+                emc_hz: None,
+            },
+        }
+    }
+}
+
+impl ClockTargets {
+    /// Only the rates above what the system or the player's profile runs: the title raises a
+    /// clock and never lowers one. An unknown rate (0) is held.
+    pub fn above(self, running: Clocks) -> Self {
+        let raise = |want: Option<u32>, run: u32| want.filter(|&hz| run == 0 || run < hz);
+        Self {
+            cpu_hz: raise(self.cpu_hz, running.cpu_hz),
+            gpu_hz: raise(self.gpu_hz, running.gpu_hz),
+            emc_hz: raise(self.emc_hz, running.emc_hz),
+        }
+    }
+
+    /// `holds cpu 1785.0; leaves gpu at 384.0, emc at 2400.0 MHz`, for the log.
+    pub fn describe(self, running: Clocks) -> String {
+        let mhz = |hz: u32| f64::from(hz) / 1e6;
+        let rows = [
+            ("cpu", self.cpu_hz, running.cpu_hz),
+            ("gpu", self.gpu_hz, running.gpu_hz),
+            ("emc", self.emc_hz, running.emc_hz),
+        ];
+        let join = |v: Vec<String>| if v.is_empty() { "none".to_string() } else { v.join(", ") };
+        let holds = rows
+            .iter()
+            .filter_map(|(n, hz, _)| hz.map(|hz| format!("{n} {:.1}", mhz(hz))))
+            .collect();
+        let leaves = rows
+            .iter()
+            .filter(|(_, hz, _)| hz.is_none())
+            .map(|(n, _, run)| format!("{n} at {:.1}", mhz(*run)))
+            .collect();
+        format!("holds {}; leaves {} MHz", join(holds), join(leaves))
+    }
+}
+
 /// The CPU, GPU and memory clocks, in Hz.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Clocks {
@@ -419,5 +503,62 @@ impl std::fmt::Display for Clocks {
             mhz(self.cpu_hz),
             mhz(self.emc_hz)
         )
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::{ClockStage, Clocks, OperationMode};
+
+    #[test]
+    fn the_menu_raises_the_gpu_only_in_handheld() {
+        assert_eq!(
+            ClockStage::Menu.targets(OperationMode::Handheld).gpu_hz,
+            Some(422_400_000)
+        );
+        assert_eq!(ClockStage::Menu.targets(OperationMode::Docked).gpu_hz, None);
+    }
+
+    #[test]
+    fn the_stream_leaves_the_gpu_and_stays_in_the_official_limits() {
+        for mode in [OperationMode::Handheld, OperationMode::Docked] {
+            let stream = ClockStage::Stream.targets(mode);
+            assert_eq!(stream.cpu_hz, Some(1_785_000_000));
+            assert_eq!(stream.gpu_hz, None);
+            assert_eq!(stream.emc_hz, Some(1_600_000_000));
+        }
+    }
+
+    /// A rate the profile already runs at or above the stage's is left; a lower one is raised.
+    #[test]
+    fn the_title_only_raises_a_clock() {
+        let mhz = |m: u32| m * 1_000_000;
+        let run = |cpu, gpu, emc| Clocks {
+            cpu_hz: mhz(cpu),
+            gpu_hz: mhz(gpu),
+            emc_hz: mhz(emc),
+        };
+        let stream = ClockStage::Stream.targets(OperationMode::Handheld);
+        let governed = stream.above(run(612, 384, 2400));
+        assert_eq!(
+            (governed.cpu_hz, governed.gpu_hz, governed.emc_hz),
+            (Some(mhz(1785)), None, None),
+            "the governor's 612 is raised, a 2400 memory clock left"
+        );
+        let profile = stream.above(run(2397, 768, 1600));
+        assert_eq!((profile.cpu_hz, profile.gpu_hz, profile.emc_hz), (None, None, None));
+        assert_eq!(stream.above(Clocks::default()), stream, "an unknown rate is held");
+        assert_eq!(
+            governed.describe(run(612, 384, 2400)),
+            "holds cpu 1785.0; leaves gpu at 384.0, emc at 2400.0 MHz"
+        );
+    }
+
+    #[test]
+    fn save_battery_holds_nothing() {
+        for mode in [OperationMode::Handheld, OperationMode::Docked] {
+            let system = ClockStage::System.targets(mode);
+            assert_eq!((system.cpu_hz, system.gpu_hz, system.emc_hz), (None, None, None));
+        }
     }
 }

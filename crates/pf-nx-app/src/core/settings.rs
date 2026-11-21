@@ -1,8 +1,8 @@
 //! This client's typed view of the shared settings document (`pf_client_core::trust::Settings`),
-//! the one settings type it stores and edits. Every row here is a shared field; a row only the
-//! console has would live in `extra` under an `nx.` prefix, and none exists.
+//! the one settings type it stores and edits. Every row here is a shared field but Save Battery,
+//! which only the console has and which lives in `extra` under an `nx.` prefix.
 
-use pf_client_core::trust::Settings;
+use pf_client_core::trust::{PresentPriority, Settings};
 use punktfunk_core::config::GamepadPref;
 
 use crate::core::model::{CodecPref, GamepadType};
@@ -27,8 +27,18 @@ fn local_codec(name: &str) -> CodecPref {
     }
 }
 
+/// Save Battery's key in `extra`: on, the title leaves the clocks to the system.
+pub const SAVE_BATTERY_KEY: &str = "nx.save_battery";
+
 /// The typed reads and writes this client makes on the shared document.
 pub trait NxSettings {
+    /// Whether the title leaves the clocks to the system instead of holding its own. Off until
+    /// the player turns it on.
+    fn save_battery(&self) -> bool;
+    fn set_save_battery(&mut self, on: bool);
+    /// The shared rule but for Automatic smoothness, which takes one frame here, not two: on the
+    /// console one frame presents as many pictures as two, a refresh sooner.
+    fn nx_present_priority(&self) -> PresentPriority;
     fn codec_pref(&self) -> CodecPref;
     fn set_codec_pref(&mut self, codec: CodecPref);
     fn gamepad_type(&self) -> GamepadType;
@@ -41,6 +51,24 @@ pub trait NxSettings {
 }
 
 impl NxSettings for Settings {
+    fn save_battery(&self) -> bool {
+        self.extra
+            .get(SAVE_BATTERY_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    fn set_save_battery(&mut self, on: bool) {
+        self.extra.insert(SAVE_BATTERY_KEY.into(), serde_json::Value::Bool(on));
+    }
+
+    fn nx_present_priority(&self) -> PresentPriority {
+        match self.present_priority() {
+            PresentPriority::Smooth { .. } if self.smooth_buffer == 0 => PresentPriority::Smooth { buffer: 1 },
+            shared => shared,
+        }
+    }
+
     fn codec_pref(&self) -> CodecPref {
         local_codec(&self.codec)
     }
@@ -98,6 +126,31 @@ mod tests {
         let back: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
         assert_eq!(back.codec_pref(), CodecPref::Hevc);
         assert_eq!(back.gamepad_type(), GamepadType::JoyConPair);
+    }
+
+    #[test]
+    fn save_battery_starts_off_and_round_trips() {
+        let mut s = default_document();
+        assert!(!s.save_battery());
+        s.set_save_battery(true);
+        let back: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        assert!(back.save_battery());
+        assert_eq!(back.extra[SAVE_BATTERY_KEY], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn automatic_smoothness_takes_one_frame() {
+        let mut s = default_document();
+        s.present_priority = "smooth".into();
+        s.smooth_buffer = 0;
+        assert_eq!(s.nx_present_priority(), PresentPriority::Smooth { buffer: 1 });
+        for buffer in 1..=3 {
+            s.smooth_buffer = buffer;
+            assert_eq!(s.nx_present_priority(), PresentPriority::Smooth { buffer });
+        }
+        s.present_priority = "latency".into();
+        s.smooth_buffer = 0;
+        assert_eq!(s.nx_present_priority(), PresentPriority::Latency);
     }
 
     #[test]

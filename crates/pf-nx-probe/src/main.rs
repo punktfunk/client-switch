@@ -4,7 +4,10 @@
 //! A check runs all its steps and lists each as `step=value` or `step=FAIL(why)`, so one run on
 //! the console names every failure. `--panic` ends the run with a panic: the hook writes
 //! `panic.txt`, and the next run prints it as `probe 1 panic-log`. Runs the same on a dev box.
+//! On the console, Y in the first seconds runs check 7 alone (`clock`).
 
+#[cfg(target_os = "horizon")]
+mod clock;
 #[cfg(all(target_os = "horizon", feature = "nvdec"))]
 mod nvdec;
 #[cfg(target_os = "horizon")]
@@ -54,6 +57,12 @@ fn main() {
         let wrote = std::fs::write(&panic_file, &text).is_ok();
         println!("probe 1 panic {} {text}", if wrote { "ok" } else { "fail" });
     }));
+
+    #[cfg(target_os = "horizon")]
+    if clock::run_if_asked(&dir, &mut out) {
+        nx::leave();
+        return;
+    }
 
     out.check(1, "std", std_steps(&dir));
     out.check(2, "sockets", socket_steps());

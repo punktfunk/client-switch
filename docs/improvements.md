@@ -154,10 +154,23 @@ the first frame and adds a stream period for each further one (`session/timeline
 console, one frame presented 59 to 60 pictures a second at 15 to 23 ms decode to present; two
 frames presented the same at 31 to 40 ms (NOTES, 2026-10-31).
 
-**The proposal.** Automatic picks one frame on the Switch, either through a per-platform default
-in the shared crate (section 1 would carry it) or an override here. **Needs the maintainer's
-yes**: it changes what a player sees by default. **Open:** one tester's Wi-Fi so far; a busier
-network may want the second frame back.
+**Done.** Automatic picks one frame on the Switch, through an override here
+(`NxSettings::nx_present_priority`); the shared rule still gives two everywhere else. A second
+network agrees: issue 30's tester saw Automatic swing between about 23 and 36 ms end to end where
+one frame held 21 to 25 ms, with the same pictures presented. **Open:** a busier network may want
+the second frame back, which the player can still pick.
+
+### Lowest latency: the take follows the arrivals
+
+Issue 30's logs (run2, 11:25 to 11:34) show the arrivals walking through the refresh at about
+0.8 ms a minute, with a band of 1 to 2 ms. Once the band reached the fixed take at 10 ms after
+the vblank, newest wins dropped up to 150 pictures a window. Under the latency intent the take
+now sits 2 ms past the latest usual arrival (98 of 100 over the last two seconds), inside the GPU
+budget. It moves at once when the band comes within 1 ms of it and moves earlier when that saves
+over 3 ms; a band past the budget is taken at the start of the next refresh (`pf-nx-vk`
+`steer.rs`). Smoothness keeps its fixed late take. **Test:** Lowest latency for ten minutes or
+more, handheld. `present[10s]` adds `steered: arrivals at … ms in a … ms band, take at … ms,
+… moves`; `unseen (replaced)` should stay near zero through the whole run.
 
 ### Other later work
 
