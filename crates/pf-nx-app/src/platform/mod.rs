@@ -451,6 +451,40 @@ impl ClockStage {
     }
 }
 
+impl ClockTargets {
+    /// Only the rates above what the system or the player's profile runs: the title raises a
+    /// clock and never lowers one. An unknown rate (0) is held.
+    pub fn above(self, running: Clocks) -> Self {
+        let raise = |want: Option<u32>, run: u32| want.filter(|&hz| run == 0 || run < hz);
+        Self {
+            cpu_hz: raise(self.cpu_hz, running.cpu_hz),
+            gpu_hz: raise(self.gpu_hz, running.gpu_hz),
+            emc_hz: raise(self.emc_hz, running.emc_hz),
+        }
+    }
+
+    /// `holds cpu 1785.0; leaves gpu at 384.0, emc at 2400.0 MHz`, for the log.
+    pub fn describe(self, running: Clocks) -> String {
+        let mhz = |hz: u32| f64::from(hz) / 1e6;
+        let rows = [
+            ("cpu", self.cpu_hz, running.cpu_hz),
+            ("gpu", self.gpu_hz, running.gpu_hz),
+            ("emc", self.emc_hz, running.emc_hz),
+        ];
+        let join = |v: Vec<String>| if v.is_empty() { "none".to_string() } else { v.join(", ") };
+        let holds = rows
+            .iter()
+            .filter_map(|(n, hz, _)| hz.map(|hz| format!("{n} {:.1}", mhz(hz))))
+            .collect();
+        let leaves = rows
+            .iter()
+            .filter(|(_, hz, _)| hz.is_none())
+            .map(|(n, _, run)| format!("{n} at {:.1}", mhz(*run)))
+            .collect();
+        format!("holds {}; leaves {} MHz", join(holds), join(leaves))
+    }
+}
+
 /// The CPU, GPU and memory clocks, in Hz.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Clocks {
@@ -474,7 +508,7 @@ impl std::fmt::Display for Clocks {
 
 #[cfg(test)]
 mod clock_tests {
-    use super::{ClockStage, OperationMode};
+    use super::{ClockStage, Clocks, OperationMode};
 
     #[test]
     fn the_menu_raises_the_gpu_only_in_handheld() {
@@ -493,6 +527,31 @@ mod clock_tests {
             assert_eq!(stream.gpu_hz, None);
             assert_eq!(stream.emc_hz, Some(1_600_000_000));
         }
+    }
+
+    /// A rate the profile already runs at or above the stage's is left; a lower one is raised.
+    #[test]
+    fn the_title_only_raises_a_clock() {
+        let mhz = |m: u32| m * 1_000_000;
+        let run = |cpu, gpu, emc| Clocks {
+            cpu_hz: mhz(cpu),
+            gpu_hz: mhz(gpu),
+            emc_hz: mhz(emc),
+        };
+        let stream = ClockStage::Stream.targets(OperationMode::Handheld);
+        let governed = stream.above(run(612, 384, 2400));
+        assert_eq!(
+            (governed.cpu_hz, governed.gpu_hz, governed.emc_hz),
+            (Some(mhz(1785)), None, None),
+            "the governor's 612 is raised, a 2400 memory clock left"
+        );
+        let profile = stream.above(run(2397, 768, 1600));
+        assert_eq!((profile.cpu_hz, profile.gpu_hz, profile.emc_hz), (None, None, None));
+        assert_eq!(stream.above(Clocks::default()), stream, "an unknown rate is held");
+        assert_eq!(
+            governed.describe(run(612, 384, 2400)),
+            "holds cpu 1785.0; leaves gpu at 384.0, emc at 2400.0 MHz"
+        );
     }
 
     #[test]
