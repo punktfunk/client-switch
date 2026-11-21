@@ -62,7 +62,7 @@ impl Lifecycle for NxLifecycle {
                     .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
             );
         }
-        self.hold.keep();
+        self.hold.tick();
         // `appletMainLoop` in its halves, so every message is logged: no hook event and no
         // operation-mode change has reached a log yet, the dock change included.
         if let Some(msg) = applet::take_message() {
@@ -77,22 +77,31 @@ impl Lifecycle for NxLifecycle {
         for event in self.events.try_iter() {
             match event {
                 HookEvent::FocusState => out.push(match applet::focus_state() {
-                    FocusState::InFocus => SystemEvent::FocusGained,
+                    FocusState::InFocus => {
+                        self.hold.system_moved("back in focus");
+                        SystemEvent::FocusGained
+                    }
                     FocusState::OutOfFocus => SystemEvent::FocusLost,
                     FocusState::Background => SystemEvent::Suspend,
                 }),
-                HookEvent::Resume => out.push(SystemEvent::Resume),
+                HookEvent::Resume => {
+                    self.hold.system_moved("awake");
+                    out.push(SystemEvent::Resume);
+                }
                 HookEvent::OperationMode => {
                     let mode = super::operation_mode();
                     self.hold.mode_changed(mode);
                     out.push(SystemEvent::OperationMode(mode));
                 }
                 // The system moved the title to another clock configuration (WP5's question).
-                HookEvent::PerformanceMode => tracing::info!(
-                    "lifecycle: performance mode changed, clocks {}",
-                    self.clocks()
-                        .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
-                ),
+                HookEvent::PerformanceMode => {
+                    tracing::info!(
+                        "lifecycle: performance mode changed, clocks {}",
+                        self.clocks()
+                            .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
+                    );
+                    self.hold.system_moved("new performance mode");
+                }
                 HookEvent::Exit => {}
             }
         }
