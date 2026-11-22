@@ -79,7 +79,7 @@ pub struct HidSixAxisSensorState {
 
 /// `HidSevenSixAxisSensorState`: the console's own sensor. hid.h names none of the ten floats;
 /// yuzu reads them as accel, gyro and an orientation quaternion.
-// TODO(verify): the floats' order and units on the console.
+// The order holds on the console, in the six-axis frame and units (build dea5632).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HidSevenSixAxisSensorState {

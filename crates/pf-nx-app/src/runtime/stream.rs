@@ -98,8 +98,8 @@ fn input_loop(
     tx: &Sender<Routed>,
 ) -> Box<dyn Pads> {
     let mut motion = MotionRouter::default();
-    // The console's own sensor, summed and logged beside pad 0's while handheld; never sent.
-    let mut console = MotionRouter::named("console");
+    // Pad 0's second sensor (handheld, the Joy-Con), summed and logged beside it; never sent.
+    let mut shadow = MotionRouter::named("joy-con");
     let mut touch = TouchRouter::default();
     let mut batch: Vec<PadSample> = Vec::new();
     let mut fingers: Vec<TouchPoint> = Vec::new();
@@ -158,7 +158,7 @@ fn input_loop(
                 }
                 rich.extend(motion.step(pad, pads.motion(pad), now));
                 if pad == 0 {
-                    console.step(0, pads.console_motion(), now);
+                    shadow.step(0, pads.shadow_motion(), now);
                 }
             }
             pads.touches(&mut fingers);

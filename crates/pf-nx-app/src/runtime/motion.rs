@@ -228,7 +228,7 @@ struct PadMotion {
 
 pub struct MotionRouter {
     pads: [PadMotion; SLOTS],
-    /// What the log calls each source: `pad`, or the probe's `console`.
+    /// What the log calls each source: `pad`, or `joy-con` for pad 0's shadow.
     name: &'static str,
 }
 

@@ -298,10 +298,9 @@ pub trait Pads: Send {
         None
     }
 
-    /// The console's own motion sensor while it is played handheld, read as [`Self::motion`]
-    /// reads a pad's. A probe: it is logged beside the handheld pad's, never sent.
-    // TODO(verify): which of hid's floats are the accel and the gyro, and their units.
-    fn console_motion(&mut self) -> Option<Motion> {
+    /// A second sensor on pad 0, read as [`Self::motion`] is: handheld, the attached Joy-Con
+    /// that the console's own sensor replaces. Logged beside pad 0's, never sent.
+    fn shadow_motion(&mut self) -> Option<Motion> {
         None
     }
 
