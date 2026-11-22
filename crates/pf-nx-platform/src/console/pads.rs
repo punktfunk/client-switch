@@ -1,7 +1,7 @@
 //! `Pads` over hid: four player slots, the handheld Joy-Cons merged into the first, HD rumble
 //! on every pad's pair of actuators.
 
-use pf_nx_app::platform::{Motion, PadFeedback, PadKind, PadSample, Pads, TouchPoint};
+use pf_nx_app::platform::{HandheldGyro, Motion, PadFeedback, PadKind, PadSample, Pads, TouchPoint};
 use pf_nx_sys::hid::{self, Style, Vibration};
 
 use crate::pad_map;
@@ -19,6 +19,7 @@ pub struct NxPads {
     console_failed: bool,
     /// Slot 0's motion came from the console sensor on its last read.
     console_sent: bool,
+    gyro: HandheldGyro,
 }
 
 impl NxPads {
@@ -29,6 +30,7 @@ impl NxPads {
             fingers: Vec::new(),
             console_failed: false,
             console_sent: false,
+            gyro: HandheldGyro::default(),
         })
     }
 
@@ -126,11 +128,12 @@ impl Pads for NxPads {
         }
     }
 
-    /// Handheld, slot 0 is the console's own sensor: the attached right Joy-Con sits at the
-    /// console's edge and read 0.92–0.99 g and 10–20% over gravity's turn, where the console
-    /// read 1.02 g and turned true (builds dea5632 and a264034).
+    /// Handheld, slot 0 is the console's own sensor unless [`HandheldGyro::Controller`] is
+    /// set: the attached right Joy-Con sits at the console's edge and read 0.92–0.99 g and
+    /// 10–20% over gravity's turn, where the console read 1.02 g and turned true (builds
+    /// dea5632 and a264034).
     fn motion(&mut self, slot: u8) -> Option<Motion> {
-        if slot == 0 {
+        if slot == 0 && self.gyro == HandheldGyro::Console {
             let console = self.console();
             if console.is_some() != self.console_sent {
                 self.console_sent = console.is_some();
@@ -143,6 +146,11 @@ impl Pads for NxPads {
             }
         }
         self.joy_con(slot)
+    }
+
+    fn set_handheld_gyro(&mut self, gyro: HandheldGyro) {
+        self.gyro = gyro;
+        self.console_sent = false;
     }
 
     fn touches(&mut self, out: &mut Vec<TouchPoint>) {

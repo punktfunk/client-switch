@@ -265,6 +265,8 @@ pub struct Motion {
     pub accel: [f32; 3],
 }
 
+pub use crate::core::model::HandheldGyro;
+
 /// One finger on the console's own screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TouchPoint {
@@ -297,6 +299,9 @@ pub trait Pads: Send {
     fn motion(&mut self, _slot: u8) -> Option<Motion> {
         None
     }
+
+    /// Which sensor [`Self::motion`] reads for pad 0 while handheld, from the next sample on.
+    fn set_handheld_gyro(&mut self, _gyro: HandheldGyro) {}
 
     /// The fingers on the screen now, replacing `out`'s contents. Nothing without a touch
     /// screen, or while the screen is off in the dock.
