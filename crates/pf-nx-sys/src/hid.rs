@@ -277,9 +277,7 @@ pub fn vibration_values(style: u32, v: [Vibration; 2]) -> ([HidVibrationValue; 2
 
 #[cfg(target_os = "horizon")]
 mod ffi {
-    use super::{
-        HidSevenSixAxisSensorState, HidSixAxisSensorState, HidTouchScreenState, HidVibrationValue, PadState,
-    };
+    use super::{HidSevenSixAxisSensorState, HidSixAxisSensorState, HidTouchScreenState, HidVibrationValue, PadState};
 
     // `HidVibrationDeviceHandle` and `HidSixAxisSensorHandle` are unions of one `u32`.
     extern "C" {
