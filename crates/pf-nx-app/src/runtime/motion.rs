@@ -142,7 +142,7 @@ impl Sums {
         (w >= CHECK_MIN_RAD * CHECK_MIN_RAD).then(|| self.response[axis].map(|r| r / w))
     }
 
-    fn log(&self, pad: u8) {
+    fn log(&self, name: &str, pad: u8) {
         if self.travel.iter().all(|t| *t < SUMMARY_MIN_DEG) {
             return;
         }
@@ -160,7 +160,7 @@ impl Sums {
             .collect::<Vec<_>>()
             .join(" ");
         tracing::info!(
-            "pad {pad}: gyro over {:.1}s; turned x {tx:.0}° y {ty:.0}° z {tz:.0}°; net x {rx:+.1}° y {ry:+.1}° \
+            "{name} {pad}: gyro over {:.1}s; turned x {tx:.0}° y {ty:.0}° z {tz:.0}°; net x {rx:+.1}° y {ry:+.1}° \
              z {rz:+.1}°, lost x {lx:+.1}° y {ly:+.1}° z {lz:+.1}°; gravity ({ax:+.2}, {ay:+.2}, {az:+.2}) \
              |g| {:.3}; calm {:.0}% 1g {:.0}%; {} poses paired, {check}; {} of {} ticks sent",
             self.time.as_secs_f32(),
@@ -226,12 +226,27 @@ struct PadMotion {
     check: GravityCheck,
 }
 
-#[derive(Default)]
 pub struct MotionRouter {
     pads: [PadMotion; SLOTS],
+    /// What the log calls each source: `pad`, or the probe's `console`.
+    name: &'static str,
+}
+
+impl Default for MotionRouter {
+    fn default() -> Self {
+        Self::named("pad")
+    }
 }
 
 impl MotionRouter {
+    /// A router whose log lines read `{name} {pad}: …`.
+    pub fn named(name: &'static str) -> Self {
+        Self {
+            pads: Default::default(),
+            name,
+        }
+    }
+
     /// One pad's latest sample at `now`, `None` when the pad is gone: the rich input to send, if
     /// any. A changed sample goes out unless the previous tick sent. After [`REST_SAMPLES`] still
     /// samples the pad sends one zero rate and then only a gravity shift over [`REST_ACCEL`];
@@ -251,7 +266,8 @@ impl MotionRouter {
         };
         let next = match p.sent {
             None => {
-                tracing::info!("pad {pad}: motion, gyro {:?} rad/s, accel {:?} g", m.gyro, m.accel);
+                let name = self.name;
+                tracing::info!("{name} {pad}: motion, gyro {:?} rad/s, accel {:?} g", m.gyro, m.accel);
                 (gyro, accel)
             }
             Some((_, held)) if p.still >= REST_SAMPLES => {
@@ -272,7 +288,7 @@ impl MotionRouter {
         p.sums.add(dt, &m, p.sent.map_or([0; 3], |(g, _)| g), send);
         p.check.step(&m, dt, &mut p.sums);
         if p.sums.time >= SUMMARY_EVERY {
-            p.sums.log(pad);
+            p.sums.log(self.name, pad);
             p.sums = Sums::default();
         }
         send.then_some(RichInput::Motion {

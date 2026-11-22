@@ -1,6 +1,8 @@
 //! `Pads` over hid: four player slots, the handheld Joy-Cons merged into the first, HD rumble
 //! on every pad's pair of actuators.
 
+use std::time::{Duration, Instant};
+
 use pf_nx_app::platform::{Motion, PadFeedback, PadKind, PadSample, Pads, TouchPoint};
 use pf_nx_sys::hid::{self, Style, Vibration};
 
@@ -15,7 +17,14 @@ pub struct NxPads {
     rumbled: u8,
     /// hid's fingers, reused across polls.
     fingers: Vec<hid::Touch>,
+    /// The console sensor failed once and is not asked again.
+    console_failed: bool,
+    /// When the console sensor's raw floats were last logged.
+    console_logged: Option<Instant>,
 }
+
+/// How often the console sensor's raw floats are logged beside the handheld pad's.
+const CONSOLE_RAW_EVERY: Duration = Duration::from_secs(5);
 
 impl NxPads {
     pub fn new() -> anyhow::Result<Self> {
@@ -23,6 +32,8 @@ impl NxPads {
             pads: hid::Pads::init(PLAYERS)?,
             rumbled: 0,
             fingers: Vec::new(),
+            console_failed: false,
+            console_logged: None,
         })
     }
 
@@ -96,6 +107,35 @@ impl Pads for NxPads {
     fn motion(&mut self, slot: u8) -> Option<Motion> {
         let s = self.pads.sixaxis(usize::from(slot))?;
         let (gyro, accel) = pad_map::motion(s.accel, s.gyro);
+        Some(Motion { gyro, accel })
+    }
+
+    fn console_motion(&mut self) -> Option<Motion> {
+        if self.console_failed {
+            return None;
+        }
+        let c = match self.pads.console_sensor() {
+            Ok(c) => c?,
+            Err(e) => {
+                self.console_failed = true;
+                tracing::info!("console sensor: {e:#}");
+                return None;
+            }
+        };
+        let now = Instant::now();
+        if self.console_logged.is_none_or(|t| now - t >= CONSOLE_RAW_EVERY) {
+            self.console_logged = Some(now);
+            let pad = self.pads.sixaxis(0);
+            tracing::info!(
+                "console sensor #{}: {:?}; handheld pad: accel {:?} gyro {:?}",
+                c.sampling_number,
+                c.floats,
+                pad.map(|p| p.accel),
+                pad.map(|p| p.gyro)
+            );
+        }
+        let [a0, a1, a2, g0, g1, g2, ..] = c.floats;
+        let (gyro, accel) = pad_map::motion([a0, a1, a2], [g0, g1, g2]);
         Some(Motion { gyro, accel })
     }
 

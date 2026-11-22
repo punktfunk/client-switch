@@ -298,6 +298,13 @@ pub trait Pads: Send {
         None
     }
 
+    /// The console's own motion sensor while it is played handheld, read as [`Self::motion`]
+    /// reads a pad's. A probe: it is logged beside the handheld pad's, never sent.
+    // TODO(verify): which of hid's floats are the accel and the gyro, and their units.
+    fn console_motion(&mut self) -> Option<Motion> {
+        None
+    }
+
     /// The fingers on the screen now, replacing `out`'s contents. Nothing without a touch
     /// screen, or while the screen is off in the dock.
     fn touches(&mut self, out: &mut Vec<TouchPoint>) {

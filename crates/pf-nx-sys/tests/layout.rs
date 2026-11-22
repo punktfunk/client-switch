@@ -82,6 +82,13 @@ fn six_axis_state() {
 }
 
 #[test]
+fn seven_six_axis_state() {
+    // 3 × u64, then 10 × f32 → 64.
+    assert_eq!(layout::<HidSevenSixAxisSensorState>(), (64, 8));
+    assert_eq!(offset_of!(HidSevenSixAxisSensorState, unk_x18), 24);
+}
+
+#[test]
 fn vibration_value() {
     // 4 × f32 → 16, align 4.
     assert_eq!(layout::<HidVibrationValue>(), (16, 4));
