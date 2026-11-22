@@ -15,6 +15,10 @@ pub struct NxPads {
     rumbled: u8,
     /// hid's fingers, reused across polls.
     fingers: Vec<hid::Touch>,
+    /// The console sensor failed once and is not asked again.
+    console_failed: bool,
+    /// Slot 0's motion came from the console sensor on its last read.
+    console_sent: bool,
 }
 
 impl NxPads {
@@ -23,7 +27,36 @@ impl NxPads {
             pads: hid::Pads::init(PLAYERS)?,
             rumbled: 0,
             fingers: Vec::new(),
+            console_failed: false,
+            console_sent: false,
         })
+    }
+
+    /// The slot's pad sensor: a Joy-Con pair's right Joy-Con, handheld too.
+    fn joy_con(&mut self, slot: u8) -> Option<Motion> {
+        let s = self.pads.sixaxis(usize::from(slot))?;
+        let (gyro, accel) = pad_map::motion(s.accel, s.gyro);
+        Some(Motion { gyro, accel })
+    }
+
+    /// The console's own sensor while handheld. Its ten floats are accel, gyro and a
+    /// quaternion, in the pad sensor's frame and units (build dea5632's log beside the
+    /// Joy-Con's).
+    fn console(&mut self) -> Option<Motion> {
+        if self.console_failed {
+            return None;
+        }
+        let c = match self.pads.console_sensor() {
+            Ok(c) => c?,
+            Err(e) => {
+                self.console_failed = true;
+                tracing::info!("console sensor: {e:#}; handheld motion stays on the Joy-Con");
+                return None;
+            }
+        };
+        let [a0, a1, a2, g0, g1, g2, ..] = c.floats;
+        let (gyro, accel) = pad_map::motion([a0, a1, a2], [g0, g1, g2]);
+        Some(Motion { gyro, accel })
     }
 
     fn rumble(&mut self, slot: u8, low: u16, high: u16) {
@@ -93,10 +126,23 @@ impl Pads for NxPads {
         }
     }
 
+    /// Handheld, slot 0 is the console's own sensor: the attached right Joy-Con sits at the
+    /// console's edge and read 0.92–0.99 g and 10–20% over gravity's turn, where the console
+    /// read 1.02 g and turned true (builds dea5632 and a264034).
     fn motion(&mut self, slot: u8) -> Option<Motion> {
-        let s = self.pads.sixaxis(usize::from(slot))?;
-        let (gyro, accel) = pad_map::motion(s.accel, s.gyro);
-        Some(Motion { gyro, accel })
+        if slot == 0 {
+            let console = self.console();
+            if console.is_some() != self.console_sent {
+                self.console_sent = console.is_some();
+                if self.console_sent {
+                    tracing::info!("pad 0: handheld, the console's own sensor goes out");
+                }
+            }
+            if console.is_some() {
+                return console;
+            }
+        }
+        self.joy_con(slot)
     }
 
     fn touches(&mut self, out: &mut Vec<TouchPoint>) {
