@@ -1,11 +1,26 @@
 //! This client's typed view of the shared settings document (`pf_client_core::trust::Settings`),
-//! the one settings type it stores and edits. Every row here is a shared field; a row only the
-//! console has would live in `extra` under an `nx.` prefix, and none exists.
+//! the one settings type it stores and edits. Every row here is a shared field but one: a row
+//! only the console has lives in `extra` under an `nx.` prefix, and `nx.handheld_gyro` does.
 
 use pf_client_core::trust::Settings;
 use punktfunk_core::config::GamepadPref;
 
-use crate::core::model::{CodecPref, GamepadType};
+use crate::core::model::{CodecPref, GamepadType, HandheldGyro};
+
+/// The console-only row picking the handheld gyro: `"console"` (the default) or `"controller"`.
+/// No screen sets it yet; the shared settings screen is to grow a row writing these names.
+pub const HANDHELD_GYRO_KEY: &str = "nx.handheld_gyro";
+
+/// A file by this name in the app's data directory picks the Joy-Con's gyro whatever the
+/// setting says, until a screen sets [`HANDHELD_GYRO_KEY`].
+pub const GYRO_CONTROLLER_KEY: &str = "gyro_controller";
+
+fn gyro_name(g: HandheldGyro) -> &'static str {
+    match g {
+        HandheldGyro::Console => "console",
+        HandheldGyro::Controller => "controller",
+    }
+}
 
 /// This client's codec pick as punktfunk's wire name, and back.
 fn shared_codec(c: CodecPref) -> &'static str {
@@ -33,6 +48,10 @@ pub trait NxSettings {
     fn set_codec_pref(&mut self, codec: CodecPref);
     fn gamepad_type(&self) -> GamepadType;
     fn set_gamepad_type(&mut self, kind: GamepadType);
+    /// The handheld gyro: the Joy-Con's when `key_file` ([`GYRO_CONTROLLER_KEY`]) is there,
+    /// else [`HANDHELD_GYRO_KEY`]'s pick; an unknown name reads as the default.
+    fn handheld_gyro(&self, key_file: bool) -> HandheldGyro;
+    fn set_handheld_gyro(&mut self, gyro: HandheldGyro);
     /// Normalise to what this console can present (`core::caps`). Called on load and on every
     /// launch's resolved settings, so a profile override cannot put an unpresentable pick on
     /// the wire. HDR stays as the player set it: the display can change between launches, and
@@ -57,6 +76,20 @@ impl NxSettings for Settings {
 
     fn set_gamepad_type(&mut self, kind: GamepadType) {
         self.gamepad = kind.to_core().as_str().to_string();
+    }
+
+    fn handheld_gyro(&self, key_file: bool) -> HandheldGyro {
+        if key_file {
+            return HandheldGyro::Controller;
+        }
+        match self.extra.get(HANDHELD_GYRO_KEY).and_then(|v| v.as_str()) {
+            Some(name) if name == gyro_name(HandheldGyro::Controller) => HandheldGyro::Controller,
+            _ => HandheldGyro::Console,
+        }
+    }
+
+    fn set_handheld_gyro(&mut self, gyro: HandheldGyro) {
+        self.extra.insert(HANDHELD_GYRO_KEY.into(), gyro_name(gyro).into());
     }
 
     fn clamp_to_caps(&mut self) {
@@ -98,6 +131,19 @@ mod tests {
         let back: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
         assert_eq!(back.codec_pref(), CodecPref::Hevc);
         assert_eq!(back.gamepad_type(), GamepadType::JoyConPair);
+    }
+
+    #[test]
+    fn the_handheld_gyro_is_the_console_unless_picked_or_keyed() {
+        let mut s = default_document();
+        assert_eq!(s.handheld_gyro(false), HandheldGyro::Console);
+        assert_eq!(s.handheld_gyro(true), HandheldGyro::Controller, "the key file wins");
+        s.set_handheld_gyro(HandheldGyro::Controller);
+        assert_eq!(s.extra[HANDHELD_GYRO_KEY], "controller");
+        let back: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        assert_eq!(back.handheld_gyro(false), HandheldGyro::Controller);
+        s.extra.insert(HANDHELD_GYRO_KEY.into(), "sideways".into());
+        assert_eq!(s.handheld_gyro(false), HandheldGyro::Console);
     }
 
     #[test]

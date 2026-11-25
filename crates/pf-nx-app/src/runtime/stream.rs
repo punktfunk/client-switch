@@ -28,8 +28,9 @@ use super::testrun::Scenario;
 use super::touch::{Screen, TouchRouter};
 use super::{App, StreamOutcome};
 use crate::core::model::GamepadType;
-use crate::core::settings::NxSettings;
+use crate::core::settings::{NxSettings, GYRO_CONTROLLER_KEY};
 use crate::platform::{Fit, PadFeedback, PadSample, Pads, SystemEvent, TouchPoint};
+use crate::services::paths;
 use crate::session::{Connected, InputSender};
 
 /// Input thread cadence: 250 Hz, under the pad's own report rate.
@@ -313,7 +314,7 @@ fn stream(
     settings: &crate::services::store::Settings,
     target: &crate::core::model::ConnectTarget,
 ) -> Next {
-    let Some(pads) = app.pads.take() else {
+    let Some(mut pads) = app.pads.take() else {
         tracing::error!("stream: the pads are still held by another loop");
         return Next::End(StreamOutcome::ReturnToMenu(None));
     };
@@ -335,6 +336,10 @@ fn stream(
         &shortcuts,
         &OverlayConfig::parse(&settings.overlay_actions, RingPlatform::Desktop),
     );
+    let key_file = paths::app_dir().join(GYRO_CONTROLLER_KEY).exists();
+    let gyro = settings.handheld_gyro(key_file);
+    tracing::info!(key_file, "handheld gyro: {gyro:?}");
+    pads.set_handheld_gyro(gyro);
     let input = InputThread::start(pads, router, connected.input(), pad_type, app.display.size());
     let fonts = match pf_console_ui::theme::build_fonts_with(app.lifecycle.fallback_fonts()) {
         Ok(f) => Some(f),

@@ -212,6 +212,16 @@ pub fn seed_new_host_profiles(host: &mut KnownHost, profiles: &mut Vec<StreamPre
     host.bind_game_preset(DESKTOP_PIN_ID, Some(&id));
 }
 
+/// Which sensor turns pad 0 while the console is played handheld.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HandheldGyro {
+    /// The console's own sensor, at the middle of what the player turns.
+    #[default]
+    Console,
+    /// The attached right Joy-Con's, at the console's edge.
+    Controller,
+}
+
 /// Codec preference selectable in Settings — a *preference*, not a demand. The host
 /// resolves the session codec from the client's advertised set via its own precedence
 /// ladder (HEVC > H.264), honouring the preference only when its encoder can

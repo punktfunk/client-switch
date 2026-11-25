@@ -77,6 +77,18 @@ pub struct HidSixAxisSensorState {
     pub reserved: u32,
 }
 
+/// `HidSevenSixAxisSensorState`: the console's own sensor. hid.h names none of the ten floats;
+/// yuzu reads them as accel, gyro and an orientation quaternion.
+// The order holds on the console, in the six-axis frame and units (build dea5632).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HidSevenSixAxisSensorState {
+    pub timestamp0: u64,
+    pub sampling_number: u64,
+    pub unk_x10: u64,
+    pub unk_x18: [f32; 10],
+}
+
 /// `HidTouchState`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -208,6 +220,13 @@ impl SixAxis {
     }
 }
 
+/// One sample of the console's own sensor, its ten floats as hid gives them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ConsoleSensor {
+    pub floats: [f32; 10],
+    pub sampling_number: u64,
+}
+
 /// One finger on the touch screen.
 // TODO(verify): coordinates are panel pixels, 1280×720, docked or not (hid.h does not say).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -258,7 +277,7 @@ pub fn vibration_values(style: u32, v: [Vibration; 2]) -> ([HidVibrationValue; 2
 
 #[cfg(target_os = "horizon")]
 mod ffi {
-    use super::{HidSixAxisSensorState, HidTouchScreenState, HidVibrationValue, PadState};
+    use super::{HidSevenSixAxisSensorState, HidSixAxisSensorState, HidTouchScreenState, HidVibrationValue, PadState};
 
     // `HidVibrationDeviceHandle` and `HidSixAxisSensorHandle` are unions of one `u32`.
     extern "C" {
@@ -271,6 +290,15 @@ mod ffi {
         pub fn hidStartSixAxisSensor(handle: u32) -> u32;
         pub fn hidStopSixAxisSensor(handle: u32) -> u32;
         pub fn hidGetSixAxisSensorStates(handle: u32, states: *mut HidSixAxisSensorState, count: usize) -> usize;
+        pub fn hidInitializeSevenSixAxisSensor() -> u32;
+        pub fn hidStartSevenSixAxisSensor() -> u32;
+        pub fn hidStopSevenSixAxisSensor() -> u32;
+        pub fn hidFinalizeSevenSixAxisSensor() -> u32;
+        pub fn hidGetSevenSixAxisSensorStates(
+            states: *mut HidSevenSixAxisSensorState,
+            count: usize,
+            total_out: *mut usize,
+        ) -> u32;
         pub fn hidInitializeTouchScreen();
         pub fn hidGetTouchScreenStates(states: *mut HidTouchScreenState, count: usize) -> usize;
     }
@@ -290,6 +318,8 @@ struct Slot {
 #[cfg(target_os = "horizon")]
 pub struct Pads {
     slots: Vec<Slot>,
+    /// The console's own sensor: `None` until first asked, then whether it started.
+    console: Option<bool>,
 }
 
 #[cfg(target_os = "horizon")]
@@ -307,7 +337,7 @@ impl Pads {
             // SAFETY: `slot.pad` is a valid PadState that padInitializeWithMask overwrites.
             unsafe { ffi::padInitializeWithMask(&mut slot.pad, mask) };
         }
-        Ok(Self { slots })
+        Ok(Self { slots, console: None })
     }
 
     /// Reads every slot once; call once a frame before [`Pads::sample`].
@@ -393,11 +423,61 @@ impl Pads {
 }
 
 #[cfg(target_os = "horizon")]
+impl Pads {
+    /// The console's own sensor's latest sample while slot 0 is the handheld, starting it on
+    /// first use. libnx lends hid the sensor's memory, so it is finalized on drop, before hid
+    /// closes. A sensor that failed to start is not asked again.
+    pub fn console_sensor(&mut self) -> anyhow::Result<Option<ConsoleSensor>> {
+        if !self.slots.first().is_some_and(|s| s.pad.active_handheld) {
+            return Ok(None);
+        }
+        match self.console {
+            Some(false) => return Ok(None),
+            Some(true) => {}
+            None => {
+                self.console = Some(false);
+                // SAFETY: no arguments; libnx allocates and lends the sensor's memory once.
+                let rc = unsafe { ffi::hidInitializeSevenSixAxisSensor() };
+                if rc != 0 {
+                    return Err(crate::nx_error("initialize the console sensor", rc));
+                }
+                // SAFETY: after a successful initialize.
+                let rc = unsafe { ffi::hidStartSevenSixAxisSensor() };
+                if rc != 0 {
+                    // SAFETY: after a successful initialize.
+                    unsafe { ffi::hidFinalizeSevenSixAxisSensor() };
+                    return Err(crate::nx_error("start the console sensor", rc));
+                }
+                self.console = Some(true);
+            }
+        }
+        let mut state = HidSevenSixAxisSensorState::default();
+        let mut total = 0usize;
+        // SAFETY: room for one state; the sensor is initialized.
+        let rc = unsafe { ffi::hidGetSevenSixAxisSensorStates(&mut state, 1, &mut total) };
+        if rc != 0 {
+            return Err(crate::nx_error("read the console sensor", rc));
+        }
+        Ok((total > 0).then_some(ConsoleSensor {
+            floats: state.unk_x18,
+            sampling_number: state.sampling_number,
+        }))
+    }
+}
+
+#[cfg(target_os = "horizon")]
 impl Drop for Pads {
     fn drop(&mut self) {
         for (_, handle) in self.slots.iter().filter_map(|s| s.six_axis) {
             // SAFETY: a handle this value started.
             unsafe { ffi::hidStopSixAxisSensor(handle) };
+        }
+        if self.console == Some(true) {
+            // SAFETY: the console sensor this value initialized and started.
+            unsafe {
+                ffi::hidStopSevenSixAxisSensor();
+                ffi::hidFinalizeSevenSixAxisSensor();
+            }
         }
     }
 }
