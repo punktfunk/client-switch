@@ -115,6 +115,8 @@ mod ffi {
         pub fn appletGetFocusState() -> u32;
         pub fn appletLockExit() -> u32;
         pub fn appletUnlockExit() -> u32;
+        /// `csrc/pf_applet.c`.
+        pub fn pf_applet_operation_mode(out: *mut u8) -> u32;
     }
 }
 
@@ -127,6 +129,20 @@ pub struct AppletHookCookie(pub [*mut core::ffi::c_void; 3]);
 pub fn operation_mode() -> OperationMode {
     // SAFETY: reads libnx's cached state; no arguments.
     OperationMode::from_raw(unsafe { ffi::appletGetOperationMode() })
+}
+
+/// The operation mode as the system has it now, one IPC. [`operation_mode`] is libnx's copy,
+/// which only an `OperationModeChanged` refreshes: a dock change during sleep sends none.
+#[cfg(target_os = "horizon")]
+pub fn system_operation_mode() -> Result<OperationMode, u32> {
+    let mut mode = 0u8;
+    // SAFETY: `mode` is a writable u8; the shim writes it only on success.
+    let rc = unsafe { ffi::pf_applet_operation_mode(&mut mode) };
+    if rc == 0 {
+        Ok(OperationMode::from_raw(u32::from(mode)))
+    } else {
+        Err(rc)
+    }
 }
 
 #[cfg(target_os = "horizon")]

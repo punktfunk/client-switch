@@ -11,6 +11,7 @@ pub(crate) mod threads;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
@@ -55,9 +56,26 @@ impl Storage for Dir {
     }
 }
 
-/// The operation mode in the app's vocabulary, as of the last applet pump.
+/// The mode the title follows once [`set_operation_mode`] has set it; [`UNSET`] until then.
+static MODE: AtomicU8 = AtomicU8::new(UNSET);
+const UNSET: u8 = u8::MAX;
+
+/// The operation mode in the app's vocabulary: libnx's copy as of the last applet pump, unless
+/// the lifecycle has since found the system's answer differs (a dock change during sleep).
 fn operation_mode() -> OperationMode {
-    match applet::operation_mode() {
+    match MODE.load(Ordering::Relaxed) {
+        0 => OperationMode::Handheld,
+        1 => OperationMode::Docked,
+        _ => from_applet(applet::operation_mode()),
+    }
+}
+
+fn set_operation_mode(mode: OperationMode) {
+    MODE.store(u8::from(mode == OperationMode::Docked), Ordering::Relaxed);
+}
+
+fn from_applet(mode: applet::OperationMode) -> OperationMode {
+    match mode {
         applet::OperationMode::Handheld => OperationMode::Handheld,
         applet::OperationMode::Docked => OperationMode::Docked,
     }
@@ -65,7 +83,7 @@ fn operation_mode() -> OperationMode {
 
 /// On mains power: NVDEC may hold its top clock. Handheld keeps nvtegra's scaling.
 fn docked() -> bool {
-    applet::operation_mode() == applet::OperationMode::Docked
+    operation_mode() == OperationMode::Docked
 }
 
 /// The stream and swapchain size each mode calls for (plan D11).

@@ -21,6 +21,10 @@ pub struct NxLifecycle {
     reported: bool,
     /// The shared fonts, read at the first ask.
     fonts: OnceCell<Vec<&'static [u8]>>,
+    /// The last poll: a long gap since is a sleep or a HOME the title was suspended through.
+    last_poll: Option<Instant>,
+    /// The last time the system was asked for the operation mode.
+    last_ask: Option<Instant>,
 }
 
 impl NxLifecycle {
@@ -37,9 +41,48 @@ impl NxLifecycle {
             closing: false,
             reported: false,
             fonts: OnceCell::new(),
+            last_poll: None,
+            last_ask: None,
+        }
+    }
+
+    /// Asks the system for the operation mode and follows it where it differs from the title's.
+    /// libnx refreshes its copy only on `OperationModeChanged`, and a dock change during sleep
+    /// sends none (2026-11-24: docked asleep, woke at 720p). `why` names a wake and logs the
+    /// answer either way; the routine ask logs only a difference.
+    fn ask_mode(&mut self, why: Option<&str>, out: &mut Vec<SystemEvent>) {
+        self.last_ask = Some(Instant::now());
+        let title = super::operation_mode();
+        let system = match applet::system_operation_mode() {
+            Ok(mode) => super::from_applet(mode),
+            Err(rc) => {
+                if let Some(why) = why {
+                    tracing::warn!(
+                        "lifecycle: {why}: the operation mode was not read ({})",
+                        pf_nx_sys::result_code(rc)
+                    );
+                }
+                return;
+            }
+        };
+        if let Some(why) = why {
+            tracing::info!(
+                "lifecycle: {why}: the system says {system:?}, libnx's copy {:?}, the title {title:?}",
+                applet::operation_mode()
+            );
+        }
+        if system != title {
+            tracing::info!("lifecycle: the system is {system:?} and no change was sent: following it");
+            super::set_operation_mode(system);
+            out.push(SystemEvent::OperationMode(system));
         }
     }
 }
+
+/// A poll this long after the last one means the title was suspended (sleep, or HOME).
+const SUSPENDED_GAP: Duration = Duration::from_secs(1);
+/// How often the system is asked for the operation mode with nothing else to prompt it.
+const ASK_EVERY: Duration = Duration::from_secs(2);
 
 impl Lifecycle for NxLifecycle {
     /// libnx shows no splash of its own.
@@ -58,8 +101,8 @@ impl Lifecycle for NxLifecycle {
                     .map_or_else(|| "unreadable".to_string(), |c| c.to_string())
             );
         }
-        // `appletMainLoop` in its halves, so every message is logged: no hook event and no
-        // operation-mode change has reached a log yet, the dock change included.
+        // `appletMainLoop` in its halves, so every message is logged. A dock change while awake
+        // arrives as `OperationModeChanged`; one during sleep sent none (2026-11-24).
         if let Some(msg) = applet::take_message() {
             tracing::info!("lifecycle: applet message {msg} ({})", applet::message_name(msg));
             if !applet::process_message(msg) {
@@ -69,15 +112,32 @@ impl Lifecycle for NxLifecycle {
                 return;
             }
         }
+        let now = Instant::now();
+        let mut wake = self
+            .last_poll
+            .replace(now)
+            .filter(|then| now.duration_since(*then) >= SUSPENDED_GAP)
+            .map(|then| format!("back after {:.1} s away", now.duration_since(then).as_secs_f64()));
         for event in self.events.try_iter() {
             match event {
                 HookEvent::FocusState => out.push(match applet::focus_state() {
-                    FocusState::InFocus => SystemEvent::FocusGained,
+                    FocusState::InFocus => {
+                        wake.get_or_insert_with(|| "back in focus".into());
+                        SystemEvent::FocusGained
+                    }
                     FocusState::OutOfFocus => SystemEvent::FocusLost,
                     FocusState::Background => SystemEvent::Suspend,
                 }),
-                HookEvent::Resume => out.push(SystemEvent::Resume),
-                HookEvent::OperationMode => out.push(SystemEvent::OperationMode(super::operation_mode())),
+                HookEvent::Resume => {
+                    wake.get_or_insert_with(|| "resumed".into());
+                    out.push(SystemEvent::Resume);
+                }
+                // libnx refreshed its copy with this message: the title follows it.
+                HookEvent::OperationMode => {
+                    let mode = super::from_applet(applet::operation_mode());
+                    super::set_operation_mode(mode);
+                    out.push(SystemEvent::OperationMode(mode));
+                }
                 // The system moved the title to another clock configuration (WP5's question).
                 HookEvent::PerformanceMode => tracing::info!(
                     "lifecycle: performance mode changed, clocks {}",
@@ -86,6 +146,9 @@ impl Lifecycle for NxLifecycle {
                 ),
                 HookEvent::Exit => {}
             }
+        }
+        if wake.is_some() || self.last_ask.is_none_or(|then| now.duration_since(then) >= ASK_EVERY) {
+            self.ask_mode(wake.as_deref(), out);
         }
     }
 
