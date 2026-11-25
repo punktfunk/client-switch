@@ -1,11 +1,23 @@
 //! This client's typed view of the shared settings document (`pf_client_core::trust::Settings`),
 //! the one settings type it stores and edits. Every row here is a shared field but one: a row
-//! only the console has lives in `extra` under an `nx.` prefix, and `nx.handheld_gyro` does.
+//! only the console has lives in `extra` under an `nx.` prefix, as `nx.handheld_gyro` and
+//! `nx.face_layout` do.
 
 use pf_client_core::trust::Settings;
 use punktfunk_core::config::GamepadPref;
 
-use crate::core::model::{CodecPref, GamepadType, HandheldGyro};
+use crate::core::model::{CodecPref, FaceLayout, GamepadType, HandheldGyro};
+
+/// The console-only row picking the face-button layout: `"auto"` (the default) or
+/// `"position"`. No screen sets it yet; the player edits `settings.json` with the app closed.
+pub const FACE_LAYOUT_KEY: &str = "nx.face_layout";
+
+fn layout_name(l: FaceLayout) -> &'static str {
+    match l {
+        FaceLayout::Auto => "auto",
+        FaceLayout::Position => "position",
+    }
+}
 
 /// The console-only row picking the handheld gyro: `"console"` (the default) or `"controller"`.
 /// No screen sets it yet; the shared settings screen is to grow a row writing these names.
@@ -52,6 +64,9 @@ pub trait NxSettings {
     /// else [`HANDHELD_GYRO_KEY`]'s pick; an unknown name reads as the default.
     fn handheld_gyro(&self, key_file: bool) -> HandheldGyro;
     fn set_handheld_gyro(&mut self, gyro: HandheldGyro);
+    /// The face-button layout [`FACE_LAYOUT_KEY`] picks; an unknown name reads as the default.
+    fn face_layout(&self) -> FaceLayout;
+    fn set_face_layout(&mut self, layout: FaceLayout);
     /// Normalise to what this console can present (`core::caps`). Called on load and on every
     /// launch's resolved settings, so a profile override cannot put an unpresentable pick on
     /// the wire. HDR stays as the player set it: the display can change between launches, and
@@ -90,6 +105,17 @@ impl NxSettings for Settings {
 
     fn set_handheld_gyro(&mut self, gyro: HandheldGyro) {
         self.extra.insert(HANDHELD_GYRO_KEY.into(), gyro_name(gyro).into());
+    }
+
+    fn face_layout(&self) -> FaceLayout {
+        match self.extra.get(FACE_LAYOUT_KEY).and_then(|v| v.as_str()) {
+            Some(name) if name == layout_name(FaceLayout::Position) => FaceLayout::Position,
+            _ => FaceLayout::Auto,
+        }
+    }
+
+    fn set_face_layout(&mut self, layout: FaceLayout) {
+        self.extra.insert(FACE_LAYOUT_KEY.into(), layout_name(layout).into());
     }
 
     fn clamp_to_caps(&mut self) {
@@ -144,6 +170,21 @@ mod tests {
         assert_eq!(back.handheld_gyro(false), HandheldGyro::Controller);
         s.extra.insert(HANDHELD_GYRO_KEY.into(), "sideways".into());
         assert_eq!(s.handheld_gyro(false), HandheldGyro::Console);
+    }
+
+    #[test]
+    fn the_face_layout_is_auto_unless_picked() {
+        let mut s = default_document();
+        assert_eq!(s.face_layout(), FaceLayout::Auto);
+        s.set_face_layout(FaceLayout::Position);
+        assert_eq!(s.extra[FACE_LAYOUT_KEY], "position");
+        let back: Settings = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+        assert_eq!(back.face_layout(), FaceLayout::Position);
+        // The key sits beside the shared fields, where a player editing the file finds it.
+        let doc: Settings = serde_json::from_str(r#"{"nx.face_layout": "position"}"#).unwrap();
+        assert_eq!(doc.face_layout(), FaceLayout::Position);
+        s.extra.insert(FACE_LAYOUT_KEY.into(), "label".into());
+        assert_eq!(s.face_layout(), FaceLayout::Auto);
     }
 
     #[test]

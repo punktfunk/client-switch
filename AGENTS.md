@@ -23,6 +23,8 @@ The app never names a libnx call or a Vulkan handle; the binary hands it a `Plat
   every worker thread has joined (a thread still running holds a locked stack the loader faults on).
 - Every thread is a std thread; libnx's `threadCreate` is wrapped by the target (`toolchain/`).
 - Face buttons go by position on the wire: Nintendo A (east) is `BTN_B`. A confirms, B backs.
+  The one exception is what reaches the host for an Xbox pad: there A/B and X/Y go by label,
+  unless `nx.face_layout` is `"position"` (`runtime::pads::by_label`).
 - libnx has no suspend hook: sleep is `FocusState::Background`, wake is `Resume`.
 - Threads are never named from inside themselves.
 - A console claim in `docs/NOTES.md` cites a bundle id. No workaround without a probe line.

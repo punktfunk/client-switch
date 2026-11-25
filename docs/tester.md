@@ -52,6 +52,23 @@ In a stream, the pads, the touch screen and gyro go to the PC. These do not:
 Joy-Cons attached to the console show up on the PC as one Joy-Con pair, and a Pro Controller
 as a Switch Pro controller. HD rumble works on both.
 
+Some PC games only know Xbox controllers. For those, set the controller type to Xbox One. The
+PC then gets the letter you press: the Switch's A is the Xbox A, B is B, X is X and Y is Y, so
+the button a game names is the one with that letter in your hand. The Switch's menus keep A to
+confirm and B to go back. On every other controller type, the buttons go by position, as
+before.
+
+To keep the Xbox type going by position instead (the Switch's lower button, labelled B, as the
+Xbox A), close the app and add this line inside the `"settings"` block of
+`/switch/punktfunk/settings.json` on the SD card:
+
+```json
+"nx.face_layout": "position",
+```
+
+Remove it, or set it to `"auto"`, to go back. There is no menu row for this yet. The log shows
+which layout a stream uses: `face layout: Auto` or `face layout: Position`.
+
 ## Handheld and docked
 
 Handheld streams at 1280×720, docked at 1920×1080, both at 60 frames per second. Docking or

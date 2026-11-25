@@ -332,10 +332,13 @@ fn stream(
         end = %hint(Action::Slot(SlotId::EndStream)),
         "pad shortcuts"
     );
+    let face_layout = settings.face_layout();
+    tracing::info!("face layout: {face_layout:?}");
     let router = PadRouter::new(
         &shortcuts,
         &OverlayConfig::parse(&settings.overlay_actions, RingPlatform::Desktop),
-    );
+    )
+    .with_face_layout(face_layout);
     let key_file = paths::app_dir().join(GYRO_CONTROLLER_KEY).exists();
     let gyro = settings.handheld_gyro(key_file);
     tracing::info!(key_file, "handheld gyro: {gyro:?}");

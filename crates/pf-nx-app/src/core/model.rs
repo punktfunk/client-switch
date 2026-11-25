@@ -222,6 +222,17 @@ pub enum HandheldGyro {
     Controller,
 }
 
+/// Which face buttons the host gets for A, B, X and Y.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FaceLayout {
+    /// By label on an Xbox pad, so the A on screen is the A in hand; by position on the rest,
+    /// where the labels already agree (Nintendo) or there are none (a `PlayStation` pad).
+    #[default]
+    Auto,
+    /// By position on every pad: the Switch's south button, labelled B, is the Xbox A.
+    Position,
+}
+
 /// Codec preference selectable in Settings — a *preference*, not a demand. The host
 /// resolves the session codec from the client's advertised set via its own precedence
 /// ladder (HEVC > H.264), honouring the preference only when its encoder can

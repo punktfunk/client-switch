@@ -12,7 +12,7 @@ use pf_console_ui::PadTestState;
 use punktfunk_core::input::{gamepad, key_vk, InputEvent, InputKind};
 
 use crate::core::dial::{PadDial, PadRoute};
-use crate::core::model::GamepadType;
+use crate::core::model::{FaceLayout, GamepadType};
 use crate::platform::{PadKind, PadSample};
 
 /// Slots the console reports: one per player.
@@ -67,6 +67,8 @@ struct Slot {
     last: PadSample,
     dial: PadDial,
     engine: Engine,
+    /// Whether the host gets this pad's face buttons by label ([`by_label`]).
+    by_label: bool,
 }
 
 /// Per-slot state across samples, and the shortcuts every slot's engine runs.
@@ -74,6 +76,7 @@ pub struct PadRouter {
     slots: [Option<Slot>; SLOTS],
     bindings: Vec<Binding>,
     keys: Vec<(String, Vec<u8>)>,
+    layout: FaceLayout,
 }
 
 impl PadRouter {
@@ -99,7 +102,14 @@ impl PadRouter {
             slots: Default::default(),
             bindings,
             keys,
+            layout: FaceLayout::default(),
         }
+    }
+
+    /// The face-button layout the player picked; [`FaceLayout::Auto`] until set.
+    pub fn with_face_layout(mut self, layout: FaceLayout) -> Self {
+        self.layout = layout;
+        self
     }
 
     /// Diffs one batch against the last. `dial_open` is whether the dial is up now; `kind` is
@@ -122,8 +132,10 @@ impl PadRouter {
                 }
                 continue;
             };
+            let layout = self.layout;
             let state = slot.get_or_insert_with(|| {
-                wire.extend(arrival_event(resolve_kind(kind, sample.kind), pad));
+                let resolved = resolve_kind(kind, sample.kind);
+                wire.extend(arrival_event(resolved, pad));
                 Slot {
                     last: PadSample {
                         slot: sample.slot,
@@ -132,6 +144,7 @@ impl PadRouter {
                     },
                     dial: PadDial::with_face(FACE),
                     engine: Engine::new(&self.bindings, Device::Pad),
+                    by_label: by_label(resolved, layout),
                 }
             });
             let due = state.engine.tick(now);
@@ -146,7 +159,7 @@ impl PadRouter {
             if let Some(slot) = slot {
                 let sent = slot.dial.opened();
                 for bit in BUTTONS.into_iter().filter(|b| sent & b != 0) {
-                    wire.push(bit_event(bit, false, index as u8));
+                    wire.push(bit_event(to_host(bit, slot.by_label), false, index as u8));
                 }
             }
         }
@@ -165,9 +178,11 @@ impl PadRouter {
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if let Some(slot) = slot {
                 let pad = index as u8;
-                release_into(pad, slot.dial.take_sent(), &slot.last, wire);
+                release_into(pad, slot.dial.take_sent(), &slot.last, slot.by_label, wire);
                 wire.push(remove_event(pad));
-                wire.extend(arrival_event(resolve_kind(kind, slot.last.kind), pad));
+                let resolved = resolve_kind(kind, slot.last.kind);
+                wire.extend(arrival_event(resolved, pad));
+                slot.by_label = by_label(resolved, self.layout);
             }
         }
     }
@@ -190,6 +205,28 @@ pub(crate) fn resolve_kind(setting: GamepadType, pad: PadKind) -> GamepadType {
         (GamepadType::Auto, PadKind::JoyConPair) => GamepadType::JoyConPair,
         (GamepadType::Auto, PadKind::SwitchPro | PadKind::JoyConLeft | PadKind::JoyConRight) => GamepadType::SwitchPro,
         (setting, _) => setting,
+    }
+}
+
+/// Whether the host gets face buttons by label for a pad built as `kind`. Only an Xbox pad
+/// needs it: its letters sit transposed from Nintendo's, so by position the A on screen is the
+/// button labelled B. A Nintendo pad's letters already agree, and a `PlayStation` pad has shapes.
+pub(crate) fn by_label(kind: GamepadType, layout: FaceLayout) -> bool {
+    layout == FaceLayout::Auto && kind == GamepadType::XboxOne
+}
+
+/// The bit the host gets for `bit`: by label, A trades with B and X with Y. Only what reaches
+/// the host turns; the shortcuts and the dial keep reading the pad by position.
+fn to_host(bit: u32, by_label: bool) -> u32 {
+    if !by_label {
+        return bit;
+    }
+    match bit {
+        gamepad::BTN_A => gamepad::BTN_B,
+        gamepad::BTN_B => gamepad::BTN_A,
+        gamepad::BTN_X => gamepad::BTN_Y,
+        gamepad::BTN_Y => gamepad::BTN_X,
+        other => other,
     }
 }
 
@@ -267,14 +304,14 @@ impl Slot {
         for o in out {
             match o {
                 Out::Forward(bit, down) => match self.dial.button(bit, down, dial_open) {
-                    PadRoute::Forward => wire.push(bit_event(bit, down, pad)),
+                    PadRoute::Forward => wire.push(bit_event(to_host(bit, self.by_label), down, pad)),
                     PadRoute::Drop => {}
                     PadRoute::Menu(MenuEvent::Back) => routed.push(Routed::ToggleDial),
                     PadRoute::Menu(ev) => routed.push(Routed::Dial(ev)),
                 },
                 Out::Lift(bits) => {
                     for bit in bits.into_iter().filter(|&b| self.dial.lift(b)) {
-                        wire.push(bit_event(bit, false, pad));
+                        wire.push(bit_event(to_host(bit, self.by_label), false, pad));
                     }
                 }
                 Out::Fire(action, phase) => fire(&action, phase, keys, wire, routed),
@@ -287,7 +324,7 @@ impl Slot {
     fn let_go(&mut self, pad: u8, keys: &Keys, wire: &mut Vec<InputEvent>) {
         let out = self.engine.flush();
         self.apply(pad, out, false, keys, wire, &mut Vec::new());
-        release_into(pad, self.dial.take_sent(), &self.last, wire);
+        release_into(pad, self.dial.take_sent(), &self.last, self.by_label, wire);
     }
 }
 
@@ -313,9 +350,9 @@ fn fire(action: &Action, phase: Phase, keys: &Keys, wire: &mut Vec<InputEvent>, 
 }
 
 /// Releases for `sent`, the buttons the host holds, and centred axes for what `last` held.
-fn release_into(pad: u8, sent: u32, last: &PadSample, wire: &mut Vec<InputEvent>) {
+fn release_into(pad: u8, sent: u32, last: &PadSample, by_label: bool, wire: &mut Vec<InputEvent>) {
     for bit in BUTTONS.into_iter().filter(|b| sent & b != 0) {
-        wire.push(bit_event(bit, false, pad));
+        wire.push(bit_event(to_host(bit, by_label), false, pad));
     }
     let axes = [
         (gamepad::AXIS_LS_X, i32::from(last.lx)),
@@ -742,6 +779,103 @@ mod tests {
             wire.is_empty() && routed.is_empty(),
             "the held button is not a new press"
         );
+    }
+
+    fn step_as(
+        router: &mut PadRouter,
+        batch: &[PadSample],
+        at: Instant,
+        kind: GamepadType,
+    ) -> (Vec<InputEvent>, Vec<Routed>) {
+        let (mut wire, mut routed) = (Vec::new(), Vec::new());
+        router.step(batch, at, false, kind, &mut wire, &mut routed);
+        (wire, routed)
+    }
+
+    /// The Switch's face buttons by label, on the wire's positional bits.
+    const LABEL_A: u32 = gamepad::BTN_B;
+    const LABEL_B: u32 = gamepad::BTN_A;
+    const LABEL_X: u32 = gamepad::BTN_Y;
+    const LABEL_Y: u32 = gamepad::BTN_X;
+
+    #[test]
+    fn only_an_xbox_pad_takes_the_labels_and_position_turns_it_off() {
+        assert!(by_label(GamepadType::XboxOne, FaceLayout::Auto));
+        assert!(!by_label(GamepadType::XboxOne, FaceLayout::Position));
+        for kind in [
+            GamepadType::SwitchPro,
+            GamepadType::JoyConPair,
+            GamepadType::DualShock4,
+            GamepadType::DualSense,
+            GamepadType::DualSenseEdge,
+        ] {
+            assert!(!by_label(kind, FaceLayout::Auto), "{kind:?} keeps the positions");
+        }
+    }
+
+    #[test]
+    fn an_xbox_pad_gets_the_letter_pressed() {
+        let mut r = router();
+        let t = Instant::now();
+        step_as(&mut r, &[pad(0)], t, GamepadType::XboxOne);
+        for (held, host) in [
+            (LABEL_A, gamepad::BTN_A),
+            (LABEL_B, gamepad::BTN_B),
+            (LABEL_X, gamepad::BTN_X),
+            (LABEL_Y, gamepad::BTN_Y),
+        ] {
+            let (wire, _) = step_as(&mut r, &[pad(held)], t, GamepadType::XboxOne);
+            assert_eq!(wire, [bit_event(host, true, 0)]);
+            let (wire, _) = step_as(&mut r, &[pad(0)], t, GamepadType::XboxOne);
+            assert_eq!(wire, [bit_event(host, false, 0)]);
+        }
+        let (wire, _) = step_as(&mut r, &[pad(gamepad::BTN_LB)], t, GamepadType::XboxOne);
+        assert_eq!(wire, [bit_event(gamepad::BTN_LB, true, 0)], "the rest stay put");
+    }
+
+    #[test]
+    fn position_keeps_an_xbox_pad_positional() {
+        let mut r = router().with_face_layout(FaceLayout::Position);
+        let t = Instant::now();
+        step_as(&mut r, &[pad(0)], t, GamepadType::XboxOne);
+        let (wire, _) = step_as(&mut r, &[pad(LABEL_A)], t, GamepadType::XboxOne);
+        assert_eq!(wire, [bit_event(gamepad::BTN_B, true, 0)]);
+    }
+
+    #[test]
+    fn automatic_keeps_a_nintendo_pad_positional() {
+        let mut r = router();
+        let t = Instant::now();
+        step(&mut r, &[pad(0)], t, false);
+        let (wire, _) = step(&mut r, &[pad(LABEL_A)], t, false);
+        assert_eq!(wire, [bit_event(gamepad::BTN_B, true, 0)]);
+    }
+
+    #[test]
+    fn the_dial_still_opens_on_minus_and_a_with_an_xbox_pad() {
+        let mut r = router();
+        let t = Instant::now();
+        step_as(&mut r, &[pad(0)], t, GamepadType::XboxOne);
+        step_as(&mut r, &[pad(MODIFIER)], t, GamepadType::XboxOne);
+        let (_, routed) = step_as(&mut r, &[pad(MODIFIER | LABEL_A)], t, GamepadType::XboxOne);
+        assert_eq!(routed, [Routed::ToggleDial]);
+    }
+
+    #[test]
+    fn replug_lets_go_by_the_old_kind_and_presses_by_the_new() {
+        let mut r = router();
+        let t = Instant::now();
+        step(&mut r, &[pad(0)], t, false);
+        step(&mut r, &[pad(LABEL_A)], t, false);
+        let mut wire = Vec::new();
+        r.replug_all(GamepadType::XboxOne, &mut wire);
+        assert_eq!(wire[0], bit_event(gamepad::BTN_B, false, 0), "what Automatic pressed");
+        step_as(&mut r, &[pad(0)], t, GamepadType::XboxOne);
+        let (wire, _) = step_as(&mut r, &[pad(LABEL_A)], t, GamepadType::XboxOne);
+        assert_eq!(wire, [bit_event(gamepad::BTN_A, true, 0)]);
+        let mut wire = Vec::new();
+        r.release_all(&mut wire);
+        assert!(wire.contains(&bit_event(gamepad::BTN_A, false, 0)), "and lets go by it");
     }
 
     #[test]
