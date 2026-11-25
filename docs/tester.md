@@ -63,8 +63,11 @@ If you put the console to sleep during a stream, it reconnects to the same strea
 
 Handheld, the gyro the PC gets comes from the console's own motion sensor, not from the Joy-Con
 on the right rail. Measured on the console, its sensor reads tilts and turns one to one, while
-the Joy-Con, at the edge, reads 10–20% over. Detached Joy-Cons and the Pro
-Controller always send their own gyro.
+the Joy-Con, at the edge, reads 10–20% over.
+
+Detached Joy-Cons send their own gyro, and so does a Pro Controller when the console is docked.
+In handheld with the Joy-Cons attached, or on a Switch Lite, a Pro Controller's gyro does not
+reach the PC: player 1 still gets the console's sensor.
 
 If the console's sensor will not start, the stream uses the Joy-Con instead.
 
