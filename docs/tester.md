@@ -59,6 +59,24 @@ undocking during a stream changes the size without reconnecting.
 
 If you put the console to sleep during a stream, it reconnects to the same stream when it wakes.
 
+## Gyro in handheld
+
+Handheld, the gyro the PC gets comes from the console's own motion sensor, not from the Joy-Con
+on the right rail. Measured on the console, its sensor reads tilts and turns one to one, while
+the Joy-Con, at the edge, reads 10–20% over. Detached Joy-Cons and the Pro
+Controller always send their own gyro.
+
+If the console's sensor will not start, the stream uses the Joy-Con instead.
+
+To use the Joy-Con's gyro in handheld instead, create an empty file named `gyro_controller`
+(no extension) in `/switch/punktfunk/` on the SD card. Delete it to go back to the console's
+sensor. The change applies from the next stream.
+
+There is no menu row for this yet. When the settings screen gets one, the file keeps working
+and still wins over the row.
+
+The log shows which gyro a stream uses: `handheld gyro: Console` or `handheld gyro: Controller`.
+
 ## Settings worth knowing
 
 - **Bitrate: Automatic** is the default and the best choice. It goes up to 20 Mb/s and lowers
