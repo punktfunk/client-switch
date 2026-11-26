@@ -281,6 +281,7 @@ impl GpuDevice {
             pyrowave_decode: pyro,
             f_shader_int16: pyro,
             f_storage_buffer8: pyro,
+            f_storage_buffer16: false,
             f_subgroup_size_control: pyro,
             f_compute_full_subgroups: pyro,
             f_shader_float16: pyro && p.float16,
