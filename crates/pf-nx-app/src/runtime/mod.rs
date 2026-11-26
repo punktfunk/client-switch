@@ -88,30 +88,40 @@ enum StreamOutcome {
 /// The startup link probe's burst: the connection test's proven-safe target.
 const ABR_PROBE_KBPS: u32 = 320_000;
 
+/// A file of this name in the data directory holds megabits a second: automatic bitrate's
+/// ceiling for this run, for the handheld A/B. Outside [`CEILING_MBPS`] it is ignored.
+const CEILING_MARKER: &str = "teto-mbps";
+const CEILING_MBPS: std::ops::RangeInclusive<u32> = 5..=20;
+
+/// The ceiling marker's megabits a second, when its content is a whole number in range.
+fn marker_mbps(content: &str) -> Option<u32> {
+    content.trim().parse().ok().filter(|m| CEILING_MBPS.contains(m))
+}
+
 /// The two automatic-bitrate knobs punktfunk-core reads from the environment. Set before any
 /// thread exists: `set_var` is not thread-safe.
-fn set_abr_env(pyrowave: bool) {
+fn set_abr_env(max_mbps: u32) {
     std::env::set_var("PUNKTFUNK_ABR_PROBE_KBPS", ABR_PROBE_KBPS.to_string());
-    std::env::set_var(
-        "PUNKTFUNK_ABR_MAX_MBPS",
-        (bitrate_max_kbps(pyrowave) / 1_000).to_string(),
-    );
+    std::env::set_var("PUNKTFUNK_ABR_MAX_MBPS", max_mbps.to_string());
 }
 
 /// Runs the title until the player leaves it. Never returns.
 pub fn run(platform: Platform) -> ! {
-    set_abr_env(platform.video.caps().pyrowave);
+    crate::services::paths::install(platform.storage.data_dir());
+    let marker = std::fs::read_to_string(crate::services::paths::app_dir().join(CEILING_MARKER)).ok();
+    let pinned = marker.as_deref().and_then(marker_mbps);
+    let max_mbps = pinned.unwrap_or(bitrate_max_kbps(platform.video.caps().pyrowave) / 1_000);
+    set_abr_env(max_mbps);
     let Platform {
         display,
         video,
         audio,
         pads,
-        storage,
+        storage: _,
         lifecycle,
         log,
         device,
     } = platform;
-    crate::services::paths::install(storage.data_dir());
     // Without a log there is nothing to diagnose a failure from; the title still runs.
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();
     install_panic_hook();
@@ -127,6 +137,16 @@ pub fn run(platform: Platform) -> ! {
         if device.applet_mode { ", applet mode" } else { "" },
     );
     tracing::info!("language {language} for the system's {:?}", device.languages);
+    match (pinned, marker) {
+        (None, Some(content)) => tracing::warn!(
+            marker = CEILING_MARKER,
+            content = content.trim(),
+            accepts = "whole Mb/s from 5 to 20",
+            max_mbps,
+            "bitrate ceiling marker ignored"
+        ),
+        (pinned, _) => tracing::info!(max_mbps, from_marker = pinned.is_some(), "automatic bitrate ceiling"),
+    }
     punktfunk_core::client::set_client_label(&client_label(&device));
     crate::core::caps::install(video.caps());
     // ureq's agents resolve their provider from the process default and panic without one.
@@ -222,4 +242,19 @@ fn install_panic_hook() {
 fn teardown(connected: session::Connected) {
     connected.disconnect_quit();
     connected.shutdown_and_quit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_ceiling_marker_takes_whole_megabits_from_5_to_20() {
+        assert_eq!(marker_mbps("12\n"), Some(12));
+        assert_eq!(marker_mbps(" 5 "), Some(5));
+        assert_eq!(marker_mbps("20"), Some(20));
+        for ignored in ["4", "21", "", "12.5", "12 Mb/s", "-12"] {
+            assert_eq!(marker_mbps(ignored), None, "{ignored:?}");
+        }
+    }
 }
