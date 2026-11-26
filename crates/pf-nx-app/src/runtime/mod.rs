@@ -57,9 +57,10 @@ impl App {
             .map_or_else(String::new, |c| format!(" | clocks {c}"))
     }
 
-    /// One warning when the CPU reads below stock. Read only: this client never sets a clock.
-    fn warn_slow_cpu(&self) {
-        if let Some(cpu_mhz) = cpu_below_stock(self.lifecycle.clocks()) {
+    /// One warning each time the CPU drops below stock. Read only: this client never sets a
+    /// clock.
+    fn warn_slow_cpu(&self, slow: &mut SlowCpu) {
+        if let Some(cpu_mhz) = slow.drop_mhz(self.lifecycle.clocks()) {
             tracing::warn!(cpu_mhz, stock_mhz = STOCK_CPU_MHZ, "cpu clock below stock");
         }
     }
@@ -80,9 +81,23 @@ impl App {
 const STOCK_CPU_MHZ: u32 = 1020;
 
 /// The CPU clock in whole MHz, when it reads below stock.
-fn cpu_below_stock(clocks: Option<Clocks>) -> Option<u32> {
-    let mhz = clocks?.cpu_hz.saturating_add(500_000) / 1_000_000;
+fn cpu_below_stock(clocks: Clocks) -> Option<u32> {
+    let mhz = clocks.cpu_hz.saturating_add(500_000) / 1_000_000;
     (mhz < STOCK_CPU_MHZ).then_some(mhz)
+}
+
+/// Whether the last CPU reading was below stock, so each drop warns once.
+#[derive(Default)]
+struct SlowCpu(bool);
+
+impl SlowCpu {
+    /// The CPU clock in MHz to warn about: a reading below stock after one that was not. An
+    /// unreadable clock changes nothing.
+    fn drop_mhz(&mut self, clocks: Option<Clocks>) -> Option<u32> {
+        let mhz = cpu_below_stock(clocks?);
+        let was = std::mem::replace(&mut self.0, mhz.is_some());
+        mhz.filter(|_| !was)
+    }
 }
 
 /// Sleep is on its way: no new session may start.
@@ -276,16 +291,33 @@ mod tests {
 
     #[test]
     fn only_a_cpu_below_stock_is_named() {
-        let cpu = |hz| {
-            cpu_below_stock(Some(Clocks {
-                cpu_hz: hz,
-                ..Clocks::default()
-            }))
-        };
+        let cpu = |hz| cpu_below_stock(cpu_at(hz));
         assert_eq!(cpu(612_000_000), Some(612));
         assert_eq!(cpu(1_019_999_999), None, "rounds to stock");
         assert_eq!(cpu(1_020_000_000), None);
         assert_eq!(cpu(1_785_000_000), None);
-        assert_eq!(cpu_below_stock(None), None);
+    }
+
+    fn cpu_at(hz: u32) -> Clocks {
+        Clocks {
+            cpu_hz: hz,
+            ..Clocks::default()
+        }
+    }
+
+    #[test]
+    fn each_drop_below_stock_warns_once() {
+        let mut slow = SlowCpu::default();
+        let mut read = |hz| slow.drop_mhz(Some(cpu_at(hz)));
+        assert_eq!(read(612_000_000), Some(612), "below");
+        assert_eq!(read(714_000_000), None, "still below");
+        assert_eq!(read(1_020_000_000), None, "recovered");
+        assert_eq!(read(612_000_000), Some(612), "below again");
+        assert_eq!(slow.drop_mhz(None), None, "unreadable");
+        assert_eq!(
+            slow.drop_mhz(Some(cpu_at(612_000_000))),
+            None,
+            "an unreadable clock is no recovery"
+        );
     }
 }
