@@ -323,6 +323,7 @@ fn stream(
         tracing::error!("stream: the pads are still held by another loop");
         return Next::End(StreamOutcome::ReturnToMenu(None));
     };
+    app.warn_slow_cpu();
     // The dial's Controller type steps it for this stream; the next connect reads the setting.
     let mut pad_type = settings.gamepad_type();
     let mut plugged = pad_type;

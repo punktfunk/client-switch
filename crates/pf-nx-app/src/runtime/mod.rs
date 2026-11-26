@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::core::model::bitrate_max_kbps;
-use crate::platform::{Display, Lifecycle, Pads, Platform, SocketCalls, SystemEvent};
+use crate::platform::{Clocks, Display, Lifecycle, Pads, Platform, SocketCalls, SystemEvent};
 use crate::services::power::ExitPlan;
 use crate::services::store;
 use crate::session::{self, Media};
@@ -57,6 +57,13 @@ impl App {
             .map_or_else(String::new, |c| format!(" | clocks {c}"))
     }
 
+    /// One warning when the CPU reads below stock. Read only: this client never sets a clock.
+    fn warn_slow_cpu(&self) {
+        if let Some(cpu_mhz) = cpu_below_stock(self.lifecycle.clocks()) {
+            tracing::warn!(cpu_mhz, stock_mhz = STOCK_CPU_MHZ, "cpu clock below stock");
+        }
+    }
+
     /// The socket calls since the last call, one summary; the first call only starts the count.
     fn socket_window(&self, last: &mut Option<(SocketCalls, Instant)>) -> Option<String> {
         let now = self.lifecycle.socket_calls()?;
@@ -67,6 +74,15 @@ impl App {
         *last = Some((now, at));
         window
     }
+}
+
+/// The CPU clock of every performance configuration a retail console runs a game at.
+const STOCK_CPU_MHZ: u32 = 1020;
+
+/// The CPU clock in whole MHz, when it reads below stock.
+fn cpu_below_stock(clocks: Option<Clocks>) -> Option<u32> {
+    let mhz = clocks?.cpu_hz.saturating_add(500_000) / 1_000_000;
+    (mhz < STOCK_CPU_MHZ).then_some(mhz)
 }
 
 /// Sleep is on its way: no new session may start.
@@ -256,5 +272,20 @@ mod tests {
         for ignored in ["4", "21", "", "12.5", "12 Mb/s", "-12"] {
             assert_eq!(marker_mbps(ignored), None, "{ignored:?}");
         }
+    }
+
+    #[test]
+    fn only_a_cpu_below_stock_is_named() {
+        let cpu = |hz| {
+            cpu_below_stock(Some(Clocks {
+                cpu_hz: hz,
+                ..Clocks::default()
+            }))
+        };
+        assert_eq!(cpu(612_000_000), Some(612));
+        assert_eq!(cpu(1_019_999_999), None, "rounds to stock");
+        assert_eq!(cpu(1_020_000_000), None);
+        assert_eq!(cpu(1_785_000_000), None);
+        assert_eq!(cpu_below_stock(None), None);
     }
 }
