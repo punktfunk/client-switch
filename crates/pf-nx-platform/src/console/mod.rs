@@ -31,6 +31,9 @@ const VIC_MARKER: &str = "vic-copia";
 const ACQUIRE_MARKER: &str = "fila-antiga";
 /// A file of this name paces on the vblank but takes the picture at once, for the same A/B.
 const NO_LATE_MARKER: &str = "sem-espera";
+/// A file of this name takes the picture late, at most 10 ms into the refresh and never moved,
+/// for the A/B of the limit a stream finds.
+const FIXED_MARKER: &str = "espera-fixa";
 
 /// The Mesa pin NVK was built from, for the log and the About screen.
 const MESA_PIN: &str = match option_env!("PF_MESA_PIN") {
@@ -133,6 +136,8 @@ pub fn platform(kind: DisplayKind) -> Result<Platform> {
                 Pacing::Acquire
             } else if marker(NO_LATE_MARKER) {
                 Pacing::Vblank
+            } else if marker(FIXED_MARKER) {
+                Pacing::Fixed
             } else {
                 Pacing::Late
             });

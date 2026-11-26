@@ -64,6 +64,8 @@ pub struct Presenter {
     /// The UI layer is drawn and blended; a stream with an empty overlay turns it off.
     ui_on: bool,
     slot: Arc<VideoSlot>,
+    /// The slot's arrival times, drained at each take.
+    arrivals: Vec<Instant>,
     current: Option<Arc<Picture>>,
     stream: Option<Fit>,
     last_present: Option<Instant>,
@@ -182,6 +184,7 @@ impl Presenter {
             ui,
             ui_on: true,
             slot,
+            arrivals: Vec::with_capacity(64),
             current: None,
             stream: None,
             last_present: None,
@@ -219,12 +222,13 @@ impl Presenter {
 
     /// Swaps the output for one matching the window now, and everything drawn against it. A
     /// new extent also rebuilds the UI layer at that size, and the late take forgets its GPU
-    /// readings. A failed rebuild leaves the presenter stale, and the next frame tries again.
+    /// readings and its limit. A failed rebuild leaves the presenter stale, and the next frame
+    /// tries again.
     // TODO(verify): that NVK's WSI lets a vi surface be destroyed and made again on the same NWindow.
     fn rebuild(&mut self) -> Result<()> {
         self.wait_idle();
         self.stale = true;
-        self.pace.reset_gpu();
+        self.pace.reset_take();
         let dev = self.dev.clone();
         // SAFETY: the device is idle; every handle below was created by this presenter, and
         // each destroy here is a no-op when a failed rebuild already ran it.
@@ -582,6 +586,8 @@ impl Display for Presenter {
             // acquire that blocked, at the vblank a refresh from here.
             let latch = match vblank.filter(|_| quick) {
                 Some(at) => {
+                    let latency = self.slot.drain_arrivals(&mut self.arrivals);
+                    self.pace.arrived(at, period, &self.arrivals, latency);
                     self.pace.take(at, period);
                     at + period
                 }
@@ -681,7 +687,7 @@ impl Display for Presenter {
     fn set_stream(&mut self, on: bool, fit: Fit) {
         self.stream = on.then_some(fit);
         self.pace.set_streaming(on);
-        self.pace.reset_gpu();
+        self.pace.reset_take();
         if !on {
             self.slot.clear();
             self.current = None;
