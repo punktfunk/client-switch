@@ -46,6 +46,10 @@ None of these need the monorepo. Each needs a console test or the maintainer's y
 
 ### Performance mode: raise the CPU clock
 
+**Decided 2026-11-26: not built.** The title sets no clock (PR 15, closed). A console that wants
+its clocks raised has sys-clk or Horizon OC, with a profile for this title. The title warns in
+the log when the CPU runs below stock. What follows is the measurement behind the question.
+
 **Why.** At stock clocks the CPU, not the GPU, is the limit. A handheld sweep with sys-clk
 (NOTES, 2026-11-02): CPU 1785 MHz took the round trip from 19 ms to 7 ms and end to end from
 about 49 ms to 43 ms, and the menu's long frames went away. GPU and memory alone changed little.
@@ -154,10 +158,9 @@ the first frame and adds a stream period for each further one (`session/timeline
 console, one frame presented 59 to 60 pictures a second at 15 to 23 ms decode to present; two
 frames presented the same at 31 to 40 ms (NOTES, 2026-10-31).
 
-**The proposal.** Automatic picks one frame on the Switch, either through a per-platform default
-in the shared crate (section 1 would carry it) or an override here. **Needs the maintainer's
-yes**: it changes what a player sees by default. **Open:** one tester's Wi-Fi so far; a busier
-network may want the second frame back.
+**Built** as an override here (`NxSettings::nx_present_priority`), waiting for its console round:
+see [Latency and load round](#latency-and-load-round-what-changed-and-how-to-test). A buffer the
+player picks stands. **Open:** two networks so far; a busier one may want the second frame back.
 
 ### Other later work
 
@@ -206,8 +209,9 @@ None of this has run on the console yet.
   with one queued, a frame a tab change draws past the refresh repeated one. The dev box's offscreen target is
   unchanged.
 - **The late take.** While streaming, the presenter sleeps after the vblank until the GPU's
-  slowest of its last 32 frames plus 3 ms remain, at most 10 ms into the refresh, then takes
-  the picture. `latch` is the vblank after the one waited for, so `slot[10s]` counts the sleep
+  slowest of its last 32 frames plus 3 ms remain, at most a limit into the refresh, then takes
+  the picture. The limit is 10 ms, or what the stream finds: see [Latency and load
+  round](#latency-and-load-round-what-changed-and-how-to-test). `latch` is the vblank after the one waited for, so `slot[10s]` counts the sleep
   as time saved, not as lateness. No sleep until 32 GPU readings exist after a stream starts or
   the swapchain changes.
 - **Luma read once at one to one.** A picture the size of the output reads one luma texel a
@@ -230,7 +234,8 @@ the vblank; quick acquires after a stall 0:… 4+:…`.
   anyway. `picture taken` says how far into the refresh the take lands.
 
 **Markers** in `/switch/punktfunk/`: `fila-antiga` paces by the acquire, as v1.0.0 did;
-`sem-espera` paces on the vblank without the late sleep. The first `presenter: paced …` line
+`sem-espera` paces on the vblank without the late sleep; `espera-fixa` keeps the late take's
+limit at 10 ms and never steers it. The first `presenter: paced …` line
 in the log names the mode, and when vi gave no vsync event says so with vi's result.
 
 **The test.** Handheld at stock clocks, the same game, Smooth 1: one round each with
@@ -246,6 +251,66 @@ the compositor takes its frame for the next vblank. If it takes it soon after th
 present waits a refresh more and the late take loses one. No stat shows that, as decode to
 present and end to end stop at the present: only the tester's feel tells `sem-espera` from no
 marker there.
+
+### Latency and load round: what changed and how to test
+
+None of this has run on the console yet. Two facts shape it. A picture that lands after the take
+waits a whole refresh, so the take should sit as late as the console allows and never among the
+arrivals. And the load is the system's socket service on core 3, at about 330 microseconds a
+datagram, so what counts is how many datagrams cross it.
+
+- **The late take finds its limit.** The 10 ms cap was a guess at the compositor's deadline. The
+  limit starts there and moves 0.25 ms later after 600 presents in a row taken at it with no
+  frame found queued. A frame found queued after such a take is a miss: the limit steps back
+  below that offset and does not reach it again in the stream. It never passes the GPU's room
+  (the period less the slowest of the last 32 GPU frames and 3 ms) and resets with the GPU
+  readings. A queued frame after a stalled present, a drained wait or stopped drains is no miss.
+  **Where it helps:** only where the GPU's room is past 10 ms. With the GPU at 384 MHz
+  composition took 4.15 ms (issue 30), which puts the room near 9.5 ms: the take already sits
+  at the room and the limit never moves. At 768 MHz and up the room is about 11.5 to 12.3 ms.
+- **The take keeps clear of the arrivals,** under Lowest latency. The host's frame clock and the
+  panel's drift apart, so the arrivals walk through the refresh. While their band sits on the
+  take, some pictures show a refresh late and others never. When the band comes within 1 ms of
+  the limit, the take moves 2 ms before the band, so every picture goes to the next refresh,
+  and returns once the band is 2 ms clear. A band too wide to clear leaves the take at the
+  limit. The band estimate is PR 15's (`pf-nx-vk/src/steer.rs`). Smoothness is not steered.
+- **Automatic smoothness is one frame.**
+- **The uplink is counted.** `stats:` adds `uplink a second: pad N, motion N of M new samples,
+  touch N, other N`: what the input thread hands core. Core's own sends are not in it; the
+  `socket calls` line beside it shows the rest.
+- **Motion goes out on a new sensor sample.** The router already held a moving pad to every
+  other tick, so this saves datagrams only if the sensor runs between 125 and 250 Hz. `M new
+  samples` shows its rate.
+- **A ceiling for the bitrate A/B.** A file `teto-mbps` in `/switch/punktfunk/` holding a whole
+  number from 5 to 20 sets Automatic's ceiling for that run. Without it the ceiling stays 20.
+- **A warning when the CPU runs below stock:** `cpu clock below stock cpu_mhz=…`, at stream
+  start and each time it drops mid-stream. The clock is only read.
+- **Audio conceals a quiet wire.** The audio pump wakes every 5 ms and conceals on core's
+  thresholds while no packet comes, so a Wi-Fi stall no longer drains the ring into underruns
+  and leaves it deeper. `audio[10s]` adds `N concealed`.
+
+**The test.** Handheld, the same game, 15 minutes each.
+
+| Run | Read | Pass |
+| --- | --- | --- |
+| Lowest latency, no marker | `present[10s]`: `limit … ms, N later, N missed, N queued after a stall, GPU room …`, then `arrivals at … ms in a … ms band, take …, N moves`; `unseen (replaced)` in `stats:` | no run of misses; unseen near zero while the band crosses the take |
+| The same with `espera-fixa` | the same lines, `limit fixed at 10.00 ms` | the baseline |
+| Smoothness, Automatic | `video presentation priority=Smooth { buffer: 1 }`; end to end per window | steady at 21 to 25 ms, 59 or 60 presented |
+| `teto-mbps` at 20, 15, 12, 10 | `automatic bitrate ceiling max_mbps=… from_marker=true`; round trip, end to end, skipped pictures, core 3 in Status Monitor, and the eye | the lowest rate whose picture is still good |
+| Any stream, the pad moving | `uplink a second: …` beside `socket calls` | M is the sensor's rate; N at or below M |
+| Any stream on Wi-Fi | `audio[10s]`: underruns, `concealed`, target, depth, a/v | far fewer underruns than 38 to 47 a session; the target near 10 ms; a/v back to its value after a stall |
+
+A round at stock clocks matters most: every number in issue 30 at 1785 MHz hides what fewer
+datagrams buy.
+
+**Still open: the slow way back after a hitch** (issue 30, item 4). Read from the code, not
+built. A standing `2+` in `slot[10s]` means pictures held for a due time not yet reached. The due
+times come from core's cadence loop, which after a jump in the host's stamps takes seconds to
+settle, with its cushion at one period. Capping a due time at the arrival plus the buffer fixes
+it in a simulation and drops more pictures on a very jittery link. **The log that decides:** a
+file `launch.json` holding `{"telemetry_level":"debug"}`, Smoothness 1, play until a hitch, then
+the `pacing[2.0s]` lines around it. `cushion=16.7ms` with `stamp_slack` over 17 ms through the
+slow windows confirms the cause; a small `stamp_slack` while `2+` is high refutes it.
 
 ## 3. Already done in this client
 
