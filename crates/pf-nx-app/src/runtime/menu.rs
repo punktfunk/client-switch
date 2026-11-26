@@ -28,6 +28,7 @@ pub(super) fn native_mode(app: &App) -> Mode {
         width,
         height,
         refresh_hz: app.display.refresh().hz(),
+        refresh_mhz: 0,
     }
 }
 

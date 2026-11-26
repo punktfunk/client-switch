@@ -390,7 +390,8 @@ fn quic_steps(dir: &Path, out: &mut Out) -> Steps {
     out.line("probe 3 quic start endpoint");
     let bound = runtime.block_on(async {
         let (cert, key) = identity.as_ref().map_err(Clone::clone)?;
-        let (shared, _observed) = endpoint::client_shared(None, Some((cert, key)), &[ALPN], None);
+        let (shared, _observed) =
+            endpoint::client_shared(None, Some((cert, key)), &[ALPN], Ipv4Addr::UNSPECIFIED.into(), false);
         let (ep, _media) = shared.map_err(err)?;
         ep.local_addr().map(|a| a.to_string()).map_err(err)
     });
@@ -505,6 +506,7 @@ fn host_steps(dir: &Path, identity: &(String, String), out: &mut Out) -> Steps {
         width: 1280,
         height: 720,
         refresh_hz: 60,
+        refresh_mhz: 0,
     };
     let client = match NativeClient::connect(ConnectParams {
         bitrate_kbps: 10_000,
