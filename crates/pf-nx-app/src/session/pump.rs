@@ -446,18 +446,20 @@ pub(super) fn video_pump(
     VideoPump::new(client, stage, opener, stats, is_hdr).run(first, &stop);
 }
 
-/// How long an audio drain parks on an empty plane before re-checking `stop`.
-const AUDIO_WAIT: Duration = Duration::from_millis(100);
+/// One protocol frame: how long the audio pump parks on an empty plane, so a quiet wire is
+/// judged on the wire's schedule and concealment keeps pace with playout.
+const AUDIO_WAIT: Duration = Duration::from_millis(punktfunk_core::audio::FRAME_MS as u64);
 
-/// Shared body of both audio threads: pull packets, hand each to `play`, exit on `stop` or closed plane.
+/// Body of the audio thread: each packet to `on`, and `None` for every [`AUDIO_WAIT`] the plane
+/// stays empty. Exits on `stop` or a closed plane.
 ///
-/// Dedicated thread per core's contract (packets arrive every 5 ms); avoids stalls from
-/// video pump blocking or main-loop rasterizer contention. Pull methods are one-thread-per-plane safe.
-fn audio_drain(client: &NativeClient, stop: &AtomicBool, what: &str, mut play: impl FnMut(&AudioPacket)) {
+/// Its own thread per core's contract (packets arrive every 5 ms), clear of video pump blocking
+/// and main-loop rasterizer contention. Pull methods are one-thread-per-plane safe.
+fn audio_drain(client: &NativeClient, stop: &AtomicBool, what: &str, mut on: impl FnMut(Option<&AudioPacket>)) {
     while !stop.load(Ordering::Relaxed) {
         match client.next_audio(AUDIO_WAIT) {
-            Ok(packet) => play(&packet),
-            Err(PunktfunkError::NoFrame) => {}
+            Ok(packet) => on(Some(&packet)),
+            Err(PunktfunkError::NoFrame) => on(None),
             Err(e) => {
                 tracing::info!("{what} ending: {e:#}");
                 break;
@@ -466,7 +468,8 @@ fn audio_drain(client: &NativeClient, stop: &AtomicBool, what: &str, mut play: i
     }
 }
 
-/// The audio pump: packets off the transport into [`AudioStage`], which decodes into its sink.
+/// The audio pump: packets off the transport into [`AudioStage`], which decodes into its sink,
+/// and a concealment tick whenever none came.
 pub(super) fn audio_pump(client: &NativeClient, stage: &mut AudioStage, stop: &AtomicBool) {
     let what = stage.sink_name();
     let mut packets: u32 = 0;
@@ -474,7 +477,13 @@ pub(super) fn audio_pump(client: &NativeClient, stage: &mut AudioStage, stop: &A
     // 200 a second, until the session ends.
     let mut failing: u32 = 0;
     audio_drain(client, stop, what, |packet| {
-        if let Err(e) = stage.play(packet.seq, packet.pts_ns, &packet.data) {
+        let Some(packet) = packet else {
+            if let Err(e) = stage.quiet(Instant::now()) {
+                tracing::debug!(error = %format!("{e:#}"), "audio concealment refused");
+            }
+            return;
+        };
+        if let Err(e) = stage.play(packet.seq, packet.pts_ns, &packet.data, Instant::now()) {
             if failing == 0 {
                 tracing::warn!("audio error (seq {}): {e:#}", packet.seq);
             }

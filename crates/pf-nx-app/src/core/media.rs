@@ -137,6 +137,10 @@ pub trait AudioSink: Send + Sync {
     /// Feed packet stamped in host capture clock. Timeline sinks map it; others ignore it.
     fn feed(&self, samples: Samples<'_>, host_pts_ns: u64) -> Result<()>;
 
+    /// Concealment for a quiet wire: played like fed audio, but no packet carried it, so it is
+    /// neither counted as one nor placed against the picture.
+    fn conceal(&self, samples: Samples<'_>) -> Result<()>;
+
     /// Queue depth in ms, or `None` if sink can't report.
     fn depth_ms(&self) -> Option<i64> {
         None
