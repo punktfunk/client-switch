@@ -210,6 +210,8 @@ pub struct Uplink {
     motion: AtomicU32,
     touch: AtomicU32,
     other: AtomicU32,
+    /// New motion samples read from the sensors, sent or not.
+    samples: AtomicU32,
 }
 
 impl Uplink {
@@ -231,19 +233,21 @@ impl Uplink {
         self.other.fetch_add(other, Ordering::Relaxed);
     }
 
-    /// Motion datagrams, one per rich input.
-    pub fn motion(&self, sent: usize) {
+    /// Motion datagrams, one per rich input, and the new sensor samples they were picked from.
+    pub fn motion(&self, sent: usize, samples: u32) {
         self.motion
             .fetch_add(u32::try_from(sent).unwrap_or(u32::MAX), Ordering::Relaxed);
+        self.samples.fetch_add(samples, Ordering::Relaxed);
     }
 
     /// The counts as rates over `secs`, and a new window.
     pub fn take(&self, secs: f64) -> String {
         let rate = |n: &AtomicU32| f64::from(n.swap(0, Ordering::Relaxed)) / secs.max(0.001);
         format!(
-            "uplink a second: pad {:.0}, motion {:.0}, touch {:.0}, other {:.0}",
+            "uplink a second: pad {:.0}, motion {:.0} of {:.0} new samples, touch {:.0}, other {:.0}",
             rate(&self.pad),
             rate(&self.motion),
+            rate(&self.samples),
             rate(&self.touch),
             rate(&self.other),
         )
@@ -277,9 +281,15 @@ mod tests {
             event(InputKind::KeyDown, 0),
         ]);
         up.events(&[event(InputKind::GamepadAxis, 0)]);
-        up.motion(4);
-        assert_eq!(up.take(0.5), "uplink a second: pad 6, motion 8, touch 2, other 2");
-        assert_eq!(up.take(1.0), "uplink a second: pad 0, motion 0, touch 0, other 0");
+        up.motion(4, 5);
+        assert_eq!(
+            up.take(0.5),
+            "uplink a second: pad 6, motion 8 of 10 new samples, touch 2, other 2"
+        );
+        assert_eq!(
+            up.take(1.0),
+            "uplink a second: pad 0, motion 0 of 0 new samples, touch 0, other 0"
+        );
     }
 
     /// Nearest-rank on a known set, including the one- and two-sample cases a first report can

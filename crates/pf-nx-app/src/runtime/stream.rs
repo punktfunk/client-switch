@@ -168,7 +168,7 @@ fn input_loop(
             touch.step(&fingers, screen, &mut wire);
         }
         uplink.events(&wire);
-        uplink.motion(rich.len());
+        uplink.motion(rich.len(), motion.take_samples());
         for ev in &wire {
             input.send(ev);
         }

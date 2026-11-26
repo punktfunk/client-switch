@@ -263,6 +263,8 @@ pub struct Motion {
     pub gyro: [f32; 3],
     /// In g; a pad lying still reads +1 on y.
     pub accel: [f32; 3],
+    /// The sensor's sampling number: a counter that moves with each new sample, not a clock.
+    pub sampling_number: u64,
 }
 
 pub use crate::core::model::HandheldGyro;

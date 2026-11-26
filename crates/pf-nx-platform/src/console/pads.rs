@@ -38,7 +38,11 @@ impl NxPads {
     fn joy_con(&mut self, slot: u8) -> Option<Motion> {
         let s = self.pads.sixaxis(usize::from(slot))?;
         let (gyro, accel) = pad_map::motion(s.accel, s.gyro);
-        Some(Motion { gyro, accel })
+        Some(Motion {
+            gyro,
+            accel,
+            sampling_number: s.timestamp,
+        })
     }
 
     /// The console's own sensor while handheld. Its ten floats are accel, gyro and a
@@ -58,7 +62,11 @@ impl NxPads {
         };
         let [a0, a1, a2, g0, g1, g2, ..] = c.floats;
         let (gyro, accel) = pad_map::motion([a0, a1, a2], [g0, g1, g2]);
-        Some(Motion { gyro, accel })
+        Some(Motion {
+            gyro,
+            accel,
+            sampling_number: c.sampling_number,
+        })
     }
 
     fn rumble(&mut self, slot: u8, low: u16, high: u16) {
