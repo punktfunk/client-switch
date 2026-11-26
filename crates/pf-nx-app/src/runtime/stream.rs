@@ -28,6 +28,7 @@ use super::testrun::Scenario;
 use super::touch::{Screen, TouchRouter};
 use super::{App, StreamOutcome};
 use crate::core::model::GamepadType;
+use crate::core::perf::Uplink;
 use crate::core::settings::{NxSettings, GYRO_CONTROLLER_KEY};
 use crate::platform::{Fit, PadFeedback, PadSample, Pads, SystemEvent, TouchPoint};
 use crate::services::paths;
@@ -68,6 +69,7 @@ impl InputThread {
         input: InputSender,
         kind: GamepadType,
         output: (u32, u32),
+        uplink: Arc<Uplink>,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let (to, rx) = mpsc::channel();
@@ -75,7 +77,7 @@ impl InputThread {
         let thread_stop = stop.clone();
         let handle = std::thread::Builder::new()
             .name("pf-input".into())
-            .spawn(move || input_loop(pads, router, &input, kind, output, &thread_stop, &rx, &tx))
+            .spawn(move || input_loop(pads, router, &input, kind, output, &uplink, &thread_stop, &rx, &tx))
             .expect("spawn the input thread");
         Self { stop, to, from, handle }
     }
@@ -94,6 +96,7 @@ fn input_loop(
     input: &InputSender,
     mut kind: GamepadType,
     mut output: (u32, u32),
+    uplink: &Uplink,
     stop: &AtomicBool,
     rx: &Receiver<ToInput>,
     tx: &Sender<Routed>,
@@ -164,6 +167,8 @@ fn input_loop(
             };
             touch.step(&fingers, screen, &mut wire);
         }
+        uplink.events(&wire);
+        uplink.motion(rich.len());
         for ev in &wire {
             input.send(ev);
         }
@@ -340,7 +345,15 @@ fn stream(
     let gyro = settings.handheld_gyro(key_file);
     tracing::info!(key_file, "handheld gyro: {gyro:?}");
     pads.set_handheld_gyro(gyro);
-    let input = InputThread::start(pads, router, connected.input(), pad_type, app.display.size());
+    let mut perf = StreamPerf::default();
+    let input = InputThread::start(
+        pads,
+        router,
+        connected.input(),
+        pad_type,
+        app.display.size(),
+        perf.uplink.clone(),
+    );
     let fonts = match pf_console_ui::theme::build_fonts_with(app.lifecycle.fallback_fonts()) {
         Ok(f) => Some(f),
         Err(e) => {
@@ -398,7 +411,6 @@ fn stream(
     let started = Instant::now();
     let mut last_elapsed = Duration::ZERO;
     let mut dial_was_open = false;
-    let mut perf = StreamPerf::default();
     let mut sockets = None;
     let mut last_frame = Instant::now();
     let mut shown_holding = false;
@@ -699,7 +711,7 @@ fn toggle_pad_mouse(client: &NativeClient) {
 }
 
 /// What the presenter reported over the session, for a test run's `perf.json`, and over the
-/// current window, for the `stats:` log line.
+/// current window, for the `stats:` log line with the input thread's uplink.
 #[derive(Default)]
 struct StreamPerf {
     frames: u64,
@@ -709,6 +721,7 @@ struct StreamPerf {
     overflow: u64,
     decode_to_present_us: Vec<u32>,
     window: PerfWindow,
+    uplink: Arc<Uplink>,
 }
 
 #[derive(Default)]
@@ -749,7 +762,7 @@ impl StreamPerf {
         }
     }
 
-    /// The presenter's figures since the last call, and a new window.
+    /// The presenter's figures and the uplink's since the last call, and a new window.
     fn take_window(&mut self) -> String {
         let mut w = std::mem::take(&mut self.window);
         let secs = w.since.map_or(0.0, |t| t.elapsed().as_secs_f64());
@@ -760,7 +773,7 @@ impl StreamPerf {
         let d = &w.decode_to_present_us;
         let g = &w.gpu_us;
         format!(
-            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, {} unseen ({} replaced, {} queue full), decode to present p50 {} p95 {} max {} ms, compose on the gpu p50 {} p95 {} max {} ms",
+            "present {secs:.1}s: {} frames, {} missed vblanks, {} pictures, {} unseen ({} replaced, {} queue full), decode to present p50 {} p95 {} max {} ms, compose on the gpu p50 {} p95 {} max {} ms | {}",
             w.frames,
             w.missed,
             w.pictures,
@@ -773,6 +786,7 @@ impl StreamPerf {
             fine(g.get(g.len() / 2)),
             fine(g.get(g.len() * 95 / 100)),
             fine(g.last()),
+            self.uplink.take(secs),
         )
     }
 

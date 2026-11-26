@@ -1,11 +1,15 @@
 //! What the shared shell costs here, in a form someone can read off a log: how long a frame
-//! takes on the CPU, and how much of it is cover art being decoded.
+//! takes on the CPU, and how much of it is cover art being decoded. Also what a stream hands
+//! core to send to the host, by kind ([`Uplink`]).
 //!
 //! Summaries go to the log at INFO, so "Send logs to host" carries them. They are emitted on a
 //! timer and once on the way out — a handful of lines per session rather than a stream. The
 //! caller passes the art counters in, which keeps the shell's types out of here.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+
+use punktfunk_core::input::{InputEvent, InputKind};
 
 /// How often a summary goes out while the shell is up. Long enough to stay out of the way,
 /// short enough that a browse produces several.
@@ -198,9 +202,85 @@ impl Summary {
     }
 }
 
+/// The datagrams a stream's input thread hands core, by kind, since the last [`Uplink::take`].
+/// The input thread counts; the main thread's 10 s window reads.
+#[derive(Debug, Default)]
+pub struct Uplink {
+    pad: AtomicU32,
+    motion: AtomicU32,
+    touch: AtomicU32,
+    other: AtomicU32,
+}
+
+impl Uplink {
+    /// One tick's input events. Core folds a pad's button and axis events into one snapshot,
+    /// so a pad counts once a tick.
+    pub fn events(&self, events: &[InputEvent]) {
+        let (mut pads, mut touch, mut other) = (0u32, 0, 0);
+        for ev in events {
+            match ev.kind {
+                InputKind::GamepadButton | InputKind::GamepadAxis => {
+                    pads |= 1u32.checked_shl(ev.flags & 0xFF).unwrap_or(0);
+                }
+                InputKind::TouchDown | InputKind::TouchMove | InputKind::TouchUp => touch += 1,
+                _ => other += 1,
+            }
+        }
+        self.pad.fetch_add(pads.count_ones(), Ordering::Relaxed);
+        self.touch.fetch_add(touch, Ordering::Relaxed);
+        self.other.fetch_add(other, Ordering::Relaxed);
+    }
+
+    /// Motion datagrams, one per rich input.
+    pub fn motion(&self, sent: usize) {
+        self.motion
+            .fetch_add(u32::try_from(sent).unwrap_or(u32::MAX), Ordering::Relaxed);
+    }
+
+    /// The counts as rates over `secs`, and a new window.
+    pub fn take(&self, secs: f64) -> String {
+        let rate = |n: &AtomicU32| f64::from(n.swap(0, Ordering::Relaxed)) / secs.max(0.001);
+        format!(
+            "uplink a second: pad {:.0}, motion {:.0}, touch {:.0}, other {:.0}",
+            rate(&self.pad),
+            rate(&self.motion),
+            rate(&self.touch),
+            rate(&self.other),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn event(kind: InputKind, flags: u32) -> InputEvent {
+        InputEvent {
+            kind,
+            _pad: [0; 3],
+            code: 0,
+            x: 0,
+            y: 0,
+            flags,
+        }
+    }
+
+    /// A pad's events in one tick are one datagram; touch and the rest count each.
+    #[test]
+    fn the_uplink_counts_what_core_sends() {
+        let up = Uplink::default();
+        up.events(&[
+            event(InputKind::GamepadButton, 0),
+            event(InputKind::GamepadAxis, 0),
+            event(InputKind::GamepadAxis, 1),
+            event(InputKind::TouchMove, 0),
+            event(InputKind::KeyDown, 0),
+        ]);
+        up.events(&[event(InputKind::GamepadAxis, 0)]);
+        up.motion(4);
+        assert_eq!(up.take(0.5), "uplink a second: pad 6, motion 8, touch 2, other 2");
+        assert_eq!(up.take(1.0), "uplink a second: pad 0, motion 0, touch 0, other 0");
+    }
 
     /// Nearest-rank on a known set, including the one- and two-sample cases a first report can
     /// hit — no rank may fall off either end.
