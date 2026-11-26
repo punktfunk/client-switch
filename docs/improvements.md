@@ -283,6 +283,11 @@ datagram, so what counts is how many datagrams cross it.
   samples` shows its rate.
 - **A ceiling for the bitrate A/B.** A file `teto-mbps` in `/switch/punktfunk/` holding a whole
   number from 5 to 20 sets Automatic's ceiling for that run. Without it the ceiling stays 20.
+- **A GPU level for the A/B.** A file `nivel-gpu` holding `384` or `460` asks the system for
+  that handheld configuration, with the CPU and the memory where the default has them (1020 and
+  1331 MHz). Unasked, a title runs the GPU at 307 MHz. This is the request a retail game makes
+  of the system, not a clock write, and the system may refuse it: the log says which. Without
+  the file nothing is asked, and docked is untouched.
 - **A warning when the CPU runs below stock:** `cpu clock below stock cpu_mhz=…`, at stream
   start and each time it drops mid-stream. The clock is only read.
 - **Audio conceals a quiet wire.** The audio pump wakes every 5 ms and conceals on core's
@@ -297,6 +302,7 @@ datagram, so what counts is how many datagrams cross it.
 | The same with `espera-fixa` | the same lines, `limit fixed at 10.00 ms` | the baseline |
 | Smoothness, Automatic | `video presentation priority=Smooth { buffer: 1 }`; end to end per window | steady at 21 to 25 ms, 59 or 60 presented |
 | `teto-mbps` at 20, 15, 12, 10 | `automatic bitrate ceiling max_mbps=… from_marker=true`; round trip, end to end, skipped pictures, core 3 in Status Monitor, and the eye | the lowest rate whose picture is still good |
+| `nivel-gpu` at 384, then 460, no overclock tool | `handheld gpu level set gpu_mhz=… configuration=… before=…` or `… refused`; the GPU in `lifecycle:` and `stats:`; `compose on the gpu`, `GPU room`, `picture taken`, end to end; the battery's drain if at hand | the GPU reads the level asked; composition shorter and the take later than without the file |
 | Any stream, the pad moving | `uplink a second: …` beside `socket calls` | M is the sensor's rate; N at or below M |
 | Any stream on Wi-Fi | `audio[10s]`: underruns, `concealed`, target, depth, a/v | far fewer underruns than 38 to 47 a session; the target near 10 ms; a/v back to its value after a stall |
 

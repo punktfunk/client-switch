@@ -34,6 +34,9 @@ const NO_LATE_MARKER: &str = "sem-espera";
 /// A file of this name takes the picture late, at most 10 ms into the refresh and never moved,
 /// for the A/B of the limit a stream finds.
 const FIXED_MARKER: &str = "espera-fixa";
+/// A file of this name holds a handheld GPU level in MHz, 384 or 460: the title asks the system
+/// for that configuration, for the A/B against the level a title gets unasked.
+const GPU_LEVEL_MARKER: &str = "nivel-gpu";
 
 /// The Mesa pin NVK was built from, for the log and the About screen.
 const MESA_PIN: &str = match option_env!("PF_MESA_PIN") {

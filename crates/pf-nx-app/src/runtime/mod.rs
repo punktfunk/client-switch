@@ -57,8 +57,7 @@ impl App {
             .map_or_else(String::new, |c| format!(" | clocks {c}"))
     }
 
-    /// One warning each time the CPU drops below stock. Read only: this client never sets a
-    /// clock.
+    /// One warning each time the CPU drops below stock. The clock is only read.
     fn warn_slow_cpu(&self, slow: &mut SlowCpu) {
         if let Some(cpu_mhz) = slow.drop_mhz(self.lifecycle.clocks()) {
             tracing::warn!(cpu_mhz, stock_mhz = STOCK_CPU_MHZ, "cpu clock below stock");
