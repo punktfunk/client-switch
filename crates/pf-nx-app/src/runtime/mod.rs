@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::core::model::bitrate_max_kbps;
-use crate::platform::{Display, Lifecycle, Pads, Platform, SocketCalls, SystemEvent};
+use crate::platform::{Clocks, Display, Lifecycle, Pads, Platform, SocketCalls, SystemEvent};
 use crate::services::power::ExitPlan;
 use crate::services::store;
 use crate::session::{self, Media};
@@ -57,6 +57,13 @@ impl App {
             .map_or_else(String::new, |c| format!(" | clocks {c}"))
     }
 
+    /// One warning each time the CPU drops below stock. The clock is only read.
+    fn warn_slow_cpu(&self, slow: &mut SlowCpu) {
+        if let Some(cpu_mhz) = slow.drop_mhz(self.lifecycle.clocks()) {
+            tracing::warn!(cpu_mhz, stock_mhz = STOCK_CPU_MHZ, "cpu clock below stock");
+        }
+    }
+
     /// The socket calls since the last call, one summary; the first call only starts the count.
     fn socket_window(&self, last: &mut Option<(SocketCalls, Instant)>) -> Option<String> {
         let now = self.lifecycle.socket_calls()?;
@@ -66,6 +73,29 @@ impl App {
             .map(|(before, then)| now.window(before, at.duration_since(*then).as_secs_f64()));
         *last = Some((now, at));
         window
+    }
+}
+
+/// The CPU clock of every performance configuration a retail console runs a game at.
+const STOCK_CPU_MHZ: u32 = 1020;
+
+/// The CPU clock in whole MHz, when it reads below stock.
+fn cpu_below_stock(clocks: Clocks) -> Option<u32> {
+    let mhz = clocks.cpu_hz.saturating_add(500_000) / 1_000_000;
+    (mhz < STOCK_CPU_MHZ).then_some(mhz)
+}
+
+/// Whether the last CPU reading was below stock, so each drop warns once.
+#[derive(Default)]
+struct SlowCpu(bool);
+
+impl SlowCpu {
+    /// The CPU clock in MHz to warn about: a reading below stock after one that was not. An
+    /// unreadable clock changes nothing.
+    fn drop_mhz(&mut self, clocks: Option<Clocks>) -> Option<u32> {
+        let mhz = cpu_below_stock(clocks?);
+        let was = std::mem::replace(&mut self.0, mhz.is_some());
+        mhz.filter(|_| !was)
     }
 }
 
@@ -88,30 +118,40 @@ enum StreamOutcome {
 /// The startup link probe's burst: the connection test's proven-safe target.
 const ABR_PROBE_KBPS: u32 = 320_000;
 
+/// A file of this name in the data directory holds megabits a second: automatic bitrate's
+/// ceiling for this run, for the handheld A/B. Outside [`CEILING_MBPS`] it is ignored.
+const CEILING_MARKER: &str = "teto-mbps";
+const CEILING_MBPS: std::ops::RangeInclusive<u32> = 5..=20;
+
+/// The ceiling marker's megabits a second, when its content is a whole number in range.
+fn marker_mbps(content: &str) -> Option<u32> {
+    content.trim().parse().ok().filter(|m| CEILING_MBPS.contains(m))
+}
+
 /// The two automatic-bitrate knobs punktfunk-core reads from the environment. Set before any
 /// thread exists: `set_var` is not thread-safe.
-fn set_abr_env(pyrowave: bool) {
+fn set_abr_env(max_mbps: u32) {
     std::env::set_var("PUNKTFUNK_ABR_PROBE_KBPS", ABR_PROBE_KBPS.to_string());
-    std::env::set_var(
-        "PUNKTFUNK_ABR_MAX_MBPS",
-        (bitrate_max_kbps(pyrowave) / 1_000).to_string(),
-    );
+    std::env::set_var("PUNKTFUNK_ABR_MAX_MBPS", max_mbps.to_string());
 }
 
 /// Runs the title until the player leaves it. Never returns.
 pub fn run(platform: Platform) -> ! {
-    set_abr_env(platform.video.caps().pyrowave);
+    crate::services::paths::install(platform.storage.data_dir());
+    let marker = std::fs::read_to_string(crate::services::paths::app_dir().join(CEILING_MARKER)).ok();
+    let pinned = marker.as_deref().and_then(marker_mbps);
+    let max_mbps = pinned.unwrap_or(bitrate_max_kbps(platform.video.caps().pyrowave) / 1_000);
+    set_abr_env(max_mbps);
     let Platform {
         display,
         video,
         audio,
         pads,
-        storage,
+        storage: _,
         lifecycle,
         log,
         device,
     } = platform;
-    crate::services::paths::install(storage.data_dir());
     // Without a log there is nothing to diagnose a failure from; the title still runs.
     let flush = crate::logger::init_subscriber(&crate::services::paths::logs_dir(), log).ok();
     install_panic_hook();
@@ -127,6 +167,16 @@ pub fn run(platform: Platform) -> ! {
         if device.applet_mode { ", applet mode" } else { "" },
     );
     tracing::info!("language {language} for the system's {:?}", device.languages);
+    match (pinned, marker) {
+        (None, Some(content)) => tracing::warn!(
+            marker = CEILING_MARKER,
+            content = content.trim(),
+            accepts = "whole Mb/s from 5 to 20",
+            max_mbps,
+            "bitrate ceiling marker ignored"
+        ),
+        (pinned, _) => tracing::info!(max_mbps, from_marker = pinned.is_some(), "automatic bitrate ceiling"),
+    }
     punktfunk_core::client::set_client_label(&client_label(&device));
     crate::core::caps::install(video.caps());
     // ureq's agents resolve their provider from the process default and panic without one.
@@ -222,4 +272,51 @@ fn install_panic_hook() {
 fn teardown(connected: session::Connected) {
     connected.disconnect_quit();
     connected.shutdown_and_quit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_ceiling_marker_takes_whole_megabits_from_5_to_20() {
+        assert_eq!(marker_mbps("12\n"), Some(12));
+        assert_eq!(marker_mbps(" 5 "), Some(5));
+        assert_eq!(marker_mbps("20"), Some(20));
+        for ignored in ["4", "21", "", "12.5", "12 Mb/s", "-12"] {
+            assert_eq!(marker_mbps(ignored), None, "{ignored:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_cpu_below_stock_is_named() {
+        let cpu = |hz| cpu_below_stock(cpu_at(hz));
+        assert_eq!(cpu(612_000_000), Some(612));
+        assert_eq!(cpu(1_019_999_999), None, "rounds to stock");
+        assert_eq!(cpu(1_020_000_000), None);
+        assert_eq!(cpu(1_785_000_000), None);
+    }
+
+    fn cpu_at(hz: u32) -> Clocks {
+        Clocks {
+            cpu_hz: hz,
+            ..Clocks::default()
+        }
+    }
+
+    #[test]
+    fn each_drop_below_stock_warns_once() {
+        let mut slow = SlowCpu::default();
+        let mut read = |hz| slow.drop_mhz(Some(cpu_at(hz)));
+        assert_eq!(read(612_000_000), Some(612), "below");
+        assert_eq!(read(714_000_000), None, "still below");
+        assert_eq!(read(1_020_000_000), None, "recovered");
+        assert_eq!(read(612_000_000), Some(612), "below again");
+        assert_eq!(slow.drop_mhz(None), None, "unreadable");
+        assert_eq!(
+            slow.drop_mhz(Some(cpu_at(612_000_000))),
+            None,
+            "an unreadable clock is no recovery"
+        );
+    }
 }

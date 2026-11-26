@@ -11,6 +11,7 @@
 //! Conventions: a libnx `Result` is a `u32`, zero on success; a C enum is a 32-bit integer.
 #![allow(non_camel_case_types, non_snake_case)]
 
+pub mod apm;
 pub mod applet;
 pub mod audout;
 // `av` and `nvk` are features: the probe links neither libavcodec nor NVK.

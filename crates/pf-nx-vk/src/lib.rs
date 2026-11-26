@@ -15,6 +15,7 @@ pub mod pipelines;
 pub mod presenter;
 #[cfg(feature = "pyrowave")]
 pub mod pyro;
+mod steer;
 mod timer;
 pub mod ui;
 pub mod util;

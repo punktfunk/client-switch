@@ -2,7 +2,7 @@
 //! the one settings type it stores and edits. Every row here is a shared field but one: a row
 //! only the console has lives in `extra` under an `nx.` prefix, and `nx.handheld_gyro` does.
 
-use pf_client_core::trust::Settings;
+use pf_client_core::trust::{PresentPriority, Settings};
 use punktfunk_core::config::GamepadPref;
 
 use crate::core::model::{CodecPref, GamepadType, HandheldGyro};
@@ -44,6 +44,10 @@ fn local_codec(name: &str) -> CodecPref {
 
 /// The typed reads and writes this client makes on the shared document.
 pub trait NxSettings {
+    /// The shared rule, but an Automatic smoothness buffer is one frame here, not two: on the
+    /// console one frame presents as many pictures as two, a refresh sooner. A picked buffer
+    /// stands.
+    fn nx_present_priority(&self) -> PresentPriority;
     fn codec_pref(&self) -> CodecPref;
     fn set_codec_pref(&mut self, codec: CodecPref);
     fn gamepad_type(&self) -> GamepadType;
@@ -60,6 +64,14 @@ pub trait NxSettings {
 }
 
 impl NxSettings for Settings {
+    fn nx_present_priority(&self) -> PresentPriority {
+        match self.present_priority() {
+            // The shared rule replaces a buffer it reads as Automatic.
+            PresentPriority::Smooth { buffer } if buffer != self.smooth_buffer => PresentPriority::Smooth { buffer: 1 },
+            shared => shared,
+        }
+    }
+
     fn codec_pref(&self) -> CodecPref {
         local_codec(&self.codec)
     }
@@ -144,6 +156,23 @@ mod tests {
         assert_eq!(back.handheld_gyro(false), HandheldGyro::Controller);
         s.extra.insert(HANDHELD_GYRO_KEY.into(), "sideways".into());
         assert_eq!(s.handheld_gyro(false), HandheldGyro::Console);
+    }
+
+    #[test]
+    fn automatic_smoothness_takes_one_frame() {
+        let mut s = default_document();
+        s.present_priority = "smooth".into();
+        for automatic in [0, 4] {
+            s.smooth_buffer = automatic;
+            assert_eq!(s.nx_present_priority(), PresentPriority::Smooth { buffer: 1 });
+        }
+        for buffer in 1..=3 {
+            s.smooth_buffer = buffer;
+            assert_eq!(s.nx_present_priority(), PresentPriority::Smooth { buffer });
+        }
+        s.present_priority = "latency".into();
+        s.smooth_buffer = 0;
+        assert_eq!(s.nx_present_priority(), PresentPriority::Latency);
     }
 
     #[test]

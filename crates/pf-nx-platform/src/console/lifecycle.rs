@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use pf_nx_app::platform::{Clocks, Lifecycle, SocketCalls, SystemEvent};
 use pf_nx_sys::applet::{self, FocusState, HookEvent};
-use pf_nx_sys::{clk, mem, pl, rt, set, socket, swkbd};
+use pf_nx_sys::{apm, clk, mem, pl, rt, set, socket, swkbd};
 
 pub struct NxLifecycle {
     events: mpsc::Receiver<HookEvent>,
@@ -21,6 +21,8 @@ pub struct NxLifecycle {
     reported: bool,
     /// The shared fonts, read at the first ask.
     fonts: OnceCell<Vec<&'static [u8]>>,
+    /// The handheld GPU level the marker asked for, put back at exit.
+    level: Option<apm::HandheldLevel>,
 }
 
 impl NxLifecycle {
@@ -37,6 +39,42 @@ impl NxLifecycle {
             closing: false,
             reported: false,
             fonts: OnceCell::new(),
+            level: None,
+        }
+    }
+
+    /// Asks the system for the handheld GPU level the marker names. Called at the first poll,
+    /// when the logger is up, so the answer sits in the log above the clocks.
+    fn ask_gpu_level(&mut self) {
+        let path = format!("{}/{}", super::DATA_DIR, super::GPU_LEVEL_MARKER);
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let content = content.trim();
+        let Some(configuration) = content.parse::<u32>().ok().and_then(apm::handheld_configuration) else {
+            tracing::warn!(
+                marker = super::GPU_LEVEL_MARKER,
+                content,
+                accepts = "384 or 460",
+                "gpu level marker ignored"
+            );
+            return;
+        };
+        let asked = format!("{configuration:#010x}");
+        match apm::HandheldLevel::ask(configuration) {
+            Ok(level) => {
+                let before = level
+                    .before()
+                    .map_or_else(|| "unread".to_string(), |b| format!("{b:#010x}"));
+                tracing::info!(gpu_mhz = content, configuration = %asked, %before, "handheld gpu level set");
+                self.level = Some(level);
+            }
+            Err(rc) => tracing::warn!(
+                gpu_mhz = content,
+                configuration = %asked,
+                result = %pf_nx_sys::result_code(rc),
+                "handheld gpu level refused"
+            ),
         }
     }
 }
@@ -50,6 +88,7 @@ impl Lifecycle for NxLifecycle {
             self.exit();
         }
         if !std::mem::replace(&mut self.reported, true) {
+            self.ask_gpu_level();
             tracing::info!(
                 "lifecycle: {:?}, {:?}, clocks {}",
                 applet::applet_type(),
@@ -136,9 +175,13 @@ impl Lifecycle for NxLifecycle {
         })
     }
 
-    /// Returns the socket driver's lent heap, closes the detached threads' stacks, and leaves
-    /// through libnx's `__appExit`: back to hbl when the heap is clean, else through AM to HOME.
+    /// Puts back a GPU level the marker asked for, returns the socket driver's lent heap, closes
+    /// the detached threads' stacks, and leaves through libnx's `__appExit`: back to hbl when the
+    /// heap is clean, else through AM to HOME.
     fn exit(&self) -> ! {
+        if let Some(level) = &self.level {
+            level.restore();
+        }
         applet::unlock_exit();
         socket::exit();
         release_heap();

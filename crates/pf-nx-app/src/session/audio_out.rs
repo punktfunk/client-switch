@@ -8,7 +8,8 @@
 //! the audio will play in the host's capture clock, next to where the video is. That only
 //! measures (plan WP5): the offset goes to the stats line and the `audio[10s]` line, and the
 //! ring is not steered by it until a long session shows it drift. The same line splits the
-//! underruns by whether the audio before them was silent, and counts the host's pauses.
+//! underruns by whether the audio before them was silent, and counts the host's pauses and the
+//! frames concealed while the wire was quiet.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -31,7 +32,7 @@ const TUNING: JitterTuning = JitterTuning {
     ..JitterTuning::WASAPI
 };
 
-fn playout(channels: u8) -> punktfunk_core::audio::AudioPlayout {
+pub(super) fn playout(channels: u8) -> punktfunk_core::audio::AudioPlayout {
     punktfunk_core::audio::AudioPlayout {
         tuning: TUNING,
         format: punktfunk_core::audio::plane::PlaneFormat::from_welcome(
@@ -85,6 +86,21 @@ struct Ring {
     window: Window,
 }
 
+impl Ring {
+    fn new(channels: u8) -> Self {
+        let rate = crate::session::audio::SAMPLE_RATE;
+        Self {
+            samples: VecDeque::with_capacity(rate as usize * usize::from(channels) / 5),
+            policy: playout(channels).jitter(),
+            depth_ms: 0,
+            sync: playout(channels).sync(),
+            last_peak: 0.0,
+            last_fed: None,
+            window: Window::default(),
+        }
+    }
+}
+
 /// One [`WINDOW`] of what the route did, filled by both threads under the ring's lock.
 #[derive(Default)]
 struct Window {
@@ -98,6 +114,8 @@ struct Window {
     depth_min_ms: Option<u32>,
     depth_max_ms: u32,
     packets: u32,
+    /// Frames concealed for a quiet wire: audio no packet carried.
+    concealed: u32,
     pauses: u32,
     longest_gap: Duration,
     /// Unsmoothed A/V offsets, ms: positive is audio late.
@@ -126,17 +144,8 @@ pub struct AudioOutSink {
 
 impl AudioOutSink {
     pub fn start(port: Box<dyn AudioPort>, channels: u8, cells: SyncCells) -> Result<Self> {
-        let rate = crate::session::audio::SAMPLE_RATE;
         let shared = Arc::new(Shared {
-            ring: Mutex::new(Ring {
-                samples: VecDeque::with_capacity(rate as usize * usize::from(channels) / 5),
-                policy: playout(channels).jitter(),
-                depth_ms: 0,
-                sync: playout(channels).sync(),
-                last_peak: 0.0,
-                last_fed: None,
-                window: Window::default(),
-            }),
+            ring: Mutex::new(Ring::new(channels)),
             fed: Condvar::new(),
             stop: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
@@ -231,6 +240,18 @@ impl AudioSink for AudioOutSink {
         Ok(())
     }
 
+    /// Into the ring like a packet, but leaves the window's packets, gaps and A/V placement to
+    /// the wire, so a concealed stall still shows as one.
+    fn conceal(&self, samples: Samples<'_>) -> Result<()> {
+        let Samples::F32(pcm) = samples;
+        let mut ring = self.shared.ring.lock().expect("audio ring poisoned");
+        ring.window.concealed += 1;
+        ring.samples.extend(pcm.iter().copied());
+        drop(ring);
+        self.shared.fed.notify_one();
+        Ok(())
+    }
+
     fn depth_ms(&self) -> Option<i64> {
         Some(i64::from(
             self.shared.ring.lock().expect("audio ring poisoned").depth_ms,
@@ -300,7 +321,7 @@ fn log_window(w: &Window, took: Duration, target_ms: u32, offset_ms: i32, queued
         _ => "a/v not measured, no picture on the glass".to_string(),
     };
     tracing::info!(
-        "audio[{:.0}s]: {} grains, {} priming; underruns {} silent, {} audible; {} sheds, {} inserts; depth {}-{} ms, target {target_ms} ms, device queue {} ms; {} packets, {} pauses over {} ms, longest gap {} ms; {av}",
+        "audio[{:.0}s]: {} grains, {} priming; underruns {} silent, {} audible; {} sheds, {} inserts; depth {}-{} ms, target {target_ms} ms, device queue {} ms; {} packets, {} concealed, {} pauses over {} ms, longest gap {} ms; {av}",
         took.as_secs_f64(),
         w.grains,
         w.priming,
@@ -312,6 +333,7 @@ fn log_window(w: &Window, took: Duration, target_ms: u32, offset_ms: i32, queued
         w.depth_max_ms,
         queued_frames / (crate::session::audio::SAMPLE_RATE / 1000) as usize,
         w.packets,
+        w.concealed,
         w.pauses,
         PAUSE.as_millis(),
         w.longest_gap.as_millis(),
@@ -360,9 +382,148 @@ fn fill(ring: &mut Ring, grain: &mut [f32], underruns: &AtomicU64) {
 
 #[cfg(test)]
 mod tests {
+    use punktfunk_core::audio::AudioLayout;
+
     use super::*;
     use crate::platform::fake::FakeAudio;
     use crate::platform::AudioOut;
+    use crate::session::audio::AudioStage;
+
+    /// The console's grain: one 5 ms frame, stereo.
+    const GRAIN: usize = 240 * 2;
+
+    /// [`AudioOutSink`]'s ring without its writer thread, so a test reads each grain itself.
+    struct Stepped {
+        ring: Mutex<Ring>,
+        underruns: AtomicU64,
+    }
+
+    impl AudioSink for Stepped {
+        fn name(&self) -> &'static str {
+            "stepped"
+        }
+
+        fn format(&self) -> AudioFormat {
+            AudioFormat::PcmF32 {
+                channels: 2,
+                sample_rate: crate::session::audio::SAMPLE_RATE,
+            }
+        }
+
+        fn feed(&self, samples: Samples<'_>, _host_pts_ns: u64) -> Result<()> {
+            let Samples::F32(pcm) = samples;
+            self.ring.lock().unwrap().samples.extend(pcm.iter().copied());
+            Ok(())
+        }
+
+        fn conceal(&self, samples: Samples<'_>) -> Result<()> {
+            let Samples::F32(pcm) = samples;
+            let mut ring = self.ring.lock().unwrap();
+            ring.window.concealed += 1;
+            ring.samples.extend(pcm.iter().copied());
+            Ok(())
+        }
+
+        fn depth_ms(&self) -> Option<i64> {
+            Some(i64::from(self.ring.lock().unwrap().depth_ms))
+        }
+    }
+
+    /// What one run left behind.
+    struct Run {
+        underruns: u64,
+        concealed: u32,
+        /// Samples in the ring after each step.
+        depths: Vec<usize>,
+    }
+
+    /// `steps` of 5 ms: one grain read, then the packets `arrivals` gives for that step (by
+    /// sequence), or, with `ticks`, the pump's quiet tick when none came.
+    fn run(steps: u32, arrivals: impl Fn(u32) -> Vec<u32>, ticks: bool) -> Run {
+        let sink = Arc::new(Stepped {
+            ring: Mutex::new(Ring::new(2)),
+            underruns: AtomicU64::new(0),
+        });
+        let mut stage = AudioStage::new(sink.clone(), 2, AudioLayout::Standard.wire()).unwrap();
+        let mut encoder = opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::LowDelay).unwrap();
+        let mut out = [0u8; 1500];
+        let tone = [0.25f32; GRAIN];
+        let mut grain = [0f32; GRAIN];
+        let start = Instant::now();
+        let mut depths = Vec::new();
+        for step in 0..steps {
+            fill(&mut sink.ring.lock().unwrap(), &mut grain, &sink.underruns);
+            let now = start + Duration::from_millis(5 * u64::from(step));
+            let packets = arrivals(step);
+            for &seq in &packets {
+                let n = encoder.encode_float(&tone, &mut out).unwrap();
+                let pts_ns = 1_000_000_000 + u64::from(seq) * 5_000_000;
+                stage.play(seq, pts_ns, &out[..n], now).unwrap();
+            }
+            if packets.is_empty() && ticks {
+                stage.quiet(now).unwrap();
+            }
+            depths.push(sink.ring.lock().unwrap().samples.len());
+        }
+        let ring = sink.ring.lock().unwrap();
+        Run {
+            underruns: sink.underruns.load(Ordering::Relaxed),
+            concealed: ring.window.concealed,
+            depths,
+        }
+    }
+
+    /// A packet every 5 ms but for a 100 ms stall, whose packets are lost or, with `late`, all
+    /// arrive when it ends.
+    fn stall(late: bool) -> impl Fn(u32) -> Vec<u32> {
+        move |step| match step {
+            40..60 => vec![],
+            60 if late => (40..=60).collect(),
+            _ => vec![step],
+        }
+    }
+
+    /// A stall of lost packets is concealed rather than underrun, and the ring leaves it no
+    /// deeper; left to drain, the same stall underruns and the ring stays deeper.
+    #[test]
+    fn a_stall_is_concealed_and_leaves_the_ring_no_deeper() {
+        let concealed = run(2_000, stall(false), true);
+        assert_eq!(concealed.underruns, 0);
+        // The first 5 ms of quiet is under core's threshold.
+        assert_eq!(concealed.concealed, 19);
+        assert!(concealed.depths[1_999] <= concealed.depths[39]);
+        let drained = run(2_000, stall(false), false);
+        assert!(drained.underruns > 0);
+        assert!(drained.depths[1_999] > drained.depths[39]);
+    }
+
+    /// Packets that all arrive when a concealed stall ends land behind the concealment, and the
+    /// shared policy trims them back: no underrun, and a shallower ring than the stall left to
+    /// drain.
+    #[test]
+    fn late_packets_after_a_concealed_stall_settle_shallower() {
+        let concealed = run(2_000, stall(true), true);
+        let drained = run(2_000, stall(true), false);
+        assert_eq!(concealed.underruns, 0);
+        assert!(drained.underruns > 0);
+        assert!(concealed.depths[1_999] < drained.depths[1_999]);
+    }
+
+    /// A steady stream, or one arriving in pairs, never goes quiet long enough to conceal.
+    #[test]
+    fn ordinary_streams_are_untouched() {
+        let steady = |step| vec![step];
+        let pairs = |step: u32| match step {
+            0 => vec![0],
+            s if s % 2 == 1 => vec![],
+            s => vec![s - 1, s],
+        };
+        for wire in [&steady as &dyn Fn(u32) -> Vec<u32>, &pairs] {
+            let ticked = run(400, wire, true);
+            assert_eq!((ticked.concealed, ticked.underruns), (0, 0));
+            assert_eq!(ticked.depths, run(400, wire, false).depths);
+        }
+    }
 
     /// Fed audio comes out of the port in whole grains, primed before the first non-silent one.
     #[test]
